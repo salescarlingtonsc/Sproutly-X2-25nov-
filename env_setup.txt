@@ -1,0 +1,7 @@
+# INSTRUCTIONS
+# The .env file is often hidden by your operating system or editor because it starts with a dot.
+# I have created the .env file for you, but if you cannot see it, create a new file named ".env"
+# in this root directory and paste the lines below:
+
+VITE_SUPABASE_URL=https://koibycgvdasjphceqmqo.supabase.co
+VITE_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtvaWJ5Y2d2ZGFzanBoY2VxbXFvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjM2MDc0ODUsImV4cCI6MjA3OTE4MzQ4NX0.psZsaHVLrwIsRx4N7fO-cnWcls_eGCq8YdUa0gaGYF4
