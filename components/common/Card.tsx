@@ -1,10 +1,10 @@
-import React from 'react';
+import React, { ReactNode } from 'react';
 
 type Tone = 'success' | 'info' | 'warn' | 'danger';
 
 interface CardProps {
   title: string;
-  value: string | number;
+  value: string | number | ReactNode;
   tone?: Tone;
   icon?: string;
 }
