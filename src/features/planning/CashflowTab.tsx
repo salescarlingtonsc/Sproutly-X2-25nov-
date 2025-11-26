@@ -38,9 +38,9 @@ const CashflowTab: React.FC<CashflowTabProps> = ({
 
   const [viewMode, setViewMode] = useState<'summary' | 'monthly'>('summary');
   const [monthsToShow, setMonthsToShow] = useState(120); // Start with 10 years
+  const [isSavingsModalOpen, setIsSavingsModalOpen] = useState(false);
   
   // Refs for scrolling
-  const baseIncomeRef = useRef<HTMLDivElement>(null);
   const retirementIncomeRef = useRef<HTMLDivElement>(null);
 
   const updateState = (key: keyof CashflowState, value: any) => {
@@ -53,19 +53,6 @@ const CashflowTab: React.FC<CashflowTabProps> = ({
   const currentYear = new Date().getFullYear();
   const currentMonth = new Date().getMonth();
   
-  // Scroll handlers
-  const scrollToBaseIncome = () => {
-    if (baseIncomeRef.current) {
-      baseIncomeRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      // highlight effect
-      baseIncomeRef.current.classList.add('ring-4', 'ring-blue-300');
-      setTimeout(() => baseIncomeRef.current?.classList.remove('ring-4', 'ring-blue-300'), 1500);
-      
-      const input = baseIncomeRef.current.querySelector('input');
-      if (input) input.focus();
-    }
-  };
-
   const scrollToRetireIncome = () => {
     if (retirementIncomeRef.current) {
       retirementIncomeRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -338,6 +325,11 @@ const CashflowTab: React.FC<CashflowTabProps> = ({
       ? toNum(customBaseIncome) 
       : cashflowData.monthlySavings;
 
+  // Calculate effective savings rate using the overridden value
+  const effectiveSavingsRate = cashflowData.takeHome > 0 
+      ? (displaySavings / cashflowData.takeHome * 100) 
+      : 0;
+
   return (
     <div className="p-5">
       <div className="bg-gradient-to-br from-emerald-100 to-emerald-200 border-2 border-emerald-500 rounded-xl p-6 mb-5 shadow-sm">
@@ -361,25 +353,86 @@ const CashflowTab: React.FC<CashflowTabProps> = ({
         
         {/* INTERACTIVE SAVINGS CARD */}
         <Card 
-          title="💎 Monthly Savings" 
+          title="💎 MONTHLY SAVINGS" 
+          onClick={() => setIsSavingsModalOpen(true)}
           value={
-             <div className="flex items-center justify-between">
-                <span>{fmtSGD(displaySavings)}</span>
-                <button 
-                   onClick={scrollToBaseIncome} 
-                   className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-1 rounded hover:bg-emerald-200 transition-colors flex items-center gap-1 border border-emerald-300 cursor-pointer"
-                   title="Edit Base Savings Amount"
-                >
-                   ✏️ Edit
-                </button>
-             </div>
+              <div className="flex flex-col gap-1 pt-1">
+                <div className="text-2xl font-bold text-emerald-900 group-hover:text-emerald-700 transition-colors">
+                    {fmtSGD(displaySavings)}
+                </div>
+                
+                {/* CLICK ME BUTTON */}
+                <div className="mt-2 w-full">
+                    <button 
+                      className="w-full bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold py-3 px-3 rounded-lg shadow-md border border-emerald-800/20 flex items-center justify-center gap-2 transition-all transform hover:scale-[1.02] animate-pulse"
+                      onClick={(e) => { e.stopPropagation(); setIsSavingsModalOpen(true); }}
+                    >
+                      <span>{customBaseIncome ? '✏️ EDIT OVERRIDE' : '⚡ OVERRIDE SAVINGS'}</span>
+                    </button>
+                </div>
+                
+                <div className="text-[9px] font-bold text-emerald-800 opacity-60 mt-1 text-center">
+                    {customBaseIncome ? 'Manual Override Active' : 'Auto-Calculated'}
+                </div>
+              </div>
           }
           tone={displaySavings >= 0 ? "success" : "danger"} 
           icon="💵" 
         />
         
-        <Card title="📈 Savings Rate" value={`${cashflowData.savingsRate.toFixed(1)}%`} tone="info" icon="📊" />
+        <Card title="📈 Savings Rate" value={`${effectiveSavingsRate.toFixed(1)}%`} tone="info" icon="📊" />
       </div>
+
+      {/* EDIT SAVINGS MODAL */}
+      {isSavingsModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden border border-gray-200 transform transition-all scale-100">
+            <div className="p-4 bg-gray-50 border-b border-gray-200 flex justify-between items-center">
+              <h3 className="font-bold text-gray-800 m-0 text-lg">Adjust Monthly Savings</h3>
+              <button onClick={() => setIsSavingsModalOpen(false)} className="text-gray-400 hover:text-gray-600 text-2xl leading-none font-bold">&times;</button>
+            </div>
+            <div className="p-6">
+              <div className="mb-5 p-4 bg-blue-50 rounded-lg border border-blue-100 flex justify-between items-center">
+                 <div className="flex flex-col">
+                    <span className="text-xs font-bold text-blue-800 uppercase">Calculated (Income - Exp)</span>
+                    <span className="text-[10px] text-blue-600">Based on profile settings</span>
+                 </div>
+                 <span className="font-mono text-lg font-bold text-blue-900">{fmtSGD(cashflowData.monthlySavings)}</span>
+              </div>
+              
+              <div className="mb-4">
+                <LabeledText 
+                   label="Custom Savings Amount (Override)" 
+                   value={customBaseIncome || ''} 
+                   onChange={(v) => updateState('customBaseIncome', v)} 
+                   placeholder="Enter custom amount..." 
+                />
+              </div>
+              
+              <div className="text-xs text-gray-500 mt-2 leading-relaxed space-y-2">
+                 <p>ℹ️ Entering a value here will override the calculated savings for the cashflow projection.</p>
+                 <p>To change your underlying <strong>Salary or Expenses</strong>, please update the <strong className="text-emerald-600">Profile</strong> or <strong className="text-emerald-600">Expenses</strong> tabs instead.</p>
+              </div>
+            </div>
+            <div className="p-4 bg-gray-50 border-t border-gray-200 flex justify-end gap-2">
+               {customBaseIncome && (
+                  <button 
+                     onClick={() => updateState('customBaseIncome', '')}
+                     className="px-4 py-2 text-sm font-bold text-red-600 hover:bg-red-50 rounded-lg border border-transparent hover:border-red-200 transition-colors"
+                  >
+                     Reset to Calculated
+                  </button>
+               )}
+               <button 
+                  onClick={() => setIsSavingsModalOpen(false)}
+                  className="px-6 py-2 text-sm font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-sm transition-colors"
+               >
+                  Done
+               </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Projection Settings */}
       <div className="bg-white border border-gray-200 rounded-xl p-6 mb-5 shadow-sm">
@@ -511,7 +564,7 @@ const CashflowTab: React.FC<CashflowTabProps> = ({
         
         <div className="grid gap-3">
             {/* 1. BASE INCOME ROW (Auto-synced or Overridden) */}
-            <div className="p-4 bg-blue-50 rounded-lg border border-blue-200 relative scroll-mt-32 transition-all duration-300" ref={baseIncomeRef}>
+            <div className="p-4 bg-blue-50 rounded-lg border border-blue-200 relative transition-all duration-300">
                 <div className="absolute top-0 left-0 bg-blue-200 text-blue-800 text-[9px] px-2 py-0.5 rounded-br font-bold uppercase">
                     Default Source (Working Years)
                 </div>
@@ -521,27 +574,25 @@ const CashflowTab: React.FC<CashflowTabProps> = ({
                     </div>
                     <div>
                       <LabeledText 
-                          label="Amount (Override) ✏️" 
+                          label="Amount (Override)" 
                           value={customBaseIncome || ''} 
                           onChange={(v) => updateState('customBaseIncome', v)} 
                           placeholder={fmtSGD(cashflowData.monthlySavings)} 
                       />
                     </div>
+                    <div className="mb-2">
+                       {/* Also added a secondary button here to trigger the same modal */}
+                       <button 
+                          onClick={() => setIsSavingsModalOpen(true)} 
+                          className="w-full px-3 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-white text-xs rounded font-bold shadow-sm transition-colors flex items-center justify-center gap-1"
+                       >
+                          ✏️ Adjust Base Savings
+                       </button>
+                    </div>
                     <LabeledText label="Type" value="Recurring" onChange={() => {}} disabled={true} />
                     <LabeledText label="Freq" value="Monthly" onChange={() => {}} disabled={true} />
                     <LabeledText label="Start Age" value={String(currentAge)} onChange={() => {}} disabled={true} />
                     <LabeledText label="End Age" value={String(retirementAge)} onChange={() => {}} disabled={true} />
-                    <div className="mb-2">
-                        {customBaseIncome ? (
-                            <button onClick={() => updateState('customBaseIncome', '')} className="w-full px-3 py-2.5 bg-blue-100 text-blue-700 text-xs rounded hover:bg-blue-200 font-bold border border-blue-300 transition-colors">
-                                Reset Default
-                            </button>
-                        ) : (
-                            <div className="h-[38px] flex items-center justify-center text-[10px] text-blue-400 italic font-bold border border-transparent">
-                                Auto-Synced
-                            </div>
-                        )}
-                    </div>
                 </div>
                 {customBaseIncome && (
                    <div className="mt-2 text-[10px] text-blue-600 font-bold bg-blue-100 inline-block px-2 py-1 rounded">
@@ -681,7 +732,7 @@ const CashflowTab: React.FC<CashflowTabProps> = ({
                         <th className="p-3 text-left font-bold bg-gray-100">Age</th>
                         <th 
                           className="p-3 text-right font-bold text-emerald-700 bg-gray-100 cursor-pointer hover:bg-gray-200 transition-colors group"
-                          onClick={scrollToBaseIncome}
+                          onClick={() => setIsSavingsModalOpen(true)}
                           title="Click to edit Base Income"
                         >
                           Base Income <span className="opacity-0 group-hover:opacity-100">✏️</span>
@@ -708,8 +759,13 @@ const CashflowTab: React.FC<CashflowTabProps> = ({
                         <tr key={idx} className={`border-b border-gray-100 hover:bg-gray-50 ${row.isRetired ? 'bg-amber-50/30' : ''}`}>
                            <td className="p-3 font-medium">{row.monthName} {row.year}</td>
                            <td className="p-3 text-gray-500">{row.age}</td>
-                           <td className={`p-3 text-right ${row.baseIncome > 0 ? 'text-emerald-600 font-semibold' : 'text-gray-300'}`}>
+                           <td 
+                              className={`p-3 text-right cursor-pointer hover:bg-emerald-50 transition-colors group relative ${row.baseIncome > 0 ? 'text-emerald-600 font-semibold' : 'text-gray-300'}`}
+                              onClick={() => setIsSavingsModalOpen(true)}
+                              title="Click to override Base Income"
+                           >
                               {fmtSGD(row.baseIncome)}
+                              {!row.isRetired && <span className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 text-[10px]">✏️</span>}
                            </td>
                            <td className={`p-3 text-right ${row.retirementIncome > 0 ? 'text-amber-600 font-semibold' : 'text-gray-300'}`}>
                               {row.retirementIncome > 0 ? fmtSGD(row.retirementIncome) : '-'}

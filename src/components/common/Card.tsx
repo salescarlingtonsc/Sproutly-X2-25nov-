@@ -7,9 +7,10 @@ interface CardProps {
   value: string | number | ReactNode;
   tone?: Tone;
   icon?: string;
+  onClick?: () => void;
 }
 
-const Card: React.FC<CardProps> = ({ title, value, tone = 'info', icon }) => {
+const Card: React.FC<CardProps> = ({ title, value, tone = 'info', icon, onClick }) => {
   const toneColors = {
     success: { bg: 'bg-gradient-to-br from-emerald-100 to-emerald-200', border: 'border-emerald-500', text: 'text-emerald-900' },
     info: { bg: 'bg-gradient-to-br from-blue-100 to-blue-200', border: 'border-blue-500', text: 'text-blue-900' },
@@ -20,7 +21,15 @@ const Card: React.FC<CardProps> = ({ title, value, tone = 'info', icon }) => {
   const c = toneColors[tone] || toneColors.info;
 
   return (
-    <div className={`${c.bg} border-2 ${c.border} rounded-lg p-4 mb-3`}>
+    <div 
+      onClick={onClick}
+      className={`
+        group ${c.bg} border-2 ${c.border} rounded-lg p-4 mb-3 
+        ${onClick ? 'cursor-pointer hover:shadow-lg transition-all duration-200 transform hover:scale-[1.02] active:scale-[0.98]' : ''}
+      `}
+      role={onClick ? "button" : undefined}
+      tabIndex={onClick ? 0 : undefined}
+    >
       <div className={`text-xs font-bold ${c.text} mb-1 uppercase flex items-center gap-2`}>
         {icon && <span>{icon}</span>}
         {title}
