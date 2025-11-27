@@ -1,5 +1,4 @@
 
-
 export interface Child {
   id: number;
   name: string;
@@ -125,13 +124,25 @@ export interface CashflowWithdrawal {
   startMonth: number;
 }
 
+// NEW: Interface for Income Tiers
+export interface BaseIncomeTier {
+  id: number;
+  startAge: number;
+  endAge: number;
+  amount: string;
+}
+
 export interface CashflowState {
   currentSavings: string;
   projectToAge: string;
   bankInterestRate: string;
   additionalIncomes: AdditionalIncome[];
   withdrawals: CashflowWithdrawal[];
+  // Existing single override
   customBaseIncome?: string;
+  // NEW: Strategy Mode
+  incomeMode?: 'simple' | 'tiered';
+  incomeTiers?: BaseIncomeTier[]; 
   customRetirementIncome?: string;
 }
 
