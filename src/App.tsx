@@ -112,7 +112,7 @@ export default function App() {
     withdrawals: []
   });
 
-  // 5. Cashflow State (UPDATED)
+  // 5. Cashflow State (UPDATED DEFAULTS)
   const [cashflowState, setCashflowState] = useState<CashflowState>({
     currentSavings: '',
     projectToAge: '100',
@@ -309,5 +309,431 @@ export default function App() {
       console.error("Save failed", error);
       setSaveStatus('error');
       
-      // Improve error display for objects
       let msg = 'Unknown error';
+      if (error instanceof Error) {
+        msg = error.message;
+      } else if (typeof error === 'object') {
+        try {
+          msg = JSON.stringify(error, null, 2);
+        } catch (e) {
+          msg = String(error);
+        }
+      } else {
+        msg = String(error);
+      }
+      
+      if (!isAutoSave) alert(`Failed to save client: ${msg}`);
+    }
+  }, [user, maxClients, selectedClientId, clients, referenceCode, profile, expenses, customExpenses, retirement, cpfState, cashflowState, propertyState, wealthState, investorState, insuranceState]);
+
+  // --- AUTO SAVE EFFECT ---
+  useEffect(() => {
+    if (!selectedClientId) return;
+    const timeoutId = setTimeout(() => {
+      saveClient(true);
+    }, 2000);
+    return () => clearTimeout(timeoutId);
+  }, [profile, expenses, customExpenses, retirement, cpfState, cashflowState, propertyState, wealthState, investorState, insuranceState, selectedClientId, saveClient]);
+  
+  const loadClient = (client: Client) => {
+    setSelectedClientId(client.id);
+    setReferenceCode(client.referenceCode || generateRefCode());
+    
+    // MIGRATION: Handle Education Settings
+    const loadedEdu = (client.profile.educationSettings || {}) as any;
+    let monthlyEduCost = loadedEdu.monthlyEducationCost || '800';
+    if (!loadedEdu.monthlyEducationCost && loadedEdu.primarySecondaryCost) {
+       monthlyEduCost = String(Math.round(toNum(loadedEdu.primarySecondaryCost) / 12));
+    }
+
+    const safeEduSettings = {
+      inflationRate: loadedEdu.inflationRate || '3',
+      monthlyEducationCost: monthlyEduCost,
+      educationStartAge: loadedEdu.educationStartAge || '7',
+      educationDuration: loadedEdu.educationDuration || '10',
+      universityCost: loadedEdu.universityCost || '8750',
+      universityDuration: loadedEdu.universityDuration || '4'
+    };
+
+    setProfile({ 
+      ...client.profile, 
+      children: client.profile.children || [],
+      investmentRates: client.profile.investmentRates || { conservative: 0.05, moderate: 6, growth: 12 },
+      wealthTarget: client.profile.wealthTarget || '100000',
+      educationSettings: safeEduSettings
+    });
+    
+    setExpenses(client.expenses);
+    setCustomExpenses(client.customExpenses || []);
+    setRetirement(client.retirement);
+    setCpfState(client.cpfState || { currentBalances: { oa: '', sa: '', ma: '' }, withdrawals: [] });
+    
+    // UPDATED: Initialize new cashflow fields
+    const loadedCashflow = client.cashflowState || {} as Partial<CashflowState>;
+    setCashflowState({
+      currentSavings: loadedCashflow.currentSavings || '',
+      projectToAge: loadedCashflow.projectToAge || '100',
+      bankInterestRate: loadedCashflow.bankInterestRate || '0.05',
+      additionalIncomes: Array.isArray(loadedCashflow.additionalIncomes) ? loadedCashflow.additionalIncomes : [],
+      withdrawals: Array.isArray(loadedCashflow.withdrawals) ? loadedCashflow.withdrawals : [],
+      customBaseIncome: loadedCashflow.customBaseIncome || '',
+      customRetirementIncome: loadedCashflow.customRetirementIncome || '',
+      incomeMode: loadedCashflow.incomeMode || 'simple',
+      incomeTiers: Array.isArray(loadedCashflow.incomeTiers) ? loadedCashflow.incomeTiers : []
+    });
+
+    setPropertyState(client.propertyState || { propertyPrice: '', propertyType: 'hdb', annualValue: '', downPaymentPercent: '25', loanTenure: '25', interestRate: '3.5', useCpfOa: true, cpfOaAmount: '' });
+    setWealthState(client.wealthState || { annualPremium: '', projectionYears: '40', growthRate: '5' });
+    setInvestorState(client.investorState || { portfolioValue: '0', portfolioType: 'stock-picking' });
+    setInsuranceState(client.insuranceState || { policies: [], currentDeath: '', currentTPD: '', currentCI: '' });
+
+    setSaveStatus('idle');
+    setLastSavedTime(new Date(client.lastUpdated));
+    setActiveTab('profile');
+  };
+  
+  const deleteClient = async (clientId: string) => {
+    if (confirm('Are you sure you want to delete this client?')) {
+      try {
+        await db.deleteClient(clientId, user?.id);
+        setClients(clients.filter(c => c.id !== clientId));
+        if (selectedClientId === clientId) {
+          resetForm();
+        }
+      } catch (error) {
+        console.error("Delete failed", error);
+        alert("Failed to delete client");
+      }
+    }
+  };
+  
+  const resetForm = () => {
+    setSelectedClientId(null);
+    setReferenceCode(generateRefCode()); 
+    setProfile({
+      name: '',
+      dob: '',
+      gender: 'male',
+      employmentStatus: 'employed',
+      email: '',
+      phone: '',
+      monthlyIncome: '',
+      grossSalary: '',
+      takeHome: '',
+      retirementAge: '65',
+      customRetirementExpense: '',
+      monthlyInvestmentAmount: '',
+      investmentRates: { conservative: 0.05, moderate: 6, growth: 12 },
+      wealthTarget: '100000',
+      educationSettings: { 
+        inflationRate: '3', 
+        monthlyEducationCost: '800', 
+        educationStartAge: '7',
+        educationDuration: '10',
+        universityCost: '8750', 
+        universityDuration: '4' 
+      },
+      referenceYear: new Date().getFullYear(),
+      referenceMonth: new Date().getMonth(),
+      children: []
+    });
+    setExpenses({ housing: '', food: '', transport: '', insurance: '', entertainment: '', others: '' });
+    setCustomExpenses([]);
+    setRetirement({ initialSavings: '', scenario: 'moderate', investmentPercent: '100', customReturnRate: '' });
+    setCpfState({ currentBalances: { oa: '', sa: '', ma: '' }, withdrawals: [] });
+    
+    // UPDATED: Reset new cashflow fields
+    setCashflowState({ 
+      currentSavings: '', 
+      projectToAge: '100', 
+      bankInterestRate: '0.05', 
+      additionalIncomes: [], 
+      withdrawals: [], 
+      customBaseIncome: '', 
+      customRetirementIncome: '',
+      incomeMode: 'simple', 
+      incomeTiers: [] 
+    });
+
+    setPropertyState({ propertyPrice: '', propertyType: 'hdb', annualValue: '', downPaymentPercent: '25', loanTenure: '25', interestRate: '3.5', useCpfOa: true, cpfOaAmount: '' });
+    setWealthState({ annualPremium: '', projectionYears: '40', growthRate: '5' });
+    setInvestorState({ portfolioValue: '0', portfolioType: 'stock-picking' });
+    setInsuranceState({ policies: [], currentDeath: '', currentTPD: '', currentCI: '' });
+    setSaveStatus('idle');
+    setLastSavedTime(null);
+    setActiveTab('profile');
+  };
+  
+  const setFollowUp = (clientId: string, days: number) => {
+    const nextDate = new Date();
+    nextDate.setDate(nextDate.getDate() + days);
+    setClients(clients.map(c => 
+      c.id === clientId ? { ...c, followUp: { nextDate: nextDate.toISOString(), status: 'pending' } } : c
+    ));
+  };
+  
+  const completeFollowUp = (clientId: string) => {
+    setClients(clients.map(c => 
+      c.id === clientId ? { ...c, followUp: { ...c.followUp, status: 'completed' } } : c
+    ));
+  };
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="text-center">
+          <div className="text-4xl animate-bounce mb-2">🌱</div>
+          <div className="text-gray-500 text-sm">Loading Application...</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <>
+        <LandingPage onLogin={() => setShowLogin(true)} />
+        <AuthModal 
+          isOpen={showLogin} 
+          onClose={() => {
+             setShowLogin(false);
+             setAuthError(null);
+          }} 
+          initialError={authError}
+        />
+      </>
+    );
+  }
+
+  if (user.status !== 'approved') {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6">
+        <div className="bg-white max-w-md w-full p-8 rounded-2xl shadow-lg text-center">
+          {user.status === 'rejected' ? (
+             <>
+              <div className="text-6xl mb-4">🚫</div>
+              <h2 className="text-2xl font-bold text-red-600 mb-2">Access Denied</h2>
+              <p className="text-gray-600 mb-6">
+                Your account application has been reviewed and declined by the administrator.
+              </p>
+             </>
+          ) : (
+             <>
+              <div className="text-6xl mb-4 animate-pulse">⏳</div>
+              <h2 className="text-2xl font-bold text-gray-800 mb-2">Approval Pending</h2>
+              <p className="text-gray-600 mb-6">
+                Thanks for registering! Your account is currently under review. 
+                You will be able to access the dashboard once an administrator approves your account.
+              </p>
+              <div className="p-4 bg-blue-50 text-blue-800 text-xs rounded-lg mb-6">
+                Please contact the administrator if you need immediate access.
+              </div>
+             </>
+          )}
+          
+          <button 
+            onClick={signOut}
+            className="px-6 py-2 border border-gray-300 rounded-lg text-gray-600 hover:bg-gray-50 font-bold"
+          >
+            Sign Out
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <AppShell 
+        activeTab={activeTab} 
+        setActiveTab={setActiveTab}
+        onLoginClick={() => setShowLogin(true)}
+        onPricingClick={() => setShowPricing(true)}
+        onSaveClick={() => saveClient(false)}
+        clientRef={referenceCode}
+        clientName={profile.name}
+        saveStatus={saveStatus}
+        lastSavedTime={lastSavedTime}
+      >
+        {activeTab === 'disclaimer' && (
+          <ErrorBoundary>
+            <DisclaimerTab />
+          </ErrorBoundary>
+        )}
+        
+        {activeTab === 'profile' && (
+          <ErrorBoundary>
+            <ProfileTab 
+              profile={profile} 
+              setProfile={setProfile} 
+              age={age} 
+              cpfData={cpfData}
+              expenses={expenses}
+              setExpenses={setExpenses}
+              customExpenses={customExpenses}
+              setCustomExpenses={setCustomExpenses}
+              cashflowData={cashflowData}
+              clients={clients}
+              onLoadClient={loadClient}
+              onNewProfile={resetForm}
+            />
+          </ErrorBoundary>
+        )}
+        
+        {activeTab === 'children' && (
+          <ErrorBoundary>
+            <ChildrenTab 
+              children={profile.children || []} 
+              setChildren={(children) => setProfile({ ...profile, children })} 
+              ageYears={age}
+              profile={profile}
+              setProfile={setProfile} 
+            />
+          </ErrorBoundary>
+        )}
+        
+        {activeTab === 'cpf' && (
+          <ErrorBoundary>
+            <CpfTab 
+              cpfData={cpfData} 
+              age={age} 
+              cpfState={cpfState}
+              setCpfState={setCpfState}
+            />
+          </ErrorBoundary>
+        )}
+        
+        {activeTab === 'cashflow' && (
+          <ErrorBoundary>
+            <CashflowTab 
+              cpfData={cpfData} 
+              expenses={expenses} 
+              setExpenses={setExpenses} 
+              cashflowData={cashflowData}
+              profile={profile}
+              customExpenses={customExpenses}
+              setCustomExpenses={setCustomExpenses}
+              retirement={retirement}
+              cashflowState={cashflowState}
+              setCashflowState={setCashflowState}
+              // ADDED THESE PROPS:
+              age={age}
+              cpfState={cpfState}
+            />
+          </ErrorBoundary>
+        )}
+
+        {activeTab === 'insurance' && (
+          <ErrorBoundary>
+            <InsuranceTab 
+              insuranceState={insuranceState}
+              setInsuranceState={setInsuranceState}
+              profile={profile}
+            />
+          </ErrorBoundary>
+        )}
+        
+        {activeTab === 'life_events' && (
+           <ErrorBoundary>
+              <LifeEventsTab 
+                profile={profile}
+                insuranceState={insuranceState}
+                cashflowState={cashflowState}
+                investorState={investorState}
+                cpfState={cpfState}
+                cashflowData={cashflowData}
+                age={age}
+              />
+           </ErrorBoundary>
+        )}
+
+        {activeTab === 'retirement' && (
+          <ErrorBoundary>
+            <RetirementTab 
+              cashflowData={cashflowData}
+              retirement={retirement}
+              setRetirement={setRetirement}
+              profile={profile}
+              age={age}
+              investorState={investorState}
+              setInvestorState={setInvestorState}
+              cpfState={cpfState}
+              cashflowState={cashflowState}
+            />
+          </ErrorBoundary>
+        )}
+
+        {activeTab === 'investor' && (
+          <ErrorBoundary>
+            <InvestorTab 
+              investorState={investorState}
+              setInvestorState={setInvestorState}
+            />
+          </ErrorBoundary>
+        )}
+
+        {activeTab === 'wealth' && (
+          <ErrorBoundary>
+            <WealthToolTab 
+              wealthState={wealthState}
+              setWealthState={setWealthState}
+            />
+          </ErrorBoundary>
+        )}
+
+        {activeTab === 'property' && (
+          <ErrorBoundary>
+            <PropertyCalculatorTab 
+              age={age}
+              cpfData={cpfData}
+              propertyState={propertyState}
+              setPropertyState={setPropertyState}
+            />
+          </ErrorBoundary>
+        )}
+
+        {activeTab === 'analytics' && (
+          <ErrorBoundary>
+            <AnalyticsTab clients={clients} />
+          </ErrorBoundary>
+        )}
+
+        {activeTab === 'crm' && (
+          <ErrorBoundary>
+            <CrmTab 
+              clients={clients}
+              profile={profile}
+              selectedClientId={selectedClientId}
+              newClient={resetForm}
+              saveClient={() => saveClient(false)}
+              loadClient={loadClient}
+              deleteClient={deleteClient}
+              setFollowUp={setFollowUp}
+              completeFollowUp={completeFollowUp}
+              maxClients={maxClients}
+              userRole={user.role}
+              onRefresh={fetchClients}
+              isLoading={isClientLoading}
+            />
+          </ErrorBoundary>
+        )}
+
+        {activeTab === 'admin' && (
+          <ErrorBoundary>
+            <AdminTab />
+          </ErrorBoundary>
+        )}
+      </AppShell>
+
+      <AuthModal 
+        isOpen={showLogin} 
+        onClose={() => setShowLogin(false)} 
+      />
+
+      <PricingModal
+        isOpen={showPricing}
+        onClose={() => setShowPricing(false)}
+      />
+    </>
+  );
+}

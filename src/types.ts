@@ -138,12 +138,11 @@ export interface CashflowState {
   bankInterestRate: string;
   additionalIncomes: AdditionalIncome[];
   withdrawals: CashflowWithdrawal[];
-  // Existing single override
+  // NEW: Manual Overrides & Strategy
   customBaseIncome?: string;
-  // NEW: Strategy Mode
+  customRetirementIncome?: string;
   incomeMode?: 'simple' | 'tiered';
   incomeTiers?: BaseIncomeTier[]; 
-  customRetirementIncome?: string;
 }
 
 export interface PropertyState {
