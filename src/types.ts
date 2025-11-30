@@ -124,25 +124,15 @@ export interface CashflowWithdrawal {
   startMonth: number;
 }
 
-// NEW: Interface for Income Tiers
-export interface BaseIncomeTier {
-  id: number;
-  startAge: number;
-  endAge: number;
-  amount: string;
-}
-
 export interface CashflowState {
   currentSavings: string;
   projectToAge: string;
   bankInterestRate: string;
   additionalIncomes: AdditionalIncome[];
   withdrawals: CashflowWithdrawal[];
-  // NEW: Manual Overrides & Strategy
+  // Added fields
   customBaseIncome?: string;
   customRetirementIncome?: string;
-  incomeMode?: 'simple' | 'tiered';
-  incomeTiers?: BaseIncomeTier[]; 
 }
 
 export interface PropertyState {

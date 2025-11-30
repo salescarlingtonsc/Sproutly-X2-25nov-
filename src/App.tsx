@@ -55,7 +55,7 @@ export default function App() {
 
   // --- CORE DATA STATES ---
 
-  // 0. Reference Code
+  // 0. Reference Code (New Unique Identifier)
   const [referenceCode, setReferenceCode] = useState<string>('');
 
   // 1. Profile
@@ -72,7 +72,8 @@ export default function App() {
     retirementAge: '65',
     customRetirementExpense: '',
     monthlyInvestmentAmount: '',
-    investmentRates: { conservative: 0.05, moderate: 6, growth: 12 },
+    // Default chart settings
+    investmentRates: { conservative: 5, moderate: 6, growth: 12 },
     wealthTarget: '100000',
     educationSettings: { 
       inflationRate: '3', 
@@ -112,17 +113,13 @@ export default function App() {
     withdrawals: []
   });
 
-  // 5. Cashflow State (UPDATED DEFAULTS)
+  // 5. Cashflow State
   const [cashflowState, setCashflowState] = useState<CashflowState>({
     currentSavings: '',
     projectToAge: '100',
     bankInterestRate: '0.05',
     additionalIncomes: [],
-    withdrawals: [],
-    customBaseIncome: '',
-    customRetirementIncome: '',
-    incomeMode: 'simple',
-    incomeTiers: []
+    withdrawals: []
   });
 
   // 6. Property State
@@ -150,37 +147,46 @@ export default function App() {
     portfolioType: 'stock-picking'
   });
 
-  // 9. Insurance State
+  // 9. Insurance State (NEW)
   const [insuranceState, setInsuranceState] = useState<InsuranceState>({
-    policies: [], 
+    policies: [], // List of policies
     currentDeath: '',
     currentTPD: '',
     currentCI: ''
   });
   
+  // Helper to generate a unique reference code
   const generateRefCode = () => {
+    // Generates something like C-839201
     const num = Math.floor(100000 + Math.random() * 900000);
     return `C-${num}`;
   };
 
+  // Initialize reference code on mount if none exists
   useEffect(() => {
     if (!referenceCode && !selectedClientId) {
       setReferenceCode(generateRefCode());
     }
   }, []);
 
+  // --- COMPUTED VALUES ---
+
+  // Check for URL errors (Supabase Auth redirects)
   useEffect(() => {
     const hash = window.location.hash;
     if (hash && hash.includes('error=')) {
-      const params = new URLSearchParams(hash.substring(1));
+      // Extract error description
+      const params = new URLSearchParams(hash.substring(1)); // remove #
       const errorDesc = params.get('error_description');
+      const errorCode = params.get('error_code');
       if (errorDesc) {
         setAuthError(decodeURIComponent(errorDesc.replace(/\+/g, ' ')));
-        setShowLogin(true);
+        setShowLogin(true); // Open modal so they can try again
       }
     }
   }, []);
   
+  // Load Clients (Moved to useCallback for manual refresh)
   const fetchClients = useCallback(async () => {
     if (!user || user.status !== 'approved') return;
     setIsClientLoading(true);
@@ -194,6 +200,7 @@ export default function App() {
     }
   }, [user]);
 
+  // Initial Fetch
   useEffect(() => {
     fetchClients();
   }, [fetchClients]);
@@ -234,6 +241,7 @@ export default function App() {
     };
   }, [cpfData, profile.takeHome, expenses, customExpenses]);
   
+  // Calculate Max Clients allowed
   const maxClients = useMemo(() => {
      if (!user) return 1;
      return getClientLimit(user.subscriptionTier, user.extraSlots);
@@ -247,8 +255,10 @@ export default function App() {
       return;
     }
 
+    // CHECK PERMISSIONS & LIMITS
     const limit = maxClients;
     
+    // If we are creating a NEW client (not editing existing) and we hit the limit
     if (!selectedClientId && clients.length >= limit) {
       if (!isAutoSave) {
         setShowPricing(true);
@@ -259,6 +269,7 @@ export default function App() {
 
     if (isAutoSave) setSaveStatus('saving');
 
+    // Ensure reference code exists
     const finalRefCode = referenceCode || generateRefCode();
     if (!referenceCode) setReferenceCode(finalRefCode);
 
@@ -274,7 +285,7 @@ export default function App() {
       propertyState,
       wealthState,
       investorState,
-      insuranceState,
+      insuranceState, // Save Insurance Data
       lastUpdated: new Date().toISOString(),
       followUp: clients.find(c => c.id === selectedClientId)?.followUp || {
         nextDate: null,
@@ -285,18 +296,13 @@ export default function App() {
     try {
       const savedClient = await db.saveClient(clientData, user.id);
       
-      // Update local state
+      // Important: Update state with the authoritative object from DB (specifically ID)
       if (selectedClientId) {
         setClients(prev => prev.map(c => c.id === selectedClientId ? savedClient : c));
-        
-        // CRITICAL: If the ID changed (e.g. recovery from RLS ID conflict), update selection
-        if (savedClient.id !== selectedClientId) {
-           console.log(`Updated client ID from ${selectedClientId} to ${savedClient.id}`);
-           setSelectedClientId(savedClient.id);
-        }
       } else {
         setClients(prev => [savedClient, ...prev]);
-        setSelectedClientId(savedClient.id);
+        // IMPORTANT: Update ID so next auto-save updates this record instead of creating new one
+        setSelectedClientId(savedClient.id); 
       }
       
       setLastSavedTime(new Date());
@@ -309,38 +315,48 @@ export default function App() {
       console.error("Save failed", error);
       setSaveStatus('error');
       
-      let msg = 'Unknown error';
-      if (error instanceof Error) {
-        msg = error.message;
-      } else if (typeof error === 'object') {
-        try {
-          msg = JSON.stringify(error, null, 2);
-        } catch (e) {
-          msg = String(error);
-        }
-      } else {
-        msg = String(error);
-      }
-      
+      const msg = error?.message || error?.error_description || 'Unknown database error';
       if (!isAutoSave) alert(`Failed to save client: ${msg}`);
     }
   }, [user, maxClients, selectedClientId, clients, referenceCode, profile, expenses, customExpenses, retirement, cpfState, cashflowState, propertyState, wealthState, investorState, insuranceState]);
 
   // --- AUTO SAVE EFFECT ---
   useEffect(() => {
-    if (!selectedClientId) return;
+    // Auto-save conditions:
+    // 1. User is logged in
+    // 2. Profile has at least a name (to avoid saving empty junk)
+    if (!user || !profile.name || profile.name.length < 2) return;
+
+    // Debounce the save operation (wait 2 seconds after last change)
     const timeoutId = setTimeout(() => {
       saveClient(true);
     }, 2000);
+
     return () => clearTimeout(timeoutId);
-  }, [profile, expenses, customExpenses, retirement, cpfState, cashflowState, propertyState, wealthState, investorState, insuranceState, selectedClientId, saveClient]);
+  }, [
+    // Depend on all data states so any change triggers the debounce
+    profile, 
+    expenses, 
+    customExpenses, 
+    retirement, 
+    cpfState, 
+    cashflowState, 
+    propertyState, 
+    wealthState, 
+    investorState, 
+    insuranceState,
+    // Note: selectedClientId is NOT a dependency here to allow new profiles to autosave
+    // saveClient is a dependency
+    saveClient
+  ]);
   
-  const loadClient = (client: Client) => {
+  const loadClient = (client: Client, redirect = true) => {
     setSelectedClientId(client.id);
-    setReferenceCode(client.referenceCode || generateRefCode());
+    setReferenceCode(client.referenceCode || generateRefCode()); 
     
     // MIGRATION: Handle Education Settings
     const loadedEdu = (client.profile.educationSettings || {}) as any;
+    
     let monthlyEduCost = loadedEdu.monthlyEducationCost || '800';
     if (!loadedEdu.monthlyEducationCost && loadedEdu.primarySecondaryCost) {
        monthlyEduCost = String(Math.round(toNum(loadedEdu.primarySecondaryCost) / 12));
@@ -358,7 +374,7 @@ export default function App() {
     setProfile({ 
       ...client.profile, 
       children: client.profile.children || [],
-      investmentRates: client.profile.investmentRates || { conservative: 0.05, moderate: 6, growth: 12 },
+      investmentRates: client.profile.investmentRates || { conservative: 5, moderate: 6, growth: 12 },
       wealthTarget: client.profile.wealthTarget || '100000',
       educationSettings: safeEduSettings
     });
@@ -367,21 +383,7 @@ export default function App() {
     setCustomExpenses(client.customExpenses || []);
     setRetirement(client.retirement);
     setCpfState(client.cpfState || { currentBalances: { oa: '', sa: '', ma: '' }, withdrawals: [] });
-    
-    // UPDATED: Initialize new cashflow fields
-    const loadedCashflow = client.cashflowState || {} as Partial<CashflowState>;
-    setCashflowState({
-      currentSavings: loadedCashflow.currentSavings || '',
-      projectToAge: loadedCashflow.projectToAge || '100',
-      bankInterestRate: loadedCashflow.bankInterestRate || '0.05',
-      additionalIncomes: Array.isArray(loadedCashflow.additionalIncomes) ? loadedCashflow.additionalIncomes : [],
-      withdrawals: Array.isArray(loadedCashflow.withdrawals) ? loadedCashflow.withdrawals : [],
-      customBaseIncome: loadedCashflow.customBaseIncome || '',
-      customRetirementIncome: loadedCashflow.customRetirementIncome || '',
-      incomeMode: loadedCashflow.incomeMode || 'simple',
-      incomeTiers: Array.isArray(loadedCashflow.incomeTiers) ? loadedCashflow.incomeTiers : []
-    });
-
+    setCashflowState(client.cashflowState || { currentSavings: '', projectToAge: '100', bankInterestRate: '0.05', additionalIncomes: [], withdrawals: [] });
     setPropertyState(client.propertyState || { propertyPrice: '', propertyType: 'hdb', annualValue: '', downPaymentPercent: '25', loanTenure: '25', interestRate: '3.5', useCpfOa: true, cpfOaAmount: '' });
     setWealthState(client.wealthState || { annualPremium: '', projectionYears: '40', growthRate: '5' });
     setInvestorState(client.investorState || { portfolioValue: '0', portfolioType: 'stock-picking' });
@@ -389,7 +391,7 @@ export default function App() {
 
     setSaveStatus('idle');
     setLastSavedTime(new Date(client.lastUpdated));
-    setActiveTab('profile');
+    if (redirect) setActiveTab('profile');
   };
   
   const deleteClient = async (clientId: string) => {
@@ -409,7 +411,7 @@ export default function App() {
   
   const resetForm = () => {
     setSelectedClientId(null);
-    setReferenceCode(generateRefCode()); 
+    setReferenceCode(generateRefCode()); // Generate new Ref ID for new client
     setProfile({
       name: '',
       dob: '',
@@ -423,7 +425,7 @@ export default function App() {
       retirementAge: '65',
       customRetirementExpense: '',
       monthlyInvestmentAmount: '',
-      investmentRates: { conservative: 0.05, moderate: 6, growth: 12 },
+      investmentRates: { conservative: 5, moderate: 6, growth: 12 },
       wealthTarget: '100000',
       educationSettings: { 
         inflationRate: '3', 
@@ -441,23 +443,10 @@ export default function App() {
     setCustomExpenses([]);
     setRetirement({ initialSavings: '', scenario: 'moderate', investmentPercent: '100', customReturnRate: '' });
     setCpfState({ currentBalances: { oa: '', sa: '', ma: '' }, withdrawals: [] });
-    
-    // UPDATED: Reset new cashflow fields
-    setCashflowState({ 
-      currentSavings: '', 
-      projectToAge: '100', 
-      bankInterestRate: '0.05', 
-      additionalIncomes: [], 
-      withdrawals: [], 
-      customBaseIncome: '', 
-      customRetirementIncome: '',
-      incomeMode: 'simple', 
-      incomeTiers: [] 
-    });
-
+    setCashflowState({ currentSavings: '', projectToAge: '100', bankInterestRate: '0.05', additionalIncomes: [], withdrawals: [] });
     setPropertyState({ propertyPrice: '', propertyType: 'hdb', annualValue: '', downPaymentPercent: '25', loanTenure: '25', interestRate: '3.5', useCpfOa: true, cpfOaAmount: '' });
     setWealthState({ annualPremium: '', projectionYears: '40', growthRate: '5' });
-    setInvestorState({ portfolioValue: '0', portfolioType: 'stock-picking' });
+    setInvestorState({ portfolioValue: '0', portfolioType: 'stock-picking' }); // Reset to 0
     setInsuranceState({ policies: [], currentDeath: '', currentTPD: '', currentCI: '' });
     setSaveStatus('idle');
     setLastSavedTime(null);
@@ -478,6 +467,8 @@ export default function App() {
     ));
   };
 
+  // --- RENDER LOGIC ---
+
   if (isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
@@ -489,6 +480,7 @@ export default function App() {
     );
   }
 
+  // GATE 1: If not logged in, show Landing Page
   if (!user) {
     return (
       <>
@@ -505,6 +497,7 @@ export default function App() {
     );
   }
 
+  // GATE 2: If logged in but NOT approved
   if (user.status !== 'approved') {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6">
@@ -573,6 +566,7 @@ export default function App() {
               customExpenses={customExpenses}
               setCustomExpenses={setCustomExpenses}
               cashflowData={cashflowData}
+              // Pass CRM logic to Profile Tab
               clients={clients}
               onLoadClient={loadClient}
               onNewProfile={resetForm}
@@ -616,7 +610,6 @@ export default function App() {
               retirement={retirement}
               cashflowState={cashflowState}
               setCashflowState={setCashflowState}
-              // ADDED THESE PROPS:
               age={age}
               cpfState={cpfState}
             />
@@ -655,6 +648,7 @@ export default function App() {
               setRetirement={setRetirement}
               profile={profile}
               age={age}
+              // Passed full state for comprehensive calculator
               investorState={investorState}
               setInvestorState={setInvestorState}
               cpfState={cpfState}

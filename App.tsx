@@ -1,4 +1,5 @@
 
+
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { toNum, parseDob, monthsSinceDob } from './lib/helpers';
 import { computeCpf, computeRetirementProjection } from './lib/calculators';
@@ -73,7 +74,7 @@ export default function App() {
     customRetirementExpense: '',
     monthlyInvestmentAmount: '',
     // Default chart settings
-    investmentRates: { conservative: 0.05, moderate: 6, growth: 12 },
+    investmentRates: { conservative: 5, moderate: 6, growth: 12 },
     wealthTarget: '100000',
     educationSettings: { 
       inflationRate: '3', 
@@ -143,7 +144,7 @@ export default function App() {
 
   // 8. Investor State
   const [investorState, setInvestorState] = useState<InvestorState>({
-    portfolioValue: '0', // Changed from '500000' to '0'
+    portfolioValue: '0', 
     portfolioType: 'stock-picking'
   });
 
@@ -369,7 +370,7 @@ export default function App() {
     setProfile({ 
       ...client.profile, 
       children: client.profile.children || [],
-      investmentRates: client.profile.investmentRates || { conservative: 0.05, moderate: 6, growth: 12 },
+      investmentRates: client.profile.investmentRates || { conservative: 5, moderate: 6, growth: 12 },
       wealthTarget: client.profile.wealthTarget || '100000',
       educationSettings: safeEduSettings
     });
@@ -420,7 +421,7 @@ export default function App() {
       retirementAge: '65',
       customRetirementExpense: '',
       monthlyInvestmentAmount: '',
-      investmentRates: { conservative: 0.05, moderate: 6, growth: 12 },
+      investmentRates: { conservative: 5, moderate: 6, growth: 12 },
       wealthTarget: '100000',
       educationSettings: { 
         inflationRate: '3', 
@@ -605,6 +606,8 @@ export default function App() {
               retirement={retirement}
               cashflowState={cashflowState}
               setCashflowState={setCashflowState}
+              age={age}
+              cpfState={cpfState}
             />
           </ErrorBoundary>
         )}

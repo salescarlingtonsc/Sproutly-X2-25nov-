@@ -1,5 +1,4 @@
 
-
 import React, { useMemo } from 'react';
 import { toNum, fmtSGD } from '../../lib/helpers';
 import { projectComprehensiveWealth } from '../../lib/calculators';
@@ -133,7 +132,7 @@ const RetirementTab: React.FC<RetirementTabProps> = ({
           <div className="text-4xl">🚀</div>
           <div className="flex-1">
             <h3 className="m-0 text-indigo-900 text-xl font-bold">
-              Comprehensive Retirement Plan
+              Comprehensive Financial Independence Plan
             </h3>
             <p className="m-1 text-indigo-800 text-sm opacity-80">
               Integrating CPF Life (Standard Plan), Cash Savings, and Investment Returns.
@@ -169,7 +168,7 @@ const RetirementTab: React.FC<RetirementTabProps> = ({
                       type="number" 
                       value={investmentRatePercent}
                       onChange={(e) => setRetirement({...retirement, customReturnRate: e.target.value})}
-                      className="w-20 px-3 py-2 border rounded font-bold text-emerald-700"
+                      className="w-20 px-3 py-2 border rounded font-bold text-emerald-700 bg-white"
                     />
                     <div className="flex gap-1">
                        {[3, 5, 7, 9].map(r => (
@@ -245,12 +244,12 @@ const RetirementTab: React.FC<RetirementTabProps> = ({
            {/* BIG TARGET CARD */}
            <div className="bg-white border-2 border-indigo-600 rounded-xl p-6 mb-6 shadow-md relative overflow-hidden">
               <div className="absolute top-0 right-0 bg-indigo-600 text-white px-4 py-1 rounded-bl-xl text-xs font-bold">
-                 TARGET AGE: {retirementAge}
+                 TARGET FI AGE: {retirementAge}
               </div>
               
               <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                  <div>
-                    <h4 className="text-gray-500 text-xs font-bold uppercase tracking-wider mb-1">Projected Wealth at Age {retirementAge}</h4>
+                    <h4 className="text-gray-500 text-xs font-bold uppercase tracking-wider mb-1">Projected Wealth at FI Age {retirementAge}</h4>
                     <div className="text-3xl font-extrabold text-indigo-900 mb-2">{fmtSGD(totalWealthAtRetirement)}</div>
                     <div className="flex gap-2 text-xs">
                        <span className="px-2 py-1 bg-emerald-100 text-emerald-700 rounded font-bold">Inv: {fmtSGD(invAtRetirement)}</span>
@@ -283,7 +282,7 @@ const RetirementTab: React.FC<RetirementTabProps> = ({
                  
                  {/* Monthly Gap Calculation at Retirement */}
                  <div className="bg-white/60 p-3 rounded-lg text-right">
-                    <div className="text-xs text-gray-500 font-bold uppercase">Monthly Gap (at {retirementAge})</div>
+                    <div className="text-xs text-gray-500 font-bold uppercase">Monthly Gap (at FI Age {retirementAge})</div>
                     {(() => {
                        // We use the first year of retirement shortfall from projection
                        const firstRetirementYear = projection.find(p => p.age === retirementAge);

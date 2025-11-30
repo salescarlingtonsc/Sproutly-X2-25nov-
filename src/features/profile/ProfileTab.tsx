@@ -1,7 +1,9 @@
+
 import React, { useMemo, useState, useRef, useEffect } from 'react';
 import { toNum, fmtSGD, parseDob, monthsSinceDob } from '../../lib/helpers';
-import { computeCpf, calculateChildEducationCost } from '../../lib/calculators';
+import { computeCpf, calculateChildEducationCost, getBaseRetirementExpense } from '../../lib/calculators';
 import { getCpfRates, CPF_WAGE_CEILING } from '../../lib/cpfRules';
+import { EXPENSE_CATEGORIES } from '../../lib/config';
 import LabeledText from '../../components/common/LabeledText';
 import LabeledSelect from '../../components/common/LabeledSelect';
 import LineChart from '../../components/common/LineChart';
@@ -66,14 +68,20 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
   }, [clients, searchTerm]);
 
   // --- PERSISTENT INVESTMENT SETTINGS ---
-  const rate1 = profile.investmentRates?.conservative || 0.05;
-  const rate2 = profile.investmentRates?.moderate || 6;
-  const rate3 = profile.investmentRates?.growth || 12;
+  const rawRate1 = profile.investmentRates?.conservative ?? 5;
+  const rate1 = rawRate1 < 1 ? rawRate1 * 100 : rawRate1;
+  
+  const rawRate2 = profile.investmentRates?.moderate ?? 6;
+  const rate2 = rawRate2 < 1 ? rawRate2 * 100 : rawRate2;
+  
+  const rawRate3 = profile.investmentRates?.growth ?? 12;
+  const rate3 = rawRate3 < 1 ? rawRate3 * 100 : rawRate3;
+
   const customInvestmentTarget = profile.wealthTarget || '100000';
 
-  const setRate1 = (v: number) => setProfile({...profile, investmentRates: {...(profile.investmentRates || { conservative: 0.05, moderate: 6, growth: 12 }), conservative: v}});
-  const setRate2 = (v: number) => setProfile({...profile, investmentRates: {...(profile.investmentRates || { conservative: 0.05, moderate: 6, growth: 12 }), moderate: v}});
-  const setRate3 = (v: number) => setProfile({...profile, investmentRates: {...(profile.investmentRates || { conservative: 0.05, moderate: 6, growth: 12 }), growth: v}});
+  const setRate1 = (v: number) => setProfile({...profile, investmentRates: {...(profile.investmentRates || { conservative: 5, moderate: 6, growth: 12 }), conservative: v}});
+  const setRate2 = (v: number) => setProfile({...profile, investmentRates: {...(profile.investmentRates || { conservative: 5, moderate: 6, growth: 12 }), moderate: v}});
+  const setRate3 = (v: number) => setProfile({...profile, investmentRates: {...(profile.investmentRates || { conservative: 5, moderate: 6, growth: 12 }), growth: v}});
   const setCustomInvestmentTarget = (v: string) => setProfile({...profile, wealthTarget: v});
 
   // --- CALCULATIONS ---
@@ -91,11 +99,7 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
     return sum;
   }, [expenses, customExpenses]);
   
-  const monthlyRetirementExpenses = profile.customRetirementExpense && toNum(profile.customRetirementExpense, 0) > 0
-    ? toNum(profile.customRetirementExpense, 0)
-    : (totalMonthlyExpenses > 0 
-      ? totalMonthlyExpenses 
-      : (cpfData ? cpfData.takeHome * 0.7 : 0));
+  const monthlyRetirementExpenses = getBaseRetirementExpense(profile, totalMonthlyExpenses, cpfData, cashflowData);
   
   const yearsToRetirement = Math.max(1, toNum(profile.retirementAge, 65) - age);
   const lifeExpectancy = profile.gender === 'female' ? 86 : 82;
@@ -119,7 +123,7 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
 
   return (
     <div className="p-5">
-      {/* --- NEW: CLIENT MANAGEMENT TOOLBAR --- */}
+      {/* --- CLIENT MANAGEMENT TOOLBAR --- */}
       <div className="flex flex-col sm:flex-row justify-between items-end sm:items-center gap-4 mb-6 bg-white p-4 rounded-xl border border-gray-200 shadow-sm relative z-20">
           <div className="w-full sm:flex-1 relative" ref={searchRef}>
              <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">🔍 Find Existing Client</label>
@@ -133,7 +137,7 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
                   }}
                   onFocus={() => setShowDropdown(true)}
                   placeholder="Search by name or reference..."
-                  className="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                  className="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all bg-white text-gray-900"
                />
                <span className="absolute left-3 top-2.5 text-gray-400">🔎</span>
              </div>
@@ -212,7 +216,7 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
                 <div className="text-sm text-emerald-800 mt-1">
                   {profile.employmentStatus === 'employed' ? '💼 Employed' : '🏢 Self-Employed'} • 
                   {profile.gender === 'male' ? ' ♂️ Male' : ' ♀️ Female'} • 
-                  Target Retirement: Age {profile.retirementAge || 65}
+                  Target Financial Independence: Age {profile.retirementAge || 65}
                 </div>
               </div>
             </div>
@@ -376,7 +380,7 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
           </div>
         )}
 
-        {/* Financial Independence Section (IMPROVED LAYOUT) */}
+        {/* FINANCIAL INDEPENDENCE SECTION - ENHANCED (Single Source of Truth) */}
         <div className="mt-4 p-4 bg-gray-50 rounded-xl border border-gray-200">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
             <div>
@@ -406,12 +410,12 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
       <div className="bg-white border border-gray-200 rounded-xl p-6 mb-5 shadow-sm">
         <h3 className="mt-0 text-lg font-bold text-gray-800">💰 Monthly Expenses Breakdown</h3>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          {Object.keys(expenses).map((key) => (
+          {EXPENSE_CATEGORIES.map((cat) => (
             <LabeledText
-              key={key}
-              label={key.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')}
-              value={expenses[key]}
-              onChange={(v) => setExpenses({ ...expenses, [key]: v })}
+              key={cat.key}
+              label={cat.label}
+              value={expenses[cat.key]}
+              onChange={(v) => setExpenses({ ...expenses, [cat.key]: v })}
               placeholder='0'
             />
           ))}
@@ -545,7 +549,7 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
                 <div className="text-xs font-bold text-indigo-800 mb-2">💡 Financial Planning Insights:</div>
                 <div className="text-xs text-indigo-700 space-y-1.5 leading-relaxed">
                   <p>• <strong>Wealth Building Phase:</strong> You have {toNum(profile.retirementAge, 65) - Math.round(age)} years to save. Compound interest works best here.</p>
-                  <p>• <strong>Retirement Duration:</strong> Your money needs to last {retirementYears} years. Plan for {fmtSGD(futureMonthlyRetirementExpenses)}/month.</p>
+                  <p>• <strong>Financial Independence Duration:</strong> Your money needs to last {retirementYears} years. Plan for {fmtSGD(futureMonthlyRetirementExpenses)}/month.</p>
                   <p>• <strong>Required Nest Egg:</strong> Target {fmtSGD(retirementNestEgg)} by age {toNum(profile.retirementAge, 65)}.</p>
                 </div>
               </div>
@@ -677,14 +681,14 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
 
       {/* Retirement Expense Planning */}
       <div className="bg-white border border-gray-200 rounded-xl p-6 mb-5 shadow-sm">
-        <h3 className="mt-0 text-lg font-bold text-gray-800 mb-4">🌅 Retirement Expense Planning</h3>
+        <h3 className="mt-0 text-lg font-bold text-gray-800 mb-4">🌅 Financial Independence Expense Planning</h3>
         
         {/* Visual Retirement Journey Chart */}
         {age > 0 && retirementNestEgg > 0 && (
           <>
             <div className="mb-5 p-6 bg-gradient-to-br from-blue-50 to-blue-100 rounded-xl border-2 border-blue-500 shadow-sm">
               <h4 className="m-0 text-blue-800 text-lg font-bold mb-2 flex items-center gap-2">
-                <span className="text-2xl">📊</span> Your Wealth Building & Retirement Journey
+                <span className="text-2xl">📊</span> Your Wealth Building & Financial Independence Journey
               </h4>
               <p className="m-0 mb-4 text-blue-600 text-sm">
                 Visual timeline from age {Math.round(age)} to {lifeExpectancy}: See exactly when you're building wealth vs living off it
@@ -709,7 +713,7 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
                    <div className="text-3xl mb-2">🏖️</div>
                    <div className="text-xs font-bold text-amber-800 uppercase mb-1 tracking-wider">LIVING OFF WEALTH PHASE</div>
                    <div className="text-xl font-bold text-amber-900 mb-2">Age {toNum(profile.retirementAge, 65)} → {lifeExpectancy}</div>
-                   <div className="text-sm text-amber-800 mb-3">Retired, withdrawing from savings and investments</div>
+                   <div className="text-sm text-amber-800 mb-3">Financially independent, withdrawing from savings and investments</div>
                    <div className="inline-flex items-center gap-2 px-3 py-1.5 bg-white/80 rounded-md">
                      <span className="text-xs font-bold text-amber-800">Duration:</span>
                      <span className="text-base font-bold text-amber-600">{retirementYears} years</span>
@@ -785,20 +789,20 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
           
           <div className="max-w-md">
              <LabeledText
-              label='💰 Custom Retirement Monthly Expense (Before Inflation)'
+              label='💰 Custom Financial Independence Monthly Expense (Before Inflation)'
               value={profile.customRetirementExpense || ''}
               onChange={(val) => setProfile({ ...profile, customRetirementExpense: val })}
               placeholder={`Default: ${fmtSGD(monthlyRetirementExpenses)}`}
             />
              <div className="text-[10px] text-gray-500 mt-1 mb-4">
-               💡 Enter your expected monthly expenses in retirement (today's dollars). We'll automatically adjust for inflation over {yearsToRetirement} years.
+               💡 Enter your expected monthly expenses in financial independence (today's dollars). We'll automatically adjust for inflation over {yearsToRetirement} years.
              </div>
           </div>
 
           <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-sm text-emerald-900">
-             <div className="font-bold text-xs mb-1">📝 Retirement Calculation Using:</div>
+             <div className="font-bold text-xs mb-1">📝 Expense Calculation Using:</div>
              <div>Today's Monthly Expense: <strong>{fmtSGD(monthlyRetirementExpenses)}</strong></div>
-             <div className="mt-1 text-red-700 font-bold">
+             <div className="text-xs text-emerald-700 mt-1">
                After {yearsToRetirement} years @ 3% inflation: {fmtSGD(futureMonthlyRetirementExpenses)}/month
              </div>
           </div>
@@ -811,14 +815,14 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
            <h3 className="m-0 text-amber-900 text-xl font-bold mb-4">🎯 Your Complete Financial Blueprint</h3>
            
            <div className="mb-3 p-3 bg-white/70 rounded-lg">
-              <div className="text-xs text-amber-900 font-bold">📊 Retirement Expense Calculation:</div>
+              <div className="text-xs text-amber-900 font-bold">📊 Expense Calculation:</div>
               <div className="text-xs text-amber-900 mt-1">
                  Using {profile.customRetirementExpense ? 'custom' : 'calculated'} base: <strong>{fmtSGD(monthlyRetirementExpenses)}/month</strong>
               </div>
            </div>
 
            <div className="bg-emerald-500/10 p-4 rounded-lg border border-emerald-500/20 mb-4">
-              <div className="text-sm font-bold text-emerald-800 mb-1">🌅 Retirement Nest Egg Target</div>
+              <div className="text-sm font-bold text-emerald-800 mb-1">🌅 Financial Independence Nest Egg Target</div>
               <div className="text-3xl font-bold text-emerald-900">{fmtSGD(retirementNestEgg)}</div>
               <div className="text-xs text-emerald-700 mt-2">
                  {fmtSGD(futureMonthlyRetirementExpenses)}/month × {retirementYears} years
@@ -829,7 +833,7 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
            </div>
 
            <div className="bg-white p-5 rounded-lg border-2 border-emerald-500 text-center">
-              <div className="text-base font-bold text-emerald-800 mb-2">💎 TOTAL RETIREMENT GOAL</div>
+              <div className="text-base font-bold text-emerald-800 mb-2">💎 TOTAL FINANCIAL INDEPENDENCE GOAL</div>
               <div className="text-4xl font-extrabold text-emerald-600 mb-3">{fmtSGD(retirementNestEgg)}</div>
               <div className="text-xs text-emerald-800 mb-4">
                  This covers {retirementYears} years from age {toNum(profile.retirementAge, 65)} to {lifeExpectancy} at {fmtSGD(futureMonthlyRetirementExpenses)}/month
@@ -866,7 +870,7 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
               </div>
               <div className="bg-red-200/50 p-4 rounded-lg">
                  <div className="text-2xl font-bold text-red-900 mb-1">{fmtSGD(futureMonthlyRetirementExpenses).replace('SGD ', '$')}</div>
-                 <div className="text-xs text-red-800 leading-tight"><strong>What YOUR lifestyle will cost</strong> at retirement in {yearsToRetirement} years!</div>
+                 <div className="text-xs text-red-800 leading-tight"><strong>What YOUR lifestyle will cost</strong> at financial independence in {yearsToRetirement} years!</div>
               </div>
            </div>
         </div>
@@ -878,7 +882,7 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
             <div className="flex items-start gap-3">
                <div className="text-3xl">💡</div>
                <div className="flex-1">
-                  <h4 className="m-0 text-amber-900 text-lg font-bold mb-2">Your Retirement Income Strategy: Year {new Date().getFullYear() + yearsToRetirement}</h4>
+                  <h4 className="m-0 text-amber-900 text-lg font-bold mb-2">Your Financial Independence Income Strategy: Year {new Date().getFullYear() + yearsToRetirement}</h4>
                   <div className="text-sm text-amber-900 mb-4 leading-relaxed">
                      CPF Life provides a <strong>safety net</strong> with monthly payouts that escalate over time. 
                      The <strong>Escalating Plan</strong> starts at ~$1,379. But will it be enough?
@@ -907,7 +911,7 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
                            {/* Future Needs */}
                            <div className="p-4 bg-white rounded-lg border-2 border-amber-500 flex justify-between items-center">
                               <div>
-                                 <div className="font-bold text-amber-900 text-xs mb-1">💰 Same Lifestyle at Retirement</div>
+                                 <div className="font-bold text-amber-900 text-xs mb-1">💰 Same Lifestyle at Financial Independence</div>
                                  <div className="text-[10px] text-amber-600">After {yearsToRetirement} years of 3% inflation</div>
                               </div>
                               <div className="text-xl font-bold text-amber-600">{fmtSGD(futureMonthlyRetirementExpenses)}/m</div>
@@ -915,7 +919,7 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
 
                            {/* Income Breakdown */}
                            <div className="p-5 bg-white rounded-lg border-2 border-emerald-500">
-                              <div className="text-sm font-bold text-emerald-800 mb-3">🏛️ Your Retirement Income Sources:</div>
+                              <div className="text-sm font-bold text-emerald-800 mb-3">🏛️ Your Financial Independence Income Sources:</div>
                               
                               {/* CPF Life */}
                               <div className="flex justify-between items-center mb-2 p-3 bg-emerald-50 rounded-lg">
@@ -1061,7 +1065,7 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
                   <div className="text-sm font-bold text-purple-900 mb-2">📊 Total Financial Goals (Inflation-Adjusted):</div>
                   <div className="grid gap-3">
                      <div className="bg-purple-50 p-3 rounded-lg flex justify-between items-center">
-                        <span className="text-sm text-purple-900">🌅 Retirement Nest Egg</span>
+                        <span className="text-sm text-purple-900">🌅 Financial Independence Nest Egg</span>
                         <span className="text-base font-bold text-purple-900">{fmtSGD(retirementNestEgg)}</span>
                      </div>
                      <div className="bg-purple-50 p-3 rounded-lg flex justify-between items-center">
@@ -1092,7 +1096,7 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
             <div className="flex items-start gap-3 mb-3">
                <div className="text-3xl">🗓️</div>
                <div className="flex-1">
-                  <h4 className="m-0 text-sky-900 text-lg font-bold">Your Actual Retirement Timeline with Children</h4>
+                  <h4 className="m-0 text-sky-900 text-lg font-bold">Your Actual Financial Independence Timeline with Children</h4>
                </div>
             </div>
             
@@ -1126,23 +1130,23 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
                return (
                   <div className="text-sm text-sky-900 leading-relaxed space-y-3">
                      <div className="bg-white/70 p-3 rounded border border-sky-300">
-                        📅 Standard Retirement Plan: <strong>Age {standardRetirementAge}</strong>
+                        📅 Standard Financial Independence Plan: <strong>Age {standardRetirementAge}</strong>
                      </div>
                      
                      <div className={`p-4 rounded-lg border-2 ${delayedYears > 0 ? 'bg-amber-50 border-amber-400' : 'bg-emerald-50 border-emerald-400'}`}>
                         <div className={`font-bold text-base mb-2 ${delayedYears > 0 ? 'text-amber-800' : 'text-emerald-800'}`}>
-                           {delayedYears > 0 ? '⚠️' : '✅'} Your Realistic Retirement: Age {Math.round(latestRetirement.age)} ({latestRetirement.year})
+                           {delayedYears > 0 ? '⚠️' : '✅'} Your Realistic Financial Independence: Age {Math.round(latestRetirement.age)} ({latestRetirement.year})
                         </div>
                         <div className="text-xs mb-2 opacity-90">
                            {latestRetirement.childName} finishes university in {latestRetirement.year} when you'll be {Math.round(latestRetirement.age)} years old.
                         </div>
                         {delayedYears > 0 ? (
                            <div className="font-bold text-amber-900 text-xs">
-                              ⏰ That's {Math.round(delayedYears)} years later than standard retirement! Plan your savings to last from Age {Math.round(latestRetirement.age)}.
+                              ⏰ That's {Math.round(delayedYears)} years later than standard financial independence! Plan your wealth to last from Age {Math.round(latestRetirement.age)}.
                            </div>
                         ) : (
                            <div className="font-bold text-emerald-900 text-xs">
-                              🎉 Great news! You can retire on schedule while supporting your children's education.
+                              🎉 Great news! You can achieve financial independence on schedule while supporting your children's education.
                            </div>
                         )}
                      </div>

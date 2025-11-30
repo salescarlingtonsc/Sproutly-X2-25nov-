@@ -1,3 +1,4 @@
+
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { UserProfile, SubscriptionTier } from '../types';
@@ -72,8 +73,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         .eq('id', uid)
         .single();
       
-      // Auto-create for new users if not found
-      if ((!data && !error) || (error && error.code === 'PGRST116')) {
+      // Auto-create/Upsert for new users if not found or error
+      if (!data || error) {
         const newProfile = {
           id: uid,
           email: email,
@@ -83,8 +84,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           extra_slots: 0,
           created_at: new Date().toISOString()
         };
-        await supabase.from('profiles').insert(newProfile);
-        data = newProfile;
+        
+        // Use UPSERT to handle race conditions or previous partial failures
+        const { data: insertedData, error: insertError } = await supabase
+          .from('profiles')
+          .upsert(newProfile)
+          .select()
+          .single();
+          
+        if (!insertError && insertedData) {
+           data = insertedData;
+        } else {
+           // Fallback to local object if DB fails (prevents app crash)
+           data = newProfile;
+        }
       }
 
       // Auto-sync Admin Role

@@ -8,42 +8,23 @@ export const db = {
   getClients: async (userId?: string): Promise<Client[]> => {
     // 1. Try Cloud Fetch
     if (userId && isSupabaseConfigured() && supabase) {
-      const { data, error } = await supabase
-        .from('clients')
-        .select('*')
-        .order('updated_at', { ascending: false });
-        
-      if (!error && data) {
-        // Robust Owner Email Fetching (simulating a join)
-        const clients = data.map((row: any) => ({
-          ...row.data, 
-          id: row.id,
-          _ownerId: row.user_id // Temporary internal use
-        }));
-
-        try {
-          const userIds = [...new Set(clients.map((c: any) => c._ownerId))];
-          if (userIds.length > 0) {
-            const { data: profiles } = await supabase
-              .from('profiles')
-              .select('id, email')
-              .in('id', userIds);
-            
-            if (profiles) {
-              const emailMap = new Map(profiles.map((p: any) => [p.id, p.email]));
-              clients.forEach((c: any) => {
-                c.ownerEmail = emailMap.get(c._ownerId);
-                delete c._ownerId;
-              });
-            }
-          }
-        } catch (e) {
-          console.warn("Failed to fetch owner emails for analytics", e);
+      try {
+        const { data, error } = await supabase
+          .from('clients')
+          .select('*')
+          .order('updated_at', { ascending: false });
+          
+        if (!error && data) {
+          const clients = data.map((row: any) => ({
+            ...row.data, 
+            id: row.id,
+            _ownerId: row.user_id
+          }));
+          return clients;
         }
-        
-        return clients;
+      } catch (e) {
+        console.warn("Cloud fetch failed, falling back to local.", e);
       }
-      console.warn("Cloud fetch failed, checking local storage:", error);
     }
 
     // 2. Local Storage Fallback
@@ -67,63 +48,34 @@ export const db = {
     // 1. Try Cloud Save
     if (isSupabaseConfigured() && supabase) {
       try {
-        const { data: { user } } = await supabase.auth.getUser();
+        const { data: { session } } = await supabase.auth.getSession();
+        const activeUserId = session?.user?.id || userId;
         
-        if (user) {
-           const activeUserId = user.id;
-           
-           // STRATEGY: Try UPDATE first. If that fails (RLS or not found), Insert as NEW.
-           // This avoids the 'upsert' RLS violation where we try to insert with an ID we don't own.
+        if (activeUserId) {
+           // Upsert Logic: Forces the current user_id onto the record
+           const payload = {
+             id: client.id && client.id.length > 20 ? client.id : undefined, // Let DB gen ID if missing
+             user_id: activeUserId,
+             data: clientToSave,
+             updated_at: new Date().toISOString()
+           };
 
-           // A. Attempt UPDATE if we have a valid UUID
-           if (client.id && client.id.length > 20) {
-              const { data, error } = await supabase
-                .from('clients')
-                .update({
-                  user_id: activeUserId,
-                  data: clientToSave,
-                  updated_at: new Date().toISOString()
-                })
-                .eq('id', client.id)
-                .select()
-                .maybeSingle();
+           const { data, error } = await supabase
+             .from('clients')
+             .upsert(payload)
+             .select()
+             .single();
 
-              if (!error && data) {
-                 cloudResult = { ...data.data, id: data.id };
-                 savedToCloud = true;
-              }
-           }
-
-           // B. Attempt INSERT if Update didn't happen
-           // (Either it was a new record, or RLS hid the old record, so we save a fresh copy)
-           if (!savedToCloud) {
-              // Strip ID to ensure DB generates a fresh one
-              const { id, ...cleanData } = clientToSave;
-              
-              // Ensure the data JSON blob also doesn't carry the old ID
-              const dataBlob = { ...cleanData };
-              if ('id' in dataBlob) delete (dataBlob as any).id;
-
-              const { data, error } = await supabase
-                .from('clients')
-                .insert({
-                  user_id: activeUserId,
-                  data: dataBlob,
-                  updated_at: new Date().toISOString()
-                })
-                .select()
-                .single();
-              
-              if (error) throw error;
-              if (data) {
-                 cloudResult = { ...data.data, id: data.id };
-                 savedToCloud = true;
-              }
+           if (!error && data) {
+              cloudResult = { ...data.data, id: data.id };
+              savedToCloud = true;
+           } else if (error) {
+             console.warn("Supabase Save Error (Handled):", error.message);
+             // We intentionally swallow this error to fallback to local storage
            }
         }
       } catch (err) {
-        console.warn("Cloud save failed (RLS or Network), falling back to local storage.", err);
-        // Do NOT throw. Fallthrough to local storage logic below.
+        console.warn("Cloud connection failed, using local storage.", err);
       }
     }
 
@@ -132,11 +84,10 @@ export const db = {
     }
 
     // 2. Local Storage Fallback
-    console.log("Saving to Local Storage (Offline Mode or Cloud Error)");
+    // If cloud failed (RLS, Network, Auth), we save locally so work is never lost.
     const currentClientsStr = localStorage.getItem(LOCAL_STORAGE_KEY);
     let currentClients: Client[] = currentClientsStr ? JSON.parse(currentClientsStr) : [];
     
-    // Ensure ID exists for local
     if (!clientToSave.id) {
        clientToSave.id = crypto.randomUUID();
     }
@@ -156,13 +107,9 @@ export const db = {
     // 1. Try Cloud Delete
     if (isSupabaseConfigured() && supabase) {
       try {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (user?.id) {
-          const { error } = await supabase.from('clients').delete().eq('id', clientId);
-          if (error) console.warn("Cloud delete warning:", error);
-        }
+        await supabase.from('clients').delete().eq('id', clientId);
       } catch (e) {
-        console.warn("Cloud delete failed:", e);
+        console.warn("Cloud delete failed", e);
       }
     }
 

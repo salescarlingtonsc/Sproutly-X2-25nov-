@@ -131,6 +131,8 @@ export interface CashflowState {
   bankInterestRate: string;
   additionalIncomes: AdditionalIncome[];
   withdrawals: CashflowWithdrawal[];
+  customBaseIncome?: string;
+  customRetirementIncome?: string;
 }
 
 export interface PropertyState {

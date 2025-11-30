@@ -1,5 +1,6 @@
 
-import { SubscriptionTier } from '../types';
+
+import { SubscriptionTier, Expenses } from '../types';
 
 // ============================================================================
 // ⚙️ CONFIGURATION SETTINGS
@@ -52,6 +53,15 @@ export const TAB_DEFINITIONS = [
   { id: 'property', label: 'Property', icon: '🏠' },
   { id: 'analytics', label: 'AI Analytics', icon: '🤖' },
   { id: 'crm', label: 'CRM', icon: '📋' }
+];
+
+export const EXPENSE_CATEGORIES: { key: keyof Expenses; label: string }[] = [
+  { key: 'housing', label: 'Housing' },
+  { key: 'food', label: 'Food & Dining' },
+  { key: 'transport', label: 'Transport' },
+  { key: 'insurance', label: 'Insurance' },
+  { key: 'entertainment', label: 'Entertainment' },
+  { key: 'others', label: 'Others' }
 ];
 
 export const canAccessTab = (tier: SubscriptionTier, tabId: string): boolean => {
