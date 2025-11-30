@@ -2,107 +2,93 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../../lib/supabase';
 import { 
   Profile, Expenses, CashflowState, CustomExpense, CpfState, RetirementSettings, 
-  PropertyState, WealthState, InvestorState, InsuranceState, CpfData, CashflowData 
+  CpfData 
 } from '../../types';
 import { toNum, parseDob, monthsSinceDob } from '../../lib/helpers';
 import { computeCpf } from '../../lib/calculators';
-import AppShell from '../../components/layout/AppShell';
 
 // Child Imports
 import ProfileTab from '../profile/ProfileTab';
 import CashflowTab from '../planning/CashflowTab';
-import ChildrenTab from '../children/ChildrenTab';
-import CpfTab from '../cpf/CpfTab';
-import RetirementTab from '../planning/RetirementTab';
-import InvestorTab from '../investor/InvestorTab';
-import WealthToolTab from '../wealth/WealthToolTab';
-import PropertyCalculatorTab from '../property/PropertyCalculatorTab';
-import InsuranceTab from '../insurance/InsuranceTab';
-import LifeEventsTab from '../life-events/LifeEventsTab';
-import AnalyticsTab from '../analytics/AnalyticsTab';
+
+// Default states for initialization
+const defaultProfile: Profile = {
+  name: '', dob: '', gender: 'male', employmentStatus: 'employed', email: '', phone: '',
+  monthlyIncome: '', grossSalary: '', takeHome: '', retirementAge: '65',
+  investmentRates: { conservative: 5, moderate: 6, growth: 12 },
+  wealthTarget: '100000',
+  referenceYear: new Date().getFullYear(), referenceMonth: new Date().getMonth(),
+  children: []
+};
+const defaultCashflowState: CashflowState = {
+  currentSavings: '', projectToAge: '100', bankInterestRate: '0.05',
+  additionalIncomes: [], withdrawals: []
+};
+const defaultExpenses: Expenses = {
+  housing: '', food: '', transport: '', insurance: '', entertainment: '', others: ''
+};
 
 interface FinancialPlannerPageProps {
   activeProfileId: string;
 }
 
 export default function FinancialPlannerPage({ activeProfileId }: FinancialPlannerPageProps) {
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [activeTab, setActiveTab] = useState('profile'); // Default tab
-
   // --- STATE DEFINITIONS ---
-  const [profile, setProfile] = useState<Profile>({
-    name: '', dob: '', gender: 'male', employmentStatus: 'employed', email: '', phone: '',
-    monthlyIncome: '', grossSalary: '', takeHome: '', retirementAge: '65',
-    investmentRates: { conservative: 5, moderate: 6, growth: 12 },
-    wealthTarget: '100000',
-    referenceYear: new Date().getFullYear(), referenceMonth: new Date().getMonth(),
-    children: []
-  });
-  const [cashflowState, setCashflowState] = useState<CashflowState>({
-    currentSavings: '', projectToAge: '100', bankInterestRate: '0.05',
-    additionalIncomes: [], withdrawals: []
-  });
-  const [expenses, setExpenses] = useState<Expenses>({
-    housing: '', food: '', transport: '', insurance: '', entertainment: '', others: ''
-  });
+  const [profile, setProfile] = useState<Profile>(defaultProfile);
+  const [cashflowState, setCashflowState] = useState<CashflowState>(defaultCashflowState);
+  const [expenses, setExpenses] = useState<Expenses>(defaultExpenses);
   const [customExpenses, setCustomExpenses] = useState<CustomExpense[]>([]);
+  
+  // Additional states needed by children
+  const [retirement, setRetirement] = useState<RetirementSettings>({
+    initialSavings: '', scenario: 'moderate', investmentPercent: '100'
+  });
   const [cpfState, setCpfState] = useState<CpfState>({
     currentBalances: { oa: '', sa: '', ma: '' }, withdrawals: []
   });
-  const [retirement, setRetirement] = useState<RetirementSettings>({
-    initialSavings: '', scenario: 'moderate', investmentPercent: '100', customReturnRate: ''
-  });
-  const [propertyState, setPropertyState] = useState<PropertyState>({
-    propertyPrice: '', propertyType: 'hdb', annualValue: '', downPaymentPercent: '25', loanTenure: '25', interestRate: '3.5', useCpfOa: true, cpfOaAmount: ''
-  });
-  const [wealthState, setWealthState] = useState<WealthState>({
-    annualPremium: '', projectionYears: '40', growthRate: '5'
-  });
-  const [investorState, setInvestorState] = useState<InvestorState>({
-    portfolioValue: '0', portfolioType: 'stock-picking'
-  });
-  const [insuranceState, setInsuranceState] = useState<InsuranceState>({
-    policies: [], currentDeath: '', currentTPD: '', currentCI: ''
-  });
+  
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [activeTab, setActiveTab] = useState('profile');
 
-  // --- COMPUTED VALUES ---
+  // --- COMPUTED VALUES (Passed to children) ---
   const age = useMemo(() => {
-    const dob = parseDob(profile.dob);
-    if (!dob) return 0;
-    const months = monthsSinceDob(dob, profile.referenceYear, profile.referenceMonth);
-    return Math.floor(months / 12);
+     const dob = parseDob(profile.dob);
+     if (!dob) return 0;
+     return Math.floor(monthsSinceDob(dob, profile.referenceYear, profile.referenceMonth)/12);
   }, [profile.dob, profile.referenceYear, profile.referenceMonth]);
 
   const cpfData = useMemo(() => {
-    const income = toNum(profile.grossSalary || profile.monthlyIncome);
-    if (income === 0 || age === 0) return null;
-    return computeCpf(income, age);
+     const income = toNum(profile.grossSalary || profile.monthlyIncome);
+     if (income === 0 || age === 0) return null;
+     return computeCpf(income, age);
   }, [profile.grossSalary, profile.monthlyIncome, age]);
 
   const cashflowData = useMemo(() => {
-    if (!cpfData && !profile.takeHome) return null;
-    const takeHome = toNum(profile.takeHome) || (cpfData ? cpfData.takeHome : 0);
-    let totalExpenses = Object.values(expenses).reduce((sum, val) => sum + toNum(val), 0);
-    customExpenses.forEach(exp => totalExpenses += toNum(exp.amount, 0));
-    
-    const monthlySavings = takeHome - totalExpenses;
-    return {
-      takeHome, totalExpenses, monthlySavings,
-      annualSavings: monthlySavings * 12,
-      savingsRate: takeHome > 0 ? (monthlySavings / takeHome * 100) : 0
-    };
+     const takeHome = toNum(profile.takeHome) || (cpfData ? cpfData.takeHome : 0);
+     let total = Object.values(expenses).reduce((a,b)=>a+toNum(b),0);
+     customExpenses.forEach(c => total += toNum(c.amount));
+     const savings = takeHome - total;
+     return {
+        takeHome,
+        totalExpenses: total,
+        monthlySavings: savings,
+        annualSavings: savings * 12,
+        savingsRate: takeHome ? (savings/takeHome)*100 : 0
+     };
   }, [cpfData, profile.takeHome, expenses, customExpenses]);
 
-  // --- LOAD DATA ON MOUNT ---
+  // --- LOAD DATA FROM SUPABASE ---
   useEffect(() => {
     async function loadProfile() {
+      if (!supabase) return;
       setLoading(true);
-      const { data: userData } = await supabase!.auth.getUser();
-      const user = userData?.user;
-      if (!user || !activeProfileId) return;
 
-      const { data, error } = await supabase!
+      const { data: userData } = await supabase.auth.getUser();
+      const user = userData?.user;
+      if (!user) return;
+
+      const { data } = await supabase
         .from('client_profiles')
         .select('*')
         .eq('user_id', user.id)
@@ -110,152 +96,103 @@ export default function FinancialPlannerPage({ activeProfileId }: FinancialPlann
         .single();
 
       if (data) {
-        setProfile(data.profile || profile);
-        setCashflowState(data.cashflow_state || cashflowState);
-        setExpenses(data.expenses || expenses);
-        setCustomExpenses(data.custom_expenses || customExpenses);
-        // Load other states if schema supports them, assuming JSONB extension
-        if (data.cpf_state) setCpfState(data.cpf_state);
-        if (data.retirement_settings) setRetirement(data.retirement_settings);
-        if (data.property_state) setPropertyState(data.property_state);
-        if (data.wealth_state) setWealthState(data.wealth_state);
-        if (data.investor_state) setInvestorState(data.investor_state);
-        if (data.insurance_state) setInsuranceState(data.insurance_state);
+        setProfile(data.profile || defaultProfile);
+        setCashflowState(data.cashflow_state || defaultCashflowState);
+        setExpenses(data.expenses || defaultExpenses);
+        setCustomExpenses(data.custom_expenses || []);
       }
+
       setLoading(false);
     }
+
     loadProfile();
   }, [activeProfileId]);
 
-  // --- AUTOSAVE EFFECT ---
+  // --- AUTOSAVE (NO LOCAL STORAGE) ---
   useEffect(() => {
-    if (loading) return;
+    if (loading || !supabase) return;
 
     const timeout = setTimeout(async () => {
       setSaving(true);
-      const { data: userData } = await supabase!.auth.getUser();
+
+      const { data: userData } = await supabase.auth.getUser();
       const user = userData?.user;
-      if (!user) return;
+      if (!user) {
+        console.error("Autosave failed: No authenticated user.");
+        setSaving(false);
+        return;
+      }
 
       // Upsert to client_profiles table
-      await supabase!.from('client_profiles').upsert({
+      const { error } = await supabase.from('client_profiles').upsert({
         user_id: user.id,
         profile_id: activeProfileId,
         profile,
         cashflow_state: cashflowState,
         expenses,
         custom_expenses: customExpenses,
-        // Extra fields mapping
-        cpf_state: cpfState,
-        retirement_settings: retirement,
-        property_state: propertyState,
-        wealth_state: wealthState,
-        investor_state: investorState,
-        insurance_state: insuranceState,
         updated_at: new Date().toISOString()
-      });
+      }, { onConflict: 'user_id, profile_id' });
+
+      if (error) {
+        console.error("Autosave error:", error);
+      }
 
       setSaving(false);
     }, 800); // debounce
 
     return () => clearTimeout(timeout);
-  }, [
-    profile, cashflowState, expenses, customExpenses, 
-    cpfState, retirement, propertyState, wealthState, investorState, insuranceState,
-    loading, activeProfileId
-  ]);
+  }, [profile, cashflowState, expenses, customExpenses, loading, activeProfileId]);
 
   // --- RENDER ---
   return (
-    <AppShell 
-      activeTab={activeTab} 
-      setActiveTab={setActiveTab} 
-      onLoginClick={() => {}} 
-      onPricingClick={() => {}} 
-      onSaveClick={() => {}}
-      clientName={profile.name}
-      saveStatus={saving ? 'saving' : 'saved'}
-    >
-      {activeTab === 'profile' && (
-        <ProfileTab
-          profile={profile}
-          setProfile={setProfile}
-          age={age}
-          cpfData={cpfData}
-          expenses={expenses}
-          setExpenses={setExpenses}
-          customExpenses={customExpenses}
-          setCustomExpenses={setCustomExpenses}
-          cashflowData={cashflowData}
-        />
-      )}
-      
-      {activeTab === 'cashflow' && (
-        <CashflowTab
-          profile={profile}
-          expenses={expenses}
-          setExpenses={setExpenses}
-          customExpenses={customExpenses}
-          setCustomExpenses={setCustomExpenses}
-          cashflowData={cashflowData}
-          cashflowState={cashflowState}
-          setCashflowState={setCashflowState}
-          retirement={retirement}
-          age={age}
-          cpfData={cpfData}
-          cpfState={cpfState}
-        />
-      )}
+    <div className="min-h-screen bg-gray-50">
+      <div className="sticky top-0 bg-white border-b border-gray-200 z-10 px-6 py-3 flex justify-between items-center">
+         <div className="flex gap-2">
+            <button onClick={() => setActiveTab('profile')} className={`px-4 py-2 rounded ${activeTab === 'profile' ? 'bg-blue-100 text-blue-700 font-bold' : 'text-gray-600'}`}>Profile</button>
+            <button onClick={() => setActiveTab('cashflow')} className={`px-4 py-2 rounded ${activeTab === 'cashflow' ? 'bg-blue-100 text-blue-700 font-bold' : 'text-gray-600'}`}>Cashflow</button>
+         </div>
+         
+         {/* SAVE STATUS UI */}
+         {saving ? (
+            <div className="text-xs text-blue-500 font-bold animate-pulse">Saving...</div>
+         ) : (
+            <div className="text-xs text-green-600 font-bold">All changes saved</div>
+         )}
+      </div>
 
-      {/* Other tabs wired similarly */}
-      {activeTab === 'children' && (
-        <ChildrenTab 
-          children={profile.children || []}
-          setChildren={(c) => setProfile({...profile, children: c})}
-          ageYears={age}
-          profile={profile}
-          setProfile={setProfile}
-        />
-      )}
+      <div className="max-w-7xl mx-auto py-6">
+        {activeTab === 'profile' && (
+          <ProfileTab
+            profile={profile}
+            setProfile={setProfile}
+            age={age}
+            cpfData={cpfData}
+            expenses={expenses}
+            setExpenses={setExpenses}
+            customExpenses={customExpenses}
+            setCustomExpenses={setCustomExpenses}
+            cashflowData={cashflowData}
+          />
+        )}
 
-      {activeTab === 'cpf' && (
-         <CpfTab cpfData={cpfData} age={age} cpfState={cpfState} setCpfState={setCpfState} />
-      )}
-
-      {activeTab === 'insurance' && (
-         <InsuranceTab insuranceState={insuranceState} setInsuranceState={setInsuranceState} profile={profile} />
-      )}
-
-      {activeTab === 'retirement' && (
-         <RetirementTab 
-            cashflowData={cashflowData} retirement={retirement} setRetirement={setRetirement}
-            profile={profile} age={age} investorState={investorState} setInvestorState={setInvestorState}
-            cpfState={cpfState} cashflowState={cashflowState}
-         />
-      )}
-
-      {activeTab === 'investor' && (
-         <InvestorTab investorState={investorState} setInvestorState={setInvestorState} />
-      )}
-
-      {activeTab === 'wealth' && (
-         <WealthToolTab wealthState={wealthState} setWealthState={setWealthState} />
-      )}
-
-      {activeTab === 'property' && (
-         <PropertyCalculatorTab age={age} cpfData={cpfData} propertyState={propertyState} setPropertyState={setPropertyState} />
-      )}
-      
-      {activeTab === 'life_events' && (
-        <LifeEventsTab 
-          profile={profile} insuranceState={insuranceState} cashflowState={cashflowState}
-          investorState={investorState} cpfState={cpfState} cashflowData={cashflowData} age={age}
-        />
-      )}
-
-      {activeTab === 'analytics' && (
-         <AnalyticsTab clients={[]} /> // Placeholder for analytics which usually requires all clients
-      )}
-    </AppShell>
+        {activeTab === 'cashflow' && (
+          <CashflowTab
+            profile={profile}
+            expenses={expenses}
+            setExpenses={setExpenses}
+            customExpenses={customExpenses}
+            setCustomExpenses={setCustomExpenses}
+            cashflowData={cashflowData}
+            cashflowState={cashflowState}
+            setCashflowState={setCashflowState}
+            retirement={retirement}
+            age={age}
+            cpfData={cpfData}
+            cpfState={cpfState}
+          />
+        )}
+      </div>
+    </div>
   );
 }

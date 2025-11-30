@@ -26,18 +26,10 @@ interface CashflowTabProps {
   setCustomExpenses: (e: CustomExpense[]) => void;
   retirement: RetirementSettings;
   cashflowState: CashflowState;
-  setCashflowState: React.Dispatch<React.SetStateAction<CashflowState>>;
+  setCashflowState: (s: CashflowState | ((prev: CashflowState) => CashflowState)) => void;
   age: number;
   cpfState: any;
 }
-
-const INTEREST_PRESETS = [
-  { l: 'Normal (0.05%)', v: '0.05', active: 'bg-blue-500 text-white border-blue-500', inactive: 'bg-white text-blue-600 border-blue-200' },
-  { l: 'Savings (2%)', v: '2', active: 'bg-emerald-500 text-white border-emerald-500', inactive: 'bg-white text-emerald-600 border-emerald-200' },
-  { l: 'High-Yield (3%)', v: '3', active: 'bg-emerald-500 text-white border-emerald-500', inactive: 'bg-white text-emerald-600 border-emerald-200' },
-  { l: 'Premium (4%)', v: '4', active: 'bg-amber-500 text-white border-amber-500', inactive: 'bg-white text-amber-600 border-amber-200' },
-  { l: 'Exceptional (5%)', v: '5', active: 'bg-amber-500 text-white border-amber-500', inactive: 'bg-white text-amber-600 border-amber-200' }
-];
 
 const CashflowTab: React.FC<CashflowTabProps> = ({
   cpfData,
@@ -66,11 +58,11 @@ const CashflowTab: React.FC<CashflowTabProps> = ({
   const [monthsToShow, setMonthsToShow] = useState(120); // Start with 10 years
 
   // FIXED: Use functional state update to ensure we always have the latest state
-  // when multiple updates happen quickly (e.g. typing)
+  // when multiple updates happen quickly (e.g. typing).
   const updateState = (key: keyof CashflowState, value: any) => {
-    setCashflowState(prev => ({
+    setCashflowState((prev) => ({
       ...prev,
-      [key]: value,
+      [key]: value
     }));
   };
 
@@ -80,64 +72,74 @@ const CashflowTab: React.FC<CashflowTabProps> = ({
   // Add income
   const addIncome = () => {
     const currentMonth = new Date().getMonth();
-    updateState('additionalIncomes', [
-      ...additionalIncomes,
-      {
-        id: Date.now(),
-        name: '',
-        amount: '',
-        type: 'recurring',
-        frequency: 'monthly',
-        startAge: currentAge,
-        startMonth: currentMonth,
-        endAge: null
-      }
-    ]);
+    setCashflowState((prev) => ({
+      ...prev,
+      additionalIncomes: [
+        ...prev.additionalIncomes,
+        {
+          id: Date.now(),
+          name: '',
+          amount: '',
+          type: 'recurring',
+          frequency: 'monthly',
+          startAge: currentAge,
+          startMonth: currentMonth,
+          endAge: null
+        }
+      ]
+    }));
   };
 
   const removeIncome = (id: number) => {
-    updateState(
-      'additionalIncomes',
-      additionalIncomes.filter((i) => i.id !== id)
-    );
+    setCashflowState((prev) => ({
+      ...prev,
+      additionalIncomes: prev.additionalIncomes.filter((i) => i.id !== id)
+    }));
   };
 
   const updateIncomeItem = (id: number, field: string, value: any) => {
-    updateState(
-      'additionalIncomes',
-      additionalIncomes.map((i) => (i.id === id ? { ...i, [field]: value } : i))
-    );
+    setCashflowState((prev) => ({
+      ...prev,
+      additionalIncomes: prev.additionalIncomes.map((i) => 
+        i.id === id ? { ...i, [field]: value } : i
+      )
+    }));
   };
 
   // Add withdrawal
   const addWithdrawal = () => {
     const currentMonth = new Date().getMonth();
-    updateState('withdrawals', [
-      ...withdrawals,
-      {
-        id: Date.now(),
-        name: '',
-        amount: '',
-        type: 'onetime',
-        frequency: 'monthly',
-        startAge: currentAge,
-        startMonth: currentMonth
-      }
-    ]);
+    setCashflowState((prev) => ({
+      ...prev,
+      withdrawals: [
+        ...prev.withdrawals,
+        {
+          id: Date.now(),
+          name: '',
+          amount: '',
+          type: 'onetime',
+          frequency: 'monthly',
+          startAge: currentAge,
+          startMonth: currentMonth
+        }
+      ]
+    }));
   };
 
   const removeWithdrawal = (id: number) => {
-    updateState(
-      'withdrawals',
-      withdrawals.filter((w) => w.id !== id)
-    );
+    setCashflowState((prev) => ({
+      ...prev,
+      withdrawals: prev.withdrawals.filter((w) => w.id !== id)
+    }));
   };
 
   const updateWithdrawalItem = (id: number, field: string, value: any) => {
-    updateState(
-      'withdrawals',
-      withdrawals.map((w) => (w.id === id ? { ...w, [field]: value } : w))
-    );
+    setCashflowState((prev) => ({
+      ...prev,
+      withdrawals: prev.withdrawals.map((w) => 
+        w.id === id ? { ...w, [field]: value } : w
+      )
+    }));
   };
 
   // Calculate monthly projection
@@ -564,14 +566,20 @@ const CashflowTab: React.FC<CashflowTabProps> = ({
             </div>
           </div>
           <div className="flex gap-2 flex-wrap">
-            {INTEREST_PRESETS.map((opt) => (
+            {[
+              { l: 'Normal (0.05%)', v: '0.05', c: 'blue' },
+              { l: 'Savings (2%)', v: '2', c: 'emerald' },
+              { l: 'High-Yield (3%)', v: '3', c: 'emerald' },
+              { l: 'Premium (4%)', v: '4', c: 'amber' },
+              { l: 'Exceptional (5%)', v: '5', c: 'amber' }
+            ].map((opt) => (
               <button
                 key={opt.v}
                 onClick={() => updateState('bankInterestRate', opt.v)}
                 className={`px-3 py-1.5 rounded-md text-[10px] font-bold border ${
                   toNum(bankInterestRate) === toNum(opt.v)
-                    ? opt.active
-                    : opt.inactive
+                    ? 'bg-blue-500 text-white border-blue-500'
+                    : 'bg-white text-gray-600 border-gray-200'
                 }`}
               >
                 {opt.l}
@@ -1122,7 +1130,7 @@ const CashflowTab: React.FC<CashflowTabProps> = ({
         {/* Pie Chart */}
         {pieData.length > 0 && (
           <div className="mt-6 h-[300px]">
-            <ResponsiveContainer width="100%" height="100%">
+            <ResponsiveContainer width="100%" height={300}>
               <PieChart>
                 <Pie
                   data={pieData}
