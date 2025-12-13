@@ -289,8 +289,7 @@ const CrmTab: React.FC<CrmTabProps> = (props) => {
              {pipelineStats.staleCount > 0 && (
                 <div className="bg-red-50 border border-red-200 rounded-xl p-5">
                    <h4 className="font-bold text-red-800 text-sm flex items-center gap-2 mb-3">
-                      🔥 Action Required: {pipelineStats.staleCount} Stale Leads (>14 days inactive)
-                   </h4>
+🔥 Action Required: {pipelineStats.staleCount} Stale Leads (&gt;14 days inactive)                   </h4>
                    <div className="overflow-x-auto">
                       <div className="flex gap-4 pb-2">
                          {enrichedClients.filter(c => c.metrics.isStale).map(c => (
