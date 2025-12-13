@@ -97,7 +97,28 @@ const calculateDealMetrics = (c: Client) => {
   
   if (c.profile.children && c.profile.children.length > 0) autoTags.push({ label: '👶 Family', color: 'bg-blue-50 text-blue-600' });
 
-  return { potentialRevenue, probability, weightedValue, daysInactive, isStale, autoTags };
+  // 5. NEXT BEST ACTION (The Closer)
+  let nextAction = "Call & Check-in";
+  let actionColor = "text-gray-600 bg-gray-100";
+
+  if (statusKey === 'new') {
+     nextAction = "First Contact";
+     actionColor = "text-blue-700 bg-blue-100";
+  } else if (isStale) {
+     nextAction = "Re-engage";
+     actionColor = "text-red-700 bg-red-100 animate-pulse";
+  } else if (statusKey === 'appt_set') {
+     nextAction = "Prep Meeting";
+     actionColor = "text-emerald-700 bg-emerald-100";
+  } else if (insuranceDeath < income * 5 && income > 0) {
+     nextAction = "Pitch Protection";
+     actionColor = "text-amber-700 bg-amber-100";
+  } else if (netWorth > 100000) {
+     nextAction = "Wealth Review";
+     actionColor = "text-purple-700 bg-purple-100";
+  }
+
+  return { potentialRevenue, probability, weightedValue, daysInactive, isStale, autoTags, nextAction, actionColor };
 };
 
 // --- COMPONENTS ---
@@ -346,12 +367,12 @@ const CrmTab: React.FC<CrmTabProps> = (props) => {
               <table className="w-full text-left border-collapse min-w-[1200px]">
                 <thead className="bg-gray-50 sticky top-0 z-10 shadow-sm">
                   <tr>
-                    <th className="p-3 text-[10px] font-extrabold text-gray-400 uppercase border-b border-r border-gray-200 w-[220px]">Client</th>
+                    <th className="p-3 text-[10px] font-extrabold text-gray-400 uppercase border-b border-r border-gray-200 w-[200px]">Client</th>
+                    <th className="p-3 text-[10px] font-extrabold text-gray-400 uppercase border-b border-r border-gray-200 w-[140px]">Next Best Action</th>
                     <th className="p-3 text-[10px] font-extrabold text-gray-400 uppercase border-b border-r border-gray-200 w-[140px]">Status</th>
-                    <th className="p-3 text-[10px] font-extrabold text-gray-400 uppercase border-b border-r border-gray-200 w-[120px] text-right">Deal Value</th>
-                    <th className="p-3 text-[10px] font-extrabold text-gray-400 uppercase border-b border-r border-gray-200 w-[100px] text-right">Prob %</th>
+                    <th className="p-3 text-[10px] font-extrabold text-gray-400 uppercase border-b border-r border-gray-200 w-[100px] text-right">Value</th>
                     <th className="p-3 text-[10px] font-extrabold text-gray-400 uppercase border-b border-r border-gray-200 w-[150px]">Smart Tags</th>
-                    <th className="p-3 text-[10px] font-extrabold text-gray-400 uppercase border-b border-r border-gray-200 w-[120px]">Last Touch</th>
+                    <th className="p-3 text-[10px] font-extrabold text-gray-400 uppercase border-b border-r border-gray-200 w-[100px]">Last Touch</th>
                     <th className="p-3 text-[10px] font-extrabold text-gray-400 uppercase border-b border-gray-200">Source</th>
                   </tr>
                 </thead>
@@ -368,15 +389,15 @@ const CrmTab: React.FC<CrmTabProps> = (props) => {
                            <div className="text-[11px] text-gray-400 truncate">{client.profile.jobTitle || 'No Title'}</div>
                         </td>
                         <td className="p-3 border-r border-gray-100">
+                           <span className={`text-[10px] font-bold px-2 py-1 rounded border border-transparent ${client.metrics.actionColor}`}>
+                              {client.metrics.nextAction}
+                           </span>
+                        </td>
+                        <td className="p-3 border-r border-gray-100">
                            <StatusBadge status={client.followUp.status} />
                         </td>
                         <td className="p-3 border-r border-gray-100 text-right font-mono text-gray-600">
                            {fmtSGD(client.metrics.potentialRevenue)}
-                        </td>
-                        <td className="p-3 border-r border-gray-100 text-right">
-                           <span className={`text-xs px-2 py-0.5 rounded ${client.metrics.probability > 0.5 ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-600'}`}>
-                              {(client.metrics.probability * 100).toFixed(0)}%
-                           </span>
                         </td>
                         <td className="p-3 border-r border-gray-100">
                            <div className="flex gap-1 flex-wrap">
@@ -391,7 +412,7 @@ const CrmTab: React.FC<CrmTabProps> = (props) => {
                            <div className="flex items-center gap-2">
                               {client.metrics.isStale && <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" title="Stale Lead"></div>}
                               <span className={`text-xs ${client.metrics.isStale ? 'text-red-600 font-bold' : 'text-gray-500'}`}>
-                                 {client.metrics.daysInactive === 0 ? 'Today' : `${client.metrics.daysInactive}d ago`}
+                                 {client.metrics.daysInactive === 0 ? 'Today' : `${client.metrics.daysInactive}d`}
                               </span>
                            </div>
                         </td>
