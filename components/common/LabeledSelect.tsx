@@ -1,3 +1,4 @@
+
 import React from 'react';
 
 interface Option {
@@ -18,7 +19,7 @@ const LabeledSelect: React.FC<LabeledSelectProps> = ({ label, value, onChange, o
     <select 
       value={value} 
       onChange={(e) => onChange(e.target.value)}
-      className="w-full px-2.5 py-1.5 border border-gray-300 rounded-md text-sm bg-white"
+      className="w-full px-2.5 py-1.5 border border-gray-300 rounded-md text-sm bg-white text-gray-900"
     >
       {options.map((opt, i) => (
         <option key={i} value={opt.value}>{opt.label}</option>

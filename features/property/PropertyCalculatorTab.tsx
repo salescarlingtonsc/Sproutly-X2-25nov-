@@ -1,3 +1,4 @@
+
 import React from 'react';
 import { toNum, fmtSGD } from '../../lib/helpers';
 import LabeledText from '../../components/common/LabeledText';
@@ -86,7 +87,7 @@ const PropertyCalculatorTab: React.FC<PropertyCalculatorTabProps> = ({
                 placeholder="CPF OA Amount" 
                 value={cpfOaAmount}
                 onChange={(e) => updateState('cpfOaAmount', e.target.value)}
-                className="w-full p-2 border rounded text-sm mt-2 bg-white"
+                className="w-full p-2 border rounded text-sm mt-2 bg-white text-gray-900"
               />
             )}
           </div>

@@ -1,604 +1,302 @@
 
-
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { toNum, parseDob, monthsSinceDob } from './lib/helpers';
-import { computeCpf, computeRetirementProjection } from './lib/calculators';
-import { db } from './lib/db';
 import { useAuth } from './contexts/AuthContext';
-import { getClientLimit } from './lib/config';
 import AppShell from './components/layout/AppShell';
+import LandingPage from './features/auth/LandingPage';
+import AuthModal from './features/auth/AuthModal';
 import ErrorBoundary from './components/common/ErrorBoundary';
-import { 
-  Profile, Expenses, CustomExpense, Client, RetirementSettings,
-  CpfState, CashflowState, PropertyState, WealthState, InvestorState, InsuranceState
-} from './types';
+import AiAssistant from './features/ai-chat/AiAssistant';
 
-// Import Tabs
+// Feature Tabs
 import DisclaimerTab from './features/disclaimer/DisclaimerTab';
 import ProfileTab from './features/profile/ProfileTab';
+import LifeEventsTab from './features/life-events/LifeEventsTab';
 import ChildrenTab from './features/children/ChildrenTab';
 import CpfTab from './features/cpf/CpfTab';
 import CashflowTab from './features/planning/CashflowTab';
+import InsuranceTab from './features/insurance/InsuranceTab';
 import RetirementTab from './features/planning/RetirementTab';
 import InvestorTab from './features/investor/InvestorTab';
 import WealthToolTab from './features/wealth/WealthToolTab';
 import PropertyCalculatorTab from './features/property/PropertyCalculatorTab';
-import InsuranceTab from './features/insurance/InsuranceTab'; 
-import LifeEventsTab from './features/life-events/LifeEventsTab';
-import AnalyticsTab from './features/analytics/AnalyticsTab'; 
+import AnalyticsTab from './features/analytics/AnalyticsTab';
 import CrmTab from './features/crm/CrmTab';
 import AdminTab from './features/admin/AdminTab';
-import LandingPage from './features/auth/LandingPage';
 
-// Import Modals
-import AuthModal from './features/auth/AuthModal';
-import PricingModal from './features/subscription/PricingModal';
+// Logic
+import { db } from './lib/db';
+import { getAge, toNum } from './lib/helpers';
+import { computeCpf } from './lib/calculators';
+import { 
+  Profile, Expenses, CustomExpense, Child, CpfState, CashflowState, 
+  InsuranceState, InvestorState, PropertyState, WealthState, Client, 
+  RetirementSettings, ClientDocument
+} from './types';
 
-export default function App() {
-  const { user, isLoading, signOut } = useAuth();
+// Initial States
+const INITIAL_PROFILE: Profile = {
+  name: '', dob: '', gender: 'male', email: '', phone: '',
+  employmentStatus: 'employed', grossSalary: '', monthlyIncome: '', takeHome: '',
+  retirementAge: '65', customRetirementExpense: '', monthlyInvestmentAmount: '',
+  referenceYear: new Date().getFullYear(), referenceMonth: new Date().getMonth(),
+  children: [], tags: []
+};
+const INITIAL_EXPENSES: Expenses = { housing: '0', food: '0', transport: '0', insurance: '0', entertainment: '0', others: '0' };
+const INITIAL_CPF: CpfState = { currentBalances: { oa: '', sa: '', ma: '' }, withdrawals: [] };
+// UPDATED: Added careerEvents: []
+const INITIAL_CASHFLOW: CashflowState = { currentSavings: '', projectToAge: '100', bankInterestRate: '0.05', additionalIncomes: [], withdrawals: [], careerEvents: [] };
+const INITIAL_INSURANCE: InsuranceState = { policies: [], currentDeath: '', currentTPD: '', currentCI: '' };
+const INITIAL_INVESTOR: InvestorState = { portfolioValue: '', portfolioType: 'diversified' };
+const INITIAL_PROPERTY: PropertyState = { propertyPrice: '', propertyType: 'hdb', annualValue: '', downPaymentPercent: '25', loanTenure: '25', interestRate: '3.5', useCpfOa: false, cpfOaAmount: '' };
+const INITIAL_WEALTH: WealthState = { annualPremium: '', projectionYears: '20', growthRate: '5' };
+const INITIAL_RETIREMENT: RetirementSettings = { initialSavings: '', scenario: 'moderate', investmentPercent: '50' };
+
+const App: React.FC = () => {
+  const { user, isLoading } = useAuth();
   
-  // Modal State
-  const [showLogin, setShowLogin] = useState(false);
-  const [showPricing, setShowPricing] = useState(false);
-  const [authError, setAuthError] = useState<string | null>(null);
-  
-  // Navigation State
+  // App State
   const [activeTab, setActiveTab] = useState('disclaimer');
+  const [isAuthModalOpen, setAuthModalOpen] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+
+  // Data State
+  const [profile, setProfile] = useState<Profile>(INITIAL_PROFILE);
+  const [expenses, setExpenses] = useState<Expenses>(INITIAL_EXPENSES);
+  const [customExpenses, setCustomExpenses] = useState<CustomExpense[]>([]);
+  const [children, setChildren] = useState<Child[]>([]);
+  const [cpfState, setCpfState] = useState<CpfState>(INITIAL_CPF);
+  const [cashflowState, setCashflowState] = useState<CashflowState>(INITIAL_CASHFLOW);
+  const [insuranceState, setInsuranceState] = useState<InsuranceState>(INITIAL_INSURANCE);
+  const [investorState, setInvestorState] = useState<InvestorState>(INITIAL_INVESTOR);
+  const [propertyState, setPropertyState] = useState<PropertyState>(INITIAL_PROPERTY);
+  const [wealthState, setWealthState] = useState<WealthState>(INITIAL_WEALTH);
+  const [retirement, setRetirement] = useState<RetirementSettings>(INITIAL_RETIREMENT);
   
   // CRM State
   const [clients, setClients] = useState<Client[]>([]);
-  const [isClientLoading, setIsClientLoading] = useState(false);
-  const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
-  
-  // Auto-save State
-  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
-  const [lastSavedTime, setLastSavedTime] = useState<Date | null>(null);
+  const [currentClient, setCurrentClient] = useState<Client | null>(null);
+  const [saveStatus, setSaveStatus] = useState<'idle'|'saving'|'saved'|'error'>('idle');
+  const [lastSaved, setLastSaved] = useState<Date | null>(null);
 
-  // --- CORE DATA STATES ---
-
-  // 0. Reference Code (New Unique Identifier)
-  const [referenceCode, setReferenceCode] = useState<string>('');
-
-  // 1. Profile
-  const [profile, setProfile] = useState<Profile>({
-    name: '',
-    dob: '',
-    gender: 'male',
-    employmentStatus: 'employed',
-    email: '',
-    phone: '',
-    monthlyIncome: '',
-    grossSalary: '',
-    takeHome: '',
-    retirementAge: '65',
-    customRetirementExpense: '',
-    monthlyInvestmentAmount: '',
-    // Default chart settings
-    investmentRates: { conservative: 5, moderate: 6, growth: 12 },
-    wealthTarget: '100000',
-    educationSettings: { 
-      inflationRate: '3', 
-      monthlyEducationCost: '800', 
-      educationStartAge: '7',
-      educationDuration: '10',
-      universityCost: '8750', 
-      universityDuration: '4' 
-    },
-    referenceYear: new Date().getFullYear(),
-    referenceMonth: new Date().getMonth(),
-    children: []
-  });
-  
-  // 2. Expenses
-  const [expenses, setExpenses] = useState<Expenses>({
-    housing: '',
-    food: '',
-    transport: '',
-    insurance: '',
-    entertainment: '',
-    others: ''
-  });
-  const [customExpenses, setCustomExpenses] = useState<CustomExpense[]>([]);
-  
-  // 3. Retirement Settings
-  const [retirement, setRetirement] = useState<RetirementSettings>({
-    initialSavings: '',
-    scenario: 'moderate',
-    investmentPercent: '100',
-    customReturnRate: ''
-  });
-
-  // 4. CPF State
-  const [cpfState, setCpfState] = useState<CpfState>({
-    currentBalances: { oa: '', sa: '', ma: '' },
-    withdrawals: []
-  });
-
-  // 5. Cashflow State
-  const [cashflowState, setCashflowState] = useState<CashflowState>({
-    currentSavings: '',
-    projectToAge: '100',
-    bankInterestRate: '0.05',
-    additionalIncomes: [],
-    withdrawals: []
-  });
-
-  // 6. Property State
-  const [propertyState, setPropertyState] = useState<PropertyState>({
-    propertyPrice: '',
-    propertyType: 'hdb',
-    annualValue: '',
-    downPaymentPercent: '25',
-    loanTenure: '25',
-    interestRate: '3.5',
-    useCpfOa: true,
-    cpfOaAmount: ''
-  });
-
-  // 7. Wealth Tool State
-  const [wealthState, setWealthState] = useState<WealthState>({
-    annualPremium: '',
-    projectionYears: '40',
-    growthRate: '5'
-  });
-
-  // 8. Investor State
-  const [investorState, setInvestorState] = useState<InvestorState>({
-    portfolioValue: '0', 
-    portfolioType: 'stock-picking'
-  });
-
-  // 9. Insurance State (NEW)
-  const [insuranceState, setInsuranceState] = useState<InsuranceState>({
-    policies: [], // List of policies
-    currentDeath: '',
-    currentTPD: '',
-    currentCI: ''
-  });
-  
-  // Helper to generate a unique reference code
-  const generateRefCode = () => {
-    // Generates something like C-839201
-    const num = Math.floor(100000 + Math.random() * 900000);
-    return `C-${num}`;
-  };
-
-  // Initialize reference code on mount if none exists
-  useEffect(() => {
-    if (!referenceCode && !selectedClientId) {
-      setReferenceCode(generateRefCode());
-    }
-  }, []);
-
-  // --- COMPUTED VALUES ---
-
-  // Check for URL errors (Supabase Auth redirects)
-  useEffect(() => {
-    const hash = window.location.hash;
-    if (hash && hash.includes('error=')) {
-      // Extract error description
-      const params = new URLSearchParams(hash.substring(1)); // remove #
-      const errorDesc = params.get('error_description');
-      const errorCode = params.get('error_code');
-      if (errorDesc) {
-        setAuthError(decodeURIComponent(errorDesc.replace(/\+/g, ' ')));
-        setShowLogin(true); // Open modal so they can try again
-      }
-    }
-  }, []);
-  
-  // Load Clients (Moved to useCallback for manual refresh)
-  const fetchClients = useCallback(async () => {
-    if (!user || user.status !== 'approved') return;
-    setIsClientLoading(true);
-    try {
-      const data = await db.getClients(user.id);
-      setClients(data);
-    } catch (error) {
-      console.error("Failed to load clients", error);
-    } finally {
-      setIsClientLoading(false);
-    }
-  }, [user]);
-
-  // Initial Fetch
-  useEffect(() => {
-    fetchClients();
-  }, [fetchClients]);
-  
-  const age = useMemo(() => {
-    const dob = parseDob(profile.dob);
-    if (!dob) return 0;
-    const months = monthsSinceDob(dob, profile.referenceYear, profile.referenceMonth);
-    return Math.floor(months / 12);
-  }, [profile.dob, profile.referenceYear, profile.referenceMonth]);
-  
+  // --- Computed Data ---
+  const age = useMemo(() => getAge(profile.dob), [profile.dob]);
   const cpfData = useMemo(() => {
-    const income = toNum(profile.grossSalary || profile.monthlyIncome);
-    if (income === 0 || age === 0) return null;
-    return computeCpf(income, age);
+    const gross = toNum(profile.grossSalary) || toNum(profile.monthlyIncome);
+    return computeCpf(gross, age);
   }, [profile.grossSalary, profile.monthlyIncome, age]);
-  
+
   const cashflowData = useMemo(() => {
-    if (!cpfData && !profile.takeHome) return null;
-    const takeHome = toNum(profile.takeHome) || (cpfData ? cpfData.takeHome : 0);
-    
-    let totalExpenses: number = Object.values(expenses).reduce<number>((sum: number, val) => sum + toNum(val), 0);
-    if (customExpenses) {
-      customExpenses.forEach(exp => {
-        totalExpenses += toNum(exp.amount, 0);
-      });
-    }
-    
-    const monthlySavings = takeHome - totalExpenses;
-    const annualSavings = monthlySavings * 12;
-    
-    return {
-      takeHome,
-      totalExpenses,
-      monthlySavings,
-      annualSavings,
-      savingsRate: takeHome > 0 ? (monthlySavings / takeHome * 100) : 0
-    };
-  }, [cpfData, profile.takeHome, expenses, customExpenses]);
-  
-  // Calculate Max Clients allowed
-  const maxClients = useMemo(() => {
-     if (!user) return 1;
-     return getClientLimit(user.subscriptionTier, user.extraSlots);
+     const totalExpenses = Object.values(expenses).reduce((a: number, b) => a + toNum(b), 0) + 
+                           customExpenses.reduce((a: number, b) => a + toNum(b.amount), 0);
+     const takeHome = toNum(profile.takeHome) || (cpfData ? cpfData.takeHome : 0);
+     const monthlySavings = takeHome - totalExpenses;
+     return {
+        takeHome,
+        totalExpenses,
+        monthlySavings,
+        annualSavings: monthlySavings * 12,
+        savingsRate: takeHome > 0 ? (monthlySavings / takeHome) * 100 : 0
+     };
+  }, [expenses, customExpenses, profile.takeHome, cpfData]);
+
+  // --- Effects ---
+  useEffect(() => {
+     if (user) {
+        loadClients();
+     }
   }, [user]);
 
-  // --- CLIENT MANAGEMENT (CRUD) ---
-  
-  const saveClient = useCallback(async (isAutoSave = false) => {
-    if (!user) {
-      if (!isAutoSave) alert("Please log in to save.");
-      return;
-    }
-
-    // CHECK PERMISSIONS & LIMITS
-    const limit = maxClients;
-    
-    // If we are creating a NEW client (not editing existing) and we hit the limit
-    if (!selectedClientId && clients.length >= limit) {
-      if (!isAutoSave) {
-        setShowPricing(true);
-        alert(`You have reached your limit of ${limit} saved client profiles.\n\nPlease upgrade or purchase extra slots.`);
-      }
-      return;
-    }
-
-    if (isAutoSave) setSaveStatus('saving');
-
-    // Ensure reference code exists
-    const finalRefCode = referenceCode || generateRefCode();
-    if (!referenceCode) setReferenceCode(finalRefCode);
-
-    const clientData: Client = {
-      id: selectedClientId || crypto.randomUUID(),
-      referenceCode: finalRefCode,
-      profile,
-      expenses,
-      customExpenses,
-      retirement,
-      cpfState,
-      cashflowState,
-      propertyState,
-      wealthState,
-      investorState,
-      insuranceState, // Save Insurance Data
-      lastUpdated: new Date().toISOString(),
-      followUp: clients.find(c => c.id === selectedClientId)?.followUp || {
-        nextDate: null,
-        status: 'none'
-      }
-    };
-    
-    try {
-      const savedClient = await db.saveClient(clientData, user.id);
-      
-      if (selectedClientId) {
-        setClients(prev => prev.map(c => c.id === selectedClientId ? savedClient : c));
-      } else {
-        setClients(prev => [savedClient, ...prev]);
-        setSelectedClientId(savedClient.id);
-      }
-      
-      setLastSavedTime(new Date());
-      setSaveStatus('saved');
-      
-      if (!isAutoSave) {
-        alert(`Client saved successfully! Reference: ${finalRefCode}`);
-      }
-    } catch (error: any) {
-      console.error("Save failed", error);
-      setSaveStatus('error');
-      
-      const msg = error?.message || error?.error_description || 'Unknown database error';
-      if (!isAutoSave) alert(`Failed to save client: ${msg}`);
-    }
-  }, [user, maxClients, selectedClientId, clients, referenceCode, profile, expenses, customExpenses, retirement, cpfState, cashflowState, propertyState, wealthState, investorState, insuranceState]);
-
-  // --- AUTO SAVE EFFECT ---
+  // Sync profile children with separate state if needed, or just use profile.children
   useEffect(() => {
-    // Only auto-save if a client is selected (already created)
-    if (!selectedClientId) return;
+     setProfile(p => ({ ...p, children }));
+  }, [children]);
 
-    // Debounce the save operation (wait 2 seconds after last change)
-    const timeoutId = setTimeout(() => {
-      saveClient(true);
-    }, 2000);
-
-    return () => clearTimeout(timeoutId);
-  }, [
-    // Depend on all data states so any change triggers the debounce
-    profile, 
-    expenses, 
-    customExpenses, 
-    retirement, 
-    cpfState, 
-    cashflowState, 
-    propertyState, 
-    wealthState, 
-    investorState, 
-    insuranceState,
-    selectedClientId,
-    saveClient
-  ]);
-  
-  const loadClient = (client: Client) => {
-    setSelectedClientId(client.id);
-    setReferenceCode(client.referenceCode || generateRefCode()); // Use existing ref or gen new if legacy data
-    
-    // MIGRATION: Handle Education Settings
-    const loadedEdu = (client.profile.educationSettings || {}) as any;
-    
-    let monthlyEduCost = loadedEdu.monthlyEducationCost || '800';
-    if (!loadedEdu.monthlyEducationCost && loadedEdu.primarySecondaryCost) {
-       monthlyEduCost = String(Math.round(toNum(loadedEdu.primarySecondaryCost) / 12));
-    }
-
-    const safeEduSettings = {
-      inflationRate: loadedEdu.inflationRate || '3',
-      monthlyEducationCost: monthlyEduCost,
-      educationStartAge: loadedEdu.educationStartAge || '7',
-      educationDuration: loadedEdu.educationDuration || '10',
-      universityCost: loadedEdu.universityCost || '8750',
-      universityDuration: loadedEdu.universityDuration || '4'
-    };
-
-    setProfile({ 
-      ...client.profile, 
-      children: client.profile.children || [],
-      investmentRates: client.profile.investmentRates || { conservative: 5, moderate: 6, growth: 12 },
-      wealthTarget: client.profile.wealthTarget || '100000',
-      educationSettings: safeEduSettings
-    });
-    
-    setExpenses(client.expenses);
-    setCustomExpenses(client.customExpenses || []);
-    setRetirement(client.retirement);
-    setCpfState(client.cpfState || { currentBalances: { oa: '', sa: '', ma: '' }, withdrawals: [] });
-    setCashflowState(client.cashflowState || { currentSavings: '', projectToAge: '100', bankInterestRate: '0.05', additionalIncomes: [], withdrawals: [] });
-    setPropertyState(client.propertyState || { propertyPrice: '', propertyType: 'hdb', annualValue: '', downPaymentPercent: '25', loanTenure: '25', interestRate: '3.5', useCpfOa: true, cpfOaAmount: '' });
-    setWealthState(client.wealthState || { annualPremium: '', projectionYears: '40', growthRate: '5' });
-    setInvestorState(client.investorState || { portfolioValue: '500000', portfolioType: 'stock-picking' });
-    setInsuranceState(client.insuranceState || { policies: [], currentDeath: '', currentTPD: '', currentCI: '' });
-
-    setSaveStatus('idle');
-    setLastSavedTime(new Date(client.lastUpdated));
-    setActiveTab('profile');
-  };
-  
-  const deleteClient = async (clientId: string) => {
-    if (confirm('Are you sure you want to delete this client?')) {
-      try {
-        await db.deleteClient(clientId, user?.id);
-        setClients(clients.filter(c => c.id !== clientId));
-        if (selectedClientId === clientId) {
-          resetForm();
-        }
-      } catch (error) {
-        console.error("Delete failed", error);
-        alert("Failed to delete client");
-      }
-    }
-  };
-  
-  const resetForm = () => {
-    setSelectedClientId(null);
-    setReferenceCode(generateRefCode()); // Generate new Ref ID for new client
-    setProfile({
-      name: '',
-      dob: '',
-      gender: 'male',
-      employmentStatus: 'employed',
-      email: '',
-      phone: '',
-      monthlyIncome: '',
-      grossSalary: '',
-      takeHome: '',
-      retirementAge: '65',
-      customRetirementExpense: '',
-      monthlyInvestmentAmount: '',
-      investmentRates: { conservative: 5, moderate: 6, growth: 12 },
-      wealthTarget: '100000',
-      educationSettings: { 
-        inflationRate: '3', 
-        monthlyEducationCost: '800', 
-        educationStartAge: '7',
-        educationDuration: '10',
-        universityCost: '8750', 
-        universityDuration: '4' 
-      },
-      referenceYear: new Date().getFullYear(),
-      referenceMonth: new Date().getMonth(),
-      children: []
-    });
-    setExpenses({ housing: '', food: '', transport: '', insurance: '', entertainment: '', others: '' });
-    setCustomExpenses([]);
-    setRetirement({ initialSavings: '', scenario: 'moderate', investmentPercent: '100', customReturnRate: '' });
-    setCpfState({ currentBalances: { oa: '', sa: '', ma: '' }, withdrawals: [] });
-    setCashflowState({ currentSavings: '', projectToAge: '100', bankInterestRate: '0.05', additionalIncomes: [], withdrawals: [] });
-    setPropertyState({ propertyPrice: '', propertyType: 'hdb', annualValue: '', downPaymentPercent: '25', loanTenure: '25', interestRate: '3.5', useCpfOa: true, cpfOaAmount: '' });
-    setWealthState({ annualPremium: '', projectionYears: '40', growthRate: '5' });
-    setInvestorState({ portfolioValue: '0', portfolioType: 'stock-picking' }); // Reset to 0
-    setInsuranceState({ policies: [], currentDeath: '', currentTPD: '', currentCI: '' });
-    setSaveStatus('idle');
-    setLastSavedTime(null);
-    setActiveTab('profile');
-  };
-  
-  const setFollowUp = (clientId: string, days: number) => {
-    const nextDate = new Date();
-    nextDate.setDate(nextDate.getDate() + days);
-    setClients(clients.map(c => 
-      c.id === clientId ? { ...c, followUp: { nextDate: nextDate.toISOString(), status: 'pending' } } : c
-    ));
-  };
-  
-  const completeFollowUp = (clientId: string) => {
-    setClients(clients.map(c => 
-      c.id === clientId ? { ...c, followUp: { ...c.followUp, status: 'completed' } } : c
-    ));
+  // --- Handlers ---
+  const loadClients = async () => {
+     const data = await db.getClients(user?.id);
+     setClients(data);
   };
 
-  // --- RENDER LOGIC ---
+  const handleNewClient = () => {
+     setProfile(INITIAL_PROFILE);
+     setExpenses(INITIAL_EXPENSES);
+     setCustomExpenses([]);
+     setChildren([]);
+     setCpfState(INITIAL_CPF);
+     setCashflowState(INITIAL_CASHFLOW);
+     setInsuranceState(INITIAL_INSURANCE);
+     setInvestorState(INITIAL_INVESTOR);
+     setPropertyState(INITIAL_PROPERTY);
+     setWealthState(INITIAL_WEALTH);
+     setRetirement(INITIAL_RETIREMENT);
+     setCurrentClient(null);
+     setActiveTab('profile');
+  };
 
-  if (isLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50">
-        <div className="text-center">
-          <div className="text-4xl animate-bounce mb-2">🌱</div>
-          <div className="text-gray-500 text-sm">Loading Application...</div>
-        </div>
-      </div>
-    );
-  }
+  const handleLoadClient = (client: Client, redirect = true) => {
+     setCurrentClient(client);
+     setProfile(client.profile);
+     setExpenses(client.expenses);
+     setCustomExpenses(client.customExpenses || []);
+     setChildren(client.profile.children || []);
+     setCpfState(client.cpfState || INITIAL_CPF);
+     setCashflowState(client.cashflowState || INITIAL_CASHFLOW);
+     setInsuranceState(client.insuranceState || INITIAL_INSURANCE);
+     setInvestorState(client.investorState || INITIAL_INVESTOR);
+     setPropertyState(client.propertyState || INITIAL_PROPERTY);
+     setWealthState(client.wealthState || INITIAL_WEALTH);
+     setRetirement(client.retirement || INITIAL_RETIREMENT);
+     
+     if (redirect) setActiveTab('profile');
+  };
 
-  // GATE 1: If not logged in, show Landing Page
+  const handleSaveClient = async () => {
+     if (!user) {
+        setAuthModalOpen(true);
+        return;
+     }
+     if (!profile.name) {
+        alert("Please enter a client name in the Profile tab.");
+        return;
+     }
+     
+     setSaveStatus('saving');
+     const clientData: Client = {
+        id: currentClient?.id || crypto.randomUUID(),
+        referenceCode: currentClient?.referenceCode || `REF-${Math.floor(Math.random()*10000)}`,
+        profile: { ...profile, children },
+        expenses,
+        customExpenses,
+        retirement,
+        cpfState,
+        cashflowState,
+        propertyState,
+        wealthState,
+        investorState,
+        insuranceState,
+        lastUpdated: new Date().toISOString(),
+        followUp: currentClient?.followUp || { status: 'new' },
+        appointments: currentClient?.appointments,
+        documents: currentClient?.documents
+     };
+
+     try {
+        const saved = await db.saveClient(clientData, user.id);
+        setCurrentClient(saved);
+        setSaveStatus('saved');
+        setLastSaved(new Date());
+        loadClients(); // Refresh list
+     } catch (e) {
+        console.error(e);
+        setSaveStatus('error');
+     }
+  };
+
+  const handleDeleteClient = async (id: string) => {
+     if (confirm("Are you sure?")) {
+        await db.deleteClient(id, user?.id);
+        if (currentClient?.id === id) handleNewClient();
+        loadClients();
+     }
+  };
+
+  const handleCompleteFollowUp = (id: string) => {
+     // Logic to update follow up status
+     const client = clients.find(c => c.id === id);
+     if (client) {
+        const updated = { ...client, followUp: { ...client.followUp, status: 'contacted' as any } }; // Simplification
+        db.saveClient(updated, user?.id).then(loadClients);
+     }
+  };
+
+  // --- Rendering ---
+  if (isLoading) return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
+
   if (!user) {
-    return (
-      <>
-        <LandingPage onLogin={() => setShowLogin(true)} />
-        <AuthModal 
-          isOpen={showLogin} 
-          onClose={() => {
-             setShowLogin(false);
-             setAuthError(null);
-          }} 
-          initialError={authError}
-        />
-      </>
-    );
-  }
-
-  // GATE 2: If logged in but NOT approved
-  if (user.status !== 'approved') {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6">
-        <div className="bg-white max-w-md w-full p-8 rounded-2xl shadow-lg text-center">
-          {user.status === 'rejected' ? (
-             <>
-              <div className="text-6xl mb-4">🚫</div>
-              <h2 className="text-2xl font-bold text-red-600 mb-2">Access Denied</h2>
-              <p className="text-gray-600 mb-6">
-                Your account application has been reviewed and declined by the administrator.
-              </p>
-             </>
-          ) : (
-             <>
-              <div className="text-6xl mb-4 animate-pulse">⏳</div>
-              <h2 className="text-2xl font-bold text-gray-800 mb-2">Approval Pending</h2>
-              <p className="text-gray-600 mb-6">
-                Thanks for registering! Your account is currently under review. 
-                You will be able to access the dashboard once an administrator approves your account.
-              </p>
-              <div className="p-4 bg-blue-50 text-blue-800 text-xs rounded-lg mb-6">
-                Please contact the administrator if you need immediate access.
-              </div>
-             </>
-          )}
-          
-          <button 
-            onClick={signOut}
-            className="px-6 py-2 border border-gray-300 rounded-lg text-gray-600 hover:bg-gray-50 font-bold"
-          >
-            Sign Out
-          </button>
-        </div>
-      </div>
-    );
+     return (
+        <>
+           <LandingPage onLogin={() => setAuthModalOpen(true)} />
+           <AuthModal 
+              isOpen={isAuthModalOpen} 
+              onClose={() => setAuthModalOpen(false)} 
+              initialError={authError}
+           />
+        </>
+     );
   }
 
   return (
     <>
-      <AppShell 
-        activeTab={activeTab} 
+     <AppShell
+        activeTab={activeTab}
         setActiveTab={setActiveTab}
-        onLoginClick={() => setShowLogin(true)}
-        onPricingClick={() => setShowPricing(true)}
-        onSaveClick={() => saveClient(false)}
-        clientRef={referenceCode}
+        onLoginClick={() => setAuthModalOpen(true)}
+        onPricingClick={() => alert("Upgrade feature coming soon!")}
+        onSaveClick={handleSaveClient}
+        clientRef={currentClient?.referenceCode}
         clientName={profile.name}
         saveStatus={saveStatus}
-        lastSavedTime={lastSavedTime}
-      >
-        {activeTab === 'disclaimer' && (
-          <ErrorBoundary>
-            <DisclaimerTab />
-          </ErrorBoundary>
-        )}
+        lastSavedTime={lastSaved}
+     >
+        <AuthModal 
+           isOpen={isAuthModalOpen} 
+           onClose={() => setAuthModalOpen(false)} 
+        />
         
+        {/* Render Tab Content */}
+        {activeTab === 'disclaimer' && <DisclaimerTab />}
         {activeTab === 'profile' && (
-          <ErrorBoundary>
-            <ProfileTab 
+           <ProfileTab 
               profile={profile} 
               setProfile={setProfile} 
-              age={age} 
+              age={age}
               cpfData={cpfData}
               expenses={expenses}
               setExpenses={setExpenses}
               customExpenses={customExpenses}
               setCustomExpenses={setCustomExpenses}
               cashflowData={cashflowData}
-              // Pass CRM logic to Profile Tab
+              investorState={investorState} // NEW
+              cashflowState={cashflowState} // NEW
               clients={clients}
-              onLoadClient={loadClient}
-              onNewProfile={resetForm}
-            />
-          </ErrorBoundary>
+              onLoadClient={handleLoadClient}
+              onNewProfile={handleNewClient}
+           />
         )}
-        
+        {activeTab === 'life_events' && (
+           <LifeEventsTab 
+              profile={profile}
+              insuranceState={insuranceState}
+              cashflowState={cashflowState}
+              investorState={investorState}
+              cpfState={cpfState}
+              cashflowData={cashflowData}
+              age={age}
+              propertyState={propertyState}
+           />
+        )}
         {activeTab === 'children' && (
-          <ErrorBoundary>
-            <ChildrenTab 
-              children={profile.children || []} 
-              setChildren={(children) => setProfile({ ...profile, children })} 
+           <ChildrenTab 
+              children={children} 
+              setChildren={setChildren} 
               ageYears={age}
               profile={profile}
-              setProfile={setProfile} 
-            />
-          </ErrorBoundary>
+              setProfile={setProfile}
+           />
         )}
-        
         {activeTab === 'cpf' && (
-          <ErrorBoundary>
-            <CpfTab 
+           <CpfTab 
               cpfData={cpfData} 
               age={age} 
-              cpfState={cpfState}
-              setCpfState={setCpfState}
-            />
-          </ErrorBoundary>
+              cpfState={cpfState} 
+              setCpfState={setCpfState} 
+           />
         )}
-        
         {activeTab === 'cashflow' && (
-          <ErrorBoundary>
-            <CashflowTab 
-              cpfData={cpfData} 
-              expenses={expenses} 
-              setExpenses={setExpenses} 
+           <CashflowTab 
+              cpfData={cpfData}
+              expenses={expenses}
+              setExpenses={setExpenses}
               cashflowData={cashflowData}
               profile={profile}
               customExpenses={customExpenses}
@@ -608,122 +306,79 @@ export default function App() {
               setCashflowState={setCashflowState}
               age={age}
               cpfState={cpfState}
-            />
-          </ErrorBoundary>
+           />
         )}
-
         {activeTab === 'insurance' && (
-          <ErrorBoundary>
-            <InsuranceTab 
-              insuranceState={insuranceState}
-              setInsuranceState={setInsuranceState}
-              profile={profile}
-            />
-          </ErrorBoundary>
+           <InsuranceTab 
+              insuranceState={insuranceState} 
+              setInsuranceState={setInsuranceState} 
+              profile={profile} 
+           />
         )}
-        
-        {activeTab === 'life_events' && (
-           <ErrorBoundary>
-              <LifeEventsTab 
-                profile={profile}
-                insuranceState={insuranceState}
-                cashflowState={cashflowState}
-                investorState={investorState}
-                cpfState={cpfState}
-                cashflowData={cashflowData}
-                age={age}
-              />
-           </ErrorBoundary>
-        )}
-
         {activeTab === 'retirement' && (
-          <ErrorBoundary>
-            <RetirementTab 
+           <RetirementTab 
               cashflowData={cashflowData}
               retirement={retirement}
               setRetirement={setRetirement}
               profile={profile}
               age={age}
-              // Passed full state for comprehensive calculator
               investorState={investorState}
               setInvestorState={setInvestorState}
               cpfState={cpfState}
               cashflowState={cashflowState}
-            />
-          </ErrorBoundary>
+           />
         )}
-
         {activeTab === 'investor' && (
-          <ErrorBoundary>
-            <InvestorTab 
-              investorState={investorState}
-              setInvestorState={setInvestorState}
-            />
-          </ErrorBoundary>
+           <InvestorTab 
+              investorState={investorState} 
+              setInvestorState={setInvestorState} 
+           />
         )}
-
         {activeTab === 'wealth' && (
-          <ErrorBoundary>
-            <WealthToolTab 
-              wealthState={wealthState}
-              setWealthState={setWealthState}
-            />
-          </ErrorBoundary>
+           <WealthToolTab 
+              wealthState={wealthState} 
+              setWealthState={setWealthState} 
+           />
         )}
-
         {activeTab === 'property' && (
-          <ErrorBoundary>
-            <PropertyCalculatorTab 
+           <PropertyCalculatorTab 
               age={age}
               cpfData={cpfData}
               propertyState={propertyState}
               setPropertyState={setPropertyState}
-            />
-          </ErrorBoundary>
+           />
         )}
-
         {activeTab === 'analytics' && (
-          <ErrorBoundary>
-            <AnalyticsTab clients={clients} />
-          </ErrorBoundary>
+           <AnalyticsTab clients={clients} />
         )}
-
         {activeTab === 'crm' && (
-          <ErrorBoundary>
-            <CrmTab 
-              clients={clients}
-              profile={profile}
-              selectedClientId={selectedClientId}
-              newClient={resetForm}
-              saveClient={() => saveClient(false)}
-              loadClient={loadClient}
-              deleteClient={deleteClient}
-              setFollowUp={setFollowUp}
-              completeFollowUp={completeFollowUp}
-              maxClients={maxClients}
+           <CrmTab 
+              clients={clients} 
+              profile={profile} 
+              selectedClientId={currentClient?.id || null}
+              newClient={handleNewClient}
+              saveClient={handleSaveClient}
+              loadClient={handleLoadClient}
+              deleteClient={handleDeleteClient}
+              setFollowUp={(id, days) => {}}
+              completeFollowUp={handleCompleteFollowUp}
+              maxClients={100}
               userRole={user.role}
-              onRefresh={fetchClients}
-              isLoading={isClientLoading}
-            />
-          </ErrorBoundary>
+              onRefresh={loadClients}
+              isLoading={false}
+           />
+        )}
+        {activeTab === 'admin' && user.role === 'admin' && (
+           <AdminTab />
         )}
 
-        {activeTab === 'admin' && (
-          <ErrorBoundary>
-            <AdminTab />
-          </ErrorBoundary>
-        )}
       </AppShell>
+      
+      {/* AI Chat Assistant */}
+      <AiAssistant currentClient={currentClient} />
 
-      <AuthModal 
-        isOpen={showLogin} 
-        onClose={() => setShowLogin(false)} 
-      />
-
-      <PricingModal
-        isOpen={showPricing}
-        onClose={() => setShowPricing(false)}
-      />
     </>
   );
-}
+};
+
+export default App;

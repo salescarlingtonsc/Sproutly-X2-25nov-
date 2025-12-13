@@ -1,3 +1,4 @@
+
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { UserProfile, SubscriptionTier } from '../types';
@@ -66,9 +67,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       
       const isHardcodedAdmin = email === ADMIN_EMAIL;
 
+      // Ensure we fetch the 'modules' column
       let { data, error } = await supabase
         .from('profiles')
-        .select('subscription_tier, role, extra_slots, status')
+        .select('subscription_tier, role, extra_slots, status, modules')
         .eq('id', uid)
         .single();
       
@@ -85,8 +87,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         };
         await supabase.from('profiles').insert(newProfile);
         data = newProfile;
-        // Mock error object to prevent logic issues downstream if code relies on clean entry
-        // but mostly we just handled the 'error' case by recovering.
       } else if (error && error.code === 'PGRST116') {
          // Fallback fix for type error
          error = { message: 'No data', details: '', hint: '', code: 'PGRST116', name: 'PostgrestError' };
@@ -101,15 +101,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
       
       // Determine final state
-      // FIX: Ensure ANY admin role gets 'diamond' access, regardless of tier in DB
       const finalRole = isHardcodedAdmin ? 'admin' : (data?.role || 'user');
       const isAdminRole = finalRole === 'admin';
       
-      // Force diamond if admin, otherwise use DB value
       const finalTier = isAdminRole ? 'diamond' : ((data?.subscription_tier as SubscriptionTier) || 'free');
-      
       const finalStatus = isHardcodedAdmin ? 'approved' : (data?.status || 'pending');
       const finalSlots = data?.extra_slots || 0;
+      const finalModules = data?.modules || []; // Load manual modules
         
       setUser({
         id: uid,
@@ -117,7 +115,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         subscriptionTier: finalTier,
         role: finalRole,
         status: finalStatus as 'pending' | 'approved' | 'rejected',
-        extraSlots: finalSlots
+        extraSlots: finalSlots,
+        modules: finalModules
       });
 
     } catch (e) {
@@ -129,7 +128,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         subscriptionTier: isAdmin ? 'diamond' : 'free', 
         role: isAdmin ? 'admin' : 'user', 
         status: isAdmin ? 'approved' : 'pending',
-        extraSlots: 0 
+        extraSlots: 0,
+        modules: []
       });
     } finally {
       setIsLoading(false);

@@ -1,10 +1,10 @@
-
 import React, { useMemo, useState, useEffect } from 'react';
 import { toNum, fmtSGD } from '../../lib/helpers';
+import { calculateChildEducationCost } from '../../lib/calculators';
 import Card from '../../components/common/Card';
 import LineChart from '../../components/common/LineChart';
 import { 
-  Profile, InsuranceState, CashflowState, InvestorState, CpfState, CashflowData 
+  Profile, InsuranceState, CashflowState, InvestorState, CpfState, CashflowData, PropertyState
 } from '../../types';
 import { computeCpf } from '../../lib/calculators';
 
@@ -16,36 +16,54 @@ interface LifeEventsTabProps {
   cpfState: CpfState;
   cashflowData: CashflowData | null;
   age: number;
+  propertyState?: PropertyState;
 }
 
 type EventType = 'none' | 'death' | 'tpd' | 'ci';
 
 const LifeEventsTab: React.FC<LifeEventsTabProps> = ({ 
-  profile, insuranceState, cashflowState, investorState, cpfState, cashflowData, age 
+  profile, insuranceState, cashflowState, investorState, cpfState, cashflowData, age, propertyState
 }) => {
   
   // Constants
   const MAX_PROJECTION_AGE = 95;
+  const INFLATION_RATE = 0.03;
+  const INVESTMENT_RETURN = 0.05; // 5% base
+  const CPF_GROWTH = 0.025; // OA base
   
   const [selectedEvent, setSelectedEvent] = useState<EventType>('none');
-  // Ensure initial event age is valid relative to current age
   const [eventAge, setEventAge] = useState<number>(Math.min(Math.max(age + 1, 40), MAX_PROJECTION_AGE - 1));
+  
+  // Scenarios specific settings
+  const [recoveryYears, setRecoveryYears] = useState<number>(5);
+  const [supportYears, setSupportYears] = useState<number>(20); // For death: How long to support family
+  const [finalExpenses, setFinalExpenses] = useState<number>(25000); // Funeral/Probate
 
-  // Update event age if current age changes (e.g. different client loaded)
   useEffect(() => {
     setEventAge(prev => Math.max(prev, age + 1));
   }, [age]);
 
-  // --- 1. GATHER BASELINE DATA ---
+  // Helper for Death Scenario
+  const lifeExpectancy = profile.gender === 'female' ? 86 : 82;
+  const yearsUntilLifeExpectancy = Math.max(1, lifeExpectancy - eventAge);
+
+  // --- 1. DATA GATHERING ---
   const grossIncome = toNum(profile.monthlyIncome) || toNum(profile.grossSalary) || 0;
+  const takeHomeIncome = toNum(profile.takeHome) > 0 
+    ? toNum(profile.takeHome) 
+    : (cpfState ? (computeCpf(grossIncome, age).takeHome) : grossIncome * 0.8);
+
   const expensesMonthly = cashflowData ? cashflowData.totalExpenses : 0;
-  
-  // Baseline Assets
   const currentCash = toNum(cashflowState.currentSavings, 0);
   const currentInvestments = toNum(investorState.portfolioValue, 0);
-  const currentCpfLiquid = toNum(cpfState.currentBalances.oa, 0) + toNum(cpfState.currentBalances.sa, 0);
+  const currentCpfLiquid = toNum(cpfState.currentBalances.oa, 0) + toNum(cpfState.currentBalances.sa, 0) + toNum(cpfState.currentBalances.ma, 0); 
   
-  // Insurance Payouts (Sum Assured)
+  // Savings Flow
+  const totalMonthlySavings = cashflowData ? cashflowData.monthlySavings : 0;
+  const monthlyInv = toNum(profile.monthlyInvestmentAmount, 0);
+  const monthlyCashSavings = Math.max(0, totalMonthlySavings - monthlyInv);
+
+  // Insurance Payouts
   const policies = insuranceState.policies || [];
   const payouts = useMemo(() => {
     return policies.reduce((acc, p) => ({
@@ -55,287 +73,551 @@ const LifeEventsTab: React.FC<LifeEventsTabProps> = ({
     }), { death: 0, tpd: 0, ci: 0 });
   }, [policies]);
 
-  // --- 2. PROJECTION ENGINE ---
-  const projection = useMemo(() => {
-    const data = [];
-    const inflation = 0.03;
-    const investmentReturn = 0.05; // Conservative 5%
-    const cpfRate = 0.025; // Blended conservative
+  // --- HELPER: ASSET PROJECTION ---
+  const projectAssetsToAge = (targetAge: number) => {
+     const years = Math.max(0, targetAge - age);
+     if (years === 0) return { cash: currentCash, investments: currentInvestments, cpf: currentCpfLiquid };
 
-    let cash = currentCash;
-    let investments = currentInvestments;
-    let cpf = currentCpfLiquid;
-    
-    // Scenario Logic
-    let incomeStopped = false;
+     // FV = PV * (1+r)^n + PMT * [((1+r)^n - 1) / r]
+     
+     // 1. Investments
+     const rInv = INVESTMENT_RETURN;
+     const n = years;
+     const fvInvPrincipal = currentInvestments * Math.pow(1 + rInv, n);
+     const fvInvContrib = monthlyInv * 12 * ( (Math.pow(1 + rInv, n) - 1) / rInv );
+     const totalInv = fvInvPrincipal + fvInvContrib;
 
-    for (let currentSimAge = age; currentSimAge <= MAX_PROJECTION_AGE; currentSimAge++) {
-      const isEventYear = currentSimAge === eventAge && selectedEvent !== 'none';
-      const isRetirement = currentSimAge >= toNum(profile.retirementAge, 65);
+     // 2. Cash (Low return, say 0.5% or just accumulation)
+     const rCash = 0.005; 
+     const fvCashPrincipal = currentCash * Math.pow(1 + rCash, n);
+     const fvCashContrib = monthlyCashSavings * 12 * ( (Math.pow(1 + rCash, n) - 1) / rCash );
+     const totalCash = fvCashPrincipal + fvCashContrib;
 
-      // A. APPLY EVENT IMPACT (One time)
-      let payoutReceived = 0;
-      if (isEventYear) {
-        if (selectedEvent === 'death') {
-            payoutReceived = payouts.death;
-            incomeStopped = true; // Assuming death stops income for family projection
-        }
-        if (selectedEvent === 'tpd') {
-          payoutReceived = payouts.tpd;
-          incomeStopped = true; // TPD stops income
-        }
-        if (selectedEvent === 'ci') {
-          payoutReceived = payouts.ci;
-          incomeStopped = true; // CI typically stops income for treatment/recovery
-        }
+     // 3. CPF (Approx 2.5%)
+     const totalCpf = currentCpfLiquid * Math.pow(1 + CPF_GROWTH, n);
+
+     return { cash: totalCash, investments: totalInv, cpf: totalCpf };
+  };
+
+  // --- HELPER: MORTGAGE AMORTIZATION ---
+  const getMortgageBalance = (currentAge: number, targetAge: number) => {
+     if (!propertyState) return 0;
+     const price = toNum(propertyState.propertyPrice);
+     const down = price * (toNum(propertyState.downPaymentPercent)/100);
+     const loanAmount = price - down;
+     const rate = toNum(propertyState.interestRate, 3.5);
+     const tenure = toNum(propertyState.loanTenure, 25);
+     
+     const yearsPassed = targetAge - currentAge;
+     
+     if (yearsPassed < 0) return loanAmount;
+     if (yearsPassed >= tenure) return 0;
+     
+     const r = rate / 100 / 12;
+     const n = tenure * 12;
+     const p = yearsPassed * 12;
+     
+     if (r === 0) return loanAmount * (1 - p/n);
+     
+     const balance = loanAmount * ( (Math.pow(1+r, n) - Math.pow(1+r, p)) / (Math.pow(1+r, n) - 1) );
+     return Math.max(0, balance);
+  };
+
+  // --- 2. DEATH SCENARIO: CAPITAL NEEDS ANALYSIS (THE BILL) ---
+  const deathAnalysis = useMemo(() => {
+    if (selectedEvent !== 'death') return null;
+
+    // A. LIABILITIES
+    const mortgageLiability = getMortgageBalance(age, eventAge);
+
+    let educationLiability = 0;
+    const eduBreakdown: {name: string, cost: number}[] = [];
+    if (profile.children) {
+        profile.children.forEach(child => {
+            const cost = calculateChildEducationCost(child, profile.educationSettings);
+            educationLiability += cost;
+            if (cost > 0) eduBreakdown.push({ name: child.name || 'Child', cost });
+        });
+    }
+
+    const survivorMonthlyNeed = expensesMonthly * 0.7;
+    const familySupportLiability = survivorMonthlyNeed * 12 * supportYears;
+
+    const totalNeeds = mortgageLiability + educationLiability + familySupportLiability + finalExpenses;
+
+    // B. ASSETS (Projected)
+    const projected = projectAssetsToAge(eventAge);
+    const totalAssets = projected.cash + projected.investments + projected.cpf + payouts.death;
+
+    // C. GAP
+    const legacyGap = totalAssets - totalNeeds;
+
+    return {
+        needs: {
+            mortgage: mortgageLiability,
+            education: educationLiability,
+            educationDetails: eduBreakdown,
+            familySupport: familySupportLiability,
+            finalExpenses,
+            total: totalNeeds
+        },
+        assets: {
+            cash: projected.cash,
+            investments: projected.investments,
+            cpf: projected.cpf,
+            insurance: payouts.death,
+            total: totalAssets
+        },
+        gap: legacyGap,
+        survivorMonthlyNeed
+    };
+  }, [selectedEvent, eventAge, age, propertyState, profile.children, profile.educationSettings, expensesMonthly, supportYears, finalExpenses, currentCash, currentInvestments, currentCpfLiquid, payouts.death, monthlyInv, monthlyCashSavings]);
+
+  // --- DEATH PROJECTION GRAPH ---
+  const deathProjection = useMemo(() => {
+     if (selectedEvent !== 'death') return [];
+     const data = [];
+     const maxGraphAge = Math.min(age + 40, 85);
+     
+     for (let a = age; a <= maxGraphAge; a += 1) { 
+        const mort = getMortgageBalance(age, a);
+        const survivorMonthlyNeed = expensesMonthly * 0.7;
+        const incomeRep = survivorMonthlyNeed * 12 * supportYears;
         
-        // Inject payout into Cash
-        cash += payoutReceived;
-      }
-
-      // B. INCOME FLOW
-      let annualIncome = 0;
-      // If we haven't retired AND (no event occurred OR event doesn't stop income)
-      if (!isRetirement && !incomeStopped) {
-         annualIncome = grossIncome * 12; // Gross for simplicity in wealth view
-         
-         // Add CPF contributions
-         const cpfData = computeCpf(grossIncome, currentSimAge);
-         cpf += cpfData.total * 12; 
-      }
-      
-      // C. EXPENSE FLOW
-      const annualExpenses = (expensesMonthly * 12) * Math.pow(1 + inflation, currentSimAge - age);
-
-      // D. WEALTH GROWTH
-      investments *= (1 + investmentReturn);
-      cpf *= (1 + cpfRate);
-      
-      // E. NET FLOW CALCULATION
-      // Income goes to Cash first
-      cash += annualIncome;
-      
-      // Expenses drawn from Cash, then Investments
-      let expenseNeed = annualExpenses;
-      
-      if (cash >= expenseNeed) {
-        cash -= expenseNeed;
-        expenseNeed = 0;
-      } else {
-        expenseNeed -= cash;
-        cash = 0;
-      }
-      
-      if (expenseNeed > 0) {
-        if (investments >= expenseNeed) {
-          investments -= expenseNeed;
-          expenseNeed = 0;
-        } else {
-          expenseNeed -= investments;
-          investments = 0;
+        let edu = 0;
+        if (profile.children) {
+           profile.children.forEach(c => edu += calculateChildEducationCost(c, profile.educationSettings));
         }
+
+        const totalLiab = mort + incomeRep + edu + finalExpenses;
+
+        const proj = projectAssetsToAge(a);
+        const assets = proj.cash + proj.investments + proj.cpf + payouts.death;
+
+        data.push({
+           age: a,
+           liabilities: Math.round(totalLiab),
+           assets: Math.round(assets),
+           netLegacy: Math.round(assets - totalLiab)
+        });
+     }
+     return data;
+  }, [selectedEvent, age, propertyState, expensesMonthly, supportYears, profile.children, profile.educationSettings, finalExpenses, currentCash, currentInvestments, currentCpfLiquid, payouts.death, monthlyInv, monthlyCashSavings]);
+
+
+  // --- 3. LIVING SCENARIOS (TPD / CI) SNAPSHOT & PROJECTION ---
+  
+  // Snapshot at Event Age
+  const livingSnapshot = useMemo(() => {
+     if (selectedEvent === 'death' || selectedEvent === 'none') return null;
+     const proj = projectAssetsToAge(eventAge);
+     const payout = selectedEvent === 'tpd' ? payouts.tpd : payouts.ci;
+     
+     return {
+        cash: proj.cash,
+        investments: proj.investments,
+        cpf: proj.cpf,
+        payout,
+        totalLiquid: proj.cash + proj.investments + payout + (selectedEvent === 'tpd' ? proj.cpf : 0) // CPF liquid only for TPD usually
+     };
+  }, [selectedEvent, eventAge, age, currentCash, currentInvestments, currentCpfLiquid, monthlyInv, monthlyCashSavings, payouts]);
+
+  // Long-term Projection (Sustainability)
+  const projection = useMemo(() => {
+    if (selectedEvent === 'death' || selectedEvent === 'none') return [];
+    const data = [];
+    
+    // Start from Event Age state
+    let cash = livingSnapshot ? livingSnapshot.cash + livingSnapshot.payout : 0;
+    let investments = livingSnapshot ? livingSnapshot.investments : 0;
+    let cpf = livingSnapshot ? livingSnapshot.cpf : 0;
+    
+    // TPD releases CPF to Cash
+    if (selectedEvent === 'tpd') {
+       cash += cpf;
+       cpf = 0;
+    }
+
+    for (let currentSimAge = eventAge; currentSimAge <= MAX_PROJECTION_AGE; currentSimAge++) {
+      
+      // Income Status
+      let isIncomeActive = false; // Event kills income
+      let isRecovering = false;
+
+      // CI might allow recovery
+      if (selectedEvent === 'ci' && currentSimAge >= eventAge + recoveryYears && currentSimAge < toNum(profile.retirementAge, 65)) {
+         isIncomeActive = true;
       }
 
-      // F. RE-BALANCING (Simple: Surplus cash > 20k moves to investments for growth)
-      if (cash > 20000) {
-        const surplus = cash - 20000;
-        cash = 20000;
-        investments += surplus;
-      }
+      // Expense Factor
+      let expenseFactor = 1.0;
+      if (selectedEvent === 'tpd') expenseFactor = 1.1; 
+      if (selectedEvent === 'ci' && !isIncomeActive) expenseFactor = 1.1;
 
-      // METRICS
-      const liquidWealth = Math.round(cash + investments);
-      const netWorth = Math.round(liquidWealth + cpf);
+      // Flows
+      // Expenses grow from NOW (age) to currentSimAge
+      const yearsFromNow = currentSimAge - age;
+      const annualExpenses = (expensesMonthly * 12) * Math.pow(1 + INFLATION_RATE, yearsFromNow) * expenseFactor;
+      
+      // Income (if recovered)
+      if (isIncomeActive) {
+         // Assume income also grew
+         const annualIncome = (takeHomeIncome * 12) * Math.pow(1.02, yearsFromNow);
+         cash += annualIncome;
+         // Add savings back to pot?
+      }
+      
+      cash -= annualExpenses;
+      
+      // Growth
+      investments *= (1 + INVESTMENT_RETURN);
+      if (selectedEvent !== 'tpd') cpf *= (1 + CPF_GROWTH);
+
+      // Smart Liquidation
+      if (cash < 0) {
+         let needed = Math.abs(cash);
+         if (investments >= needed) {
+            investments -= needed;
+            cash = 0;
+         } else {
+            needed -= investments;
+            investments = 0;
+            cash = -needed; // Debt
+         }
+      }
 
       data.push({
         age: currentSimAge,
-        liquidWealth, // Cash + Investments (Accessible)
-        netWorth,     // Total (inc. CPF)
+        liquidWealth: Math.round(Math.max(0, cash + investments)), // Excludes CPF if locked
         cash,
-        investments,
-        cpf,
-        payoutReceived,
-        isEventYear
+        investments
       });
     }
-    
     return data;
-  }, [age, currentCash, currentInvestments, currentCpfLiquid, eventAge, selectedEvent, grossIncome, expensesMonthly, payouts, profile.retirementAge]);
+  }, [age, eventAge, selectedEvent, livingSnapshot, expensesMonthly, takeHomeIncome, recoveryYears, profile.retirementAge]);
 
-  // --- 3. METRICS ---
-  const eventYearData = projection.find(p => p.age === eventAge);
-  // Depletion check now looks at LIQUID wealth, not total net worth (since CPF is locked)
   const zeroWealthYear = projection.find(p => p.liquidWealth <= 0);
-  const finalYear = projection[projection.length - 1];
+  const crashAge = zeroWealthYear ? zeroWealthYear.age : null;
 
   return (
     <div className="p-5">
-      {/* HEADER */}
-      <div className={`border-2 rounded-xl p-6 mb-6 shadow-sm transition-colors ${selectedEvent === 'none' ? 'bg-gradient-to-br from-blue-50 to-blue-100 border-blue-500' : 'bg-gradient-to-br from-slate-50 to-slate-100 border-slate-500'}`}>
-        <div className="flex flex-col md:flex-row gap-6 items-start md:items-center">
-          <div className="flex items-center gap-3">
-            <div className="text-4xl">{selectedEvent === 'none' ? '🛡️' : '⚡'}</div>
-            <div>
-              <h3 className="m-0 text-xl font-bold text-gray-900">Life Events Stress Test</h3>
-              <p className="m-0 text-sm opacity-80 text-gray-700">
-                Simulate the impact on your <strong>Liquid Assets (Cash + Investments)</strong>.
-              </p>
-            </div>
-          </div>
-          
-          <div className="flex-1 w-full bg-white/60 p-4 rounded-lg border border-gray-200">
-             <div className="text-xs font-bold text-gray-500 uppercase mb-2">Select Scenario to Simulate:</div>
-             <div className="flex gap-2 flex-wrap">
-                <button 
-                  onClick={() => setSelectedEvent('none')}
-                  className={`px-4 py-2 rounded-md text-sm font-bold border transition-all ${selectedEvent === 'none' ? 'bg-blue-600 text-white border-blue-600 shadow-md' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
-                >
-                  ☀️ No Event (Retirement)
-                </button>
-                <button 
-                  onClick={() => setSelectedEvent('death')}
-                  className={`px-4 py-2 rounded-md text-sm font-bold border transition-all ${selectedEvent === 'death' ? 'bg-gray-800 text-white border-gray-800 shadow-md' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
-                >
-                  💀 Death
-                </button>
-                <button 
-                  onClick={() => setSelectedEvent('tpd')}
-                  className={`px-4 py-2 rounded-md text-sm font-bold border transition-all ${selectedEvent === 'tpd' ? 'bg-amber-600 text-white border-amber-600 shadow-md' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
-                >
-                  ♿ Disability (TPD)
-                </button>
-                <button 
-                  onClick={() => setSelectedEvent('ci')}
-                  className={`px-4 py-2 rounded-md text-sm font-bold border transition-all ${selectedEvent === 'ci' ? 'bg-red-600 text-white border-red-600 shadow-md' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
-                >
-                  🏥 Critical Illness
-                </button>
-             </div>
-          </div>
-        </div>
+      {/* HEADER SELECTOR */}
+      <div className="bg-white border-b border-gray-200 p-4 mb-6 -mx-5 -mt-5 sticky top-0 z-10 shadow-sm flex flex-col sm:flex-row justify-between items-center gap-4">
+         <h2 className="text-xl font-bold text-gray-800 m-0">⚡ Life Event Simulator</h2>
+         <div className="flex bg-gray-100 p-1 rounded-lg">
+            {['none', 'death', 'tpd', 'ci'].map((evt) => (
+               <button
+                  key={evt}
+                  onClick={() => setSelectedEvent(evt as EventType)}
+                  className={`px-4 py-2 text-xs font-bold rounded-md transition-all ${selectedEvent === evt ? 'bg-white shadow-sm text-indigo-900' : 'text-gray-500 hover:text-gray-900'}`}
+               >
+                  {evt === 'none' ? 'No Event' : evt.toUpperCase()}
+               </button>
+            ))}
+         </div>
       </div>
 
-      {/* CONTROLS (Only if Event Selected) */}
-      {selectedEvent !== 'none' && (
-        <div className="bg-white border-l-4 border-amber-500 rounded-xl p-6 mb-6 shadow-md animate-fade-in">
-           <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-center">
-              <div>
-                 <label className="block text-sm font-bold text-gray-800 mb-2">
-                    At what age does the event occur? (Age: {eventAge})
-                 </label>
-                 <input 
-                   type="range" 
-                   min={Math.min(age + 1, MAX_PROJECTION_AGE - 1)}
-                   max={MAX_PROJECTION_AGE} 
-                   value={eventAge} 
-                   onChange={(e) => setEventAge(Number(e.target.value))}
-                   className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-amber-600"
-                 />
-                 <div className="flex justify-between text-xs text-gray-400 mt-1">
-                    <span>Now ({age})</span>
-                    <span>Age {MAX_PROJECTION_AGE}</span>
-                 </div>
-              </div>
+      {/* --- DEATH SCENARIO: THE LEGACY BILL --- */}
+      {selectedEvent === 'death' && deathAnalysis && (
+         <div className="animate-fade-in">
+            {/* Age Selection for Death */}
+            <div className="bg-white border-l-4 border-indigo-500 rounded-xl p-6 mb-6 shadow-sm">
+               <div className="flex flex-col md:flex-row justify-between items-center gap-6">
+                  <div className="flex-1 w-full">
+                     <label className="block text-sm font-bold text-gray-800 mb-2">
+                        Simulate Death at Age: <span className="text-indigo-600 text-lg">{eventAge}</span>
+                     </label>
+                     <input 
+                       type="range" 
+                       min={age}
+                       max={90} 
+                       value={eventAge} 
+                       onChange={(e) => setEventAge(Number(e.target.value))}
+                       className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                     />
+                     <div className="text-xs text-gray-500 mt-2">
+                        Move slider to see how liabilities (like mortgage) decrease over time.
+                     </div>
+                  </div>
+                  <div className="text-right">
+                     <div className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-1">Mortgage Balance</div>
+                     <div className="text-xl font-bold text-gray-800">{fmtSGD(deathAnalysis.needs.mortgage)}</div>
+                  </div>
+               </div>
+            </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                 <div className="p-3 bg-gray-50 rounded border border-gray-200">
-                    <div className="text-xs text-gray-500 font-bold uppercase">Estimated Payout</div>
-                    <div className="text-xl font-bold text-emerald-600">
-                       {selectedEvent === 'death' && fmtSGD(payouts.death)}
-                       {selectedEvent === 'tpd' && fmtSGD(payouts.tpd)}
-                       {selectedEvent === 'ci' && fmtSGD(payouts.ci)}
-                    </div>
-                    <div className="text-[10px] text-gray-400">Based on Insurance Tab</div>
-                 </div>
-                 <div className="p-3 bg-gray-50 rounded border border-gray-200">
-                    <div className="text-xs text-gray-500 font-bold uppercase">Active Income Status</div>
-                    <div className={`text-xl font-bold ${selectedEvent === 'death' ? 'text-gray-800' : 'text-red-600'}`}>
-                       {selectedEvent === 'death' ? 'Legacy' : 'STOPS 🛑'}
-                    </div>
-                    <div className="text-[10px] text-gray-400">
-                       {selectedEvent === 'death' ? 'Lump sum for beneficiaries' : 'Income assumed to cease'}
-                    </div>
-                 </div>
-              </div>
-           </div>
-        </div>
+            <div className="bg-slate-900 text-white p-6 rounded-xl shadow-xl mb-6">
+               <div className="flex flex-col md:flex-row justify-between items-center gap-6">
+                  <div>
+                     <h3 className="text-2xl font-bold m-0 mb-2">The Legacy Bill</h3>
+                     <p className="text-slate-400 text-sm m-0">
+                        If you pass away at Age {eventAge}, this is the financial gap.
+                     </p>
+                  </div>
+                  <div className={`text-right px-6 py-3 rounded-lg border-2 ${deathAnalysis.gap >= 0 ? 'bg-emerald-900/50 border-emerald-500' : 'bg-red-900/50 border-red-500'}`}>
+                     <div className="text-xs font-bold uppercase tracking-widest opacity-80 mb-1">
+                        {deathAnalysis.gap >= 0 ? 'Legacy Surplus' : 'Legacy Shortfall'}
+                     </div>
+                     <div className={`text-3xl font-extrabold ${deathAnalysis.gap >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                        {deathAnalysis.gap >= 0 ? '+' : '-'}{fmtSGD(Math.abs(deathAnalysis.gap))}
+                     </div>
+                  </div>
+               </div>
+            </div>
+
+            {/* Death Projection Chart */}
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
+               <h3 className="text-lg font-bold text-gray-800 mb-4">Legacy Gap Over Time</h3>
+               <LineChart
+                 height={250}
+                 xLabels={deathProjection.filter((_, i) => i % 5 === 0).map(d => `Age ${d.age}`)}
+                 series={[
+                    {
+                       name: 'Total Liabilities',
+                       values: deathProjection.filter((_, i) => i % 5 === 0).map(d => d.liabilities),
+                       stroke: '#ef4444' // red
+                    },
+                    {
+                       name: 'Total Assets (w/ Insurance)',
+                       values: deathProjection.filter((_, i) => i % 5 === 0).map(d => d.assets),
+                       stroke: '#10b981' // green
+                    }
+                 ]}
+                 onFormatY={(v) => v >= 1000000 ? `$${(v/1000000).toFixed(1)}M` : `$${(v/1000).toFixed(0)}k`}
+               />
+               <div className="text-center text-xs text-gray-500 mt-2">
+                  The crossing point indicates when you become "Self-Insured" (Assets > Liabilities).
+               </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+               
+               {/* LEFT: THE NEEDS (RED) */}
+               <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+                  <div className="bg-red-50 p-4 border-b border-red-100 flex justify-between items-center">
+                     <h4 className="text-red-800 font-bold m-0">📉 Family Needs (Liabilities)</h4>
+                     <div className="text-xl font-bold text-red-700">{fmtSGD(deathAnalysis.needs.total)}</div>
+                  </div>
+                  <div className="p-0">
+                     <table className="w-full text-sm">
+                        <tbody className="divide-y divide-gray-100">
+                           <tr className="group hover:bg-gray-50">
+                              <td className="p-4 text-gray-600">
+                                 <div className="font-bold text-gray-800">Outstanding Mortgage</div>
+                                 <div className="text-xs text-gray-400">Amortized balance at Age {eventAge}</div>
+                              </td>
+                              <td className="p-4 text-right font-bold text-gray-800">{fmtSGD(deathAnalysis.needs.mortgage)}</td>
+                           </tr>
+                           <tr className="group hover:bg-gray-50">
+                              <td className="p-4 text-gray-600">
+                                 <div className="font-bold text-gray-800">Children's Education</div>
+                                 <div className="text-xs text-gray-400">Remaining tuition + uni fees</div>
+                                 {deathAnalysis.needs.educationDetails.length > 0 && (
+                                    <div className="mt-1 flex gap-1">
+                                       {deathAnalysis.needs.educationDetails.map((c, i) => (
+                                          <span key={i} className="text-[10px] bg-red-100 text-red-700 px-1.5 rounded">{c.name}: {fmtSGD(c.cost)}</span>
+                                       ))}
+                                    </div>
+                                 )}
+                              </td>
+                              <td className="p-4 text-right font-bold text-gray-800">{fmtSGD(deathAnalysis.needs.education)}</td>
+                           </tr>
+                           
+                           {/* MODIFIED: FAMILY LIVING EXPENSES CONTROL */}
+                           <tr className="group hover:bg-gray-50 bg-red-50/20">
+                              <td className="p-4 text-gray-600">
+                                 <div className="font-bold text-gray-800">Family Living Expenses</div>
+                                 <div className="text-xs text-gray-400 mb-2">
+                                    {supportYears} years @ {fmtSGD(deathAnalysis.survivorMonthlyNeed)}/mo (70% replacement)
+                                 </div>
+                                 
+                                 <div className="bg-white p-3 rounded-lg border border-red-100 shadow-sm">
+                                    <div className="flex justify-between items-center mb-1">
+                                       <label className="text-[10px] uppercase font-bold text-gray-500">Support Duration</label>
+                                       <div className="text-xs font-bold text-red-700">{supportYears} Years</div>
+                                    </div>
+                                    <input 
+                                       type="range" 
+                                       min="1" 
+                                       max={Math.max(50, yearsUntilLifeExpectancy + 5)} 
+                                       step="1"
+                                       value={supportYears}
+                                       onChange={(e) => setSupportYears(Number(e.target.value))}
+                                       className="w-full h-1.5 bg-red-200 rounded-lg appearance-none cursor-pointer accent-red-600 block mb-3"
+                                    />
+                                    <div className="flex flex-wrap gap-2 justify-end">
+                                       <button 
+                                          onClick={() => setSupportYears(20)}
+                                          className="text-[10px] px-2 py-1 bg-gray-50 border border-gray-200 rounded text-gray-600 hover:bg-gray-100 hover:text-gray-900 transition-colors"
+                                       >
+                                          Default (20y)
+                                       </button>
+                                       <button 
+                                          onClick={() => setSupportYears(yearsUntilLifeExpectancy)}
+                                          className="text-[10px] px-2 py-1 bg-gray-50 border border-gray-200 rounded text-gray-600 hover:bg-red-50 hover:text-red-700 hover:border-red-200 transition-colors"
+                                       >
+                                          Until Age {lifeExpectancy} ({yearsUntilLifeExpectancy}y)
+                                       </button>
+                                    </div>
+                                 </div>
+                              </td>
+                              <td className="p-4 text-right font-bold text-gray-800 align-top pt-6">
+                                 {fmtSGD(deathAnalysis.needs.familySupport)}
+                              </td>
+                           </tr>
+
+                           <tr className="group hover:bg-gray-50">
+                              <td className="p-4 text-gray-600">
+                                 <div className="font-bold text-gray-800">Final Expenses</div>
+                                 <div className="text-xs text-gray-400">Funeral, probate, admin</div>
+                              </td>
+                              <td className="p-4 text-right font-bold text-gray-800">{fmtSGD(deathAnalysis.needs.finalExpenses)}</td>
+                           </tr>
+                        </tbody>
+                     </table>
+                  </div>
+               </div>
+
+               {/* RIGHT: THE ASSETS (GREEN) */}
+               <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden h-fit">
+                  <div className="bg-emerald-50 p-4 border-b border-emerald-100 flex justify-between items-center">
+                     <h4 className="text-emerald-800 font-bold m-0">📈 Available Assets</h4>
+                     <div className="text-xl font-bold text-emerald-700">{fmtSGD(deathAnalysis.assets.total)}</div>
+                  </div>
+                  <div className="p-0">
+                     <table className="w-full text-sm">
+                        <tbody className="divide-y divide-gray-100">
+                           <tr className="hover:bg-gray-50">
+                              <td className="p-4 text-gray-600">
+                                 <div className="font-bold text-gray-800">Insurance Payout</div>
+                                 <div className="text-xs text-gray-400">Existing Death Policies</div>
+                              </td>
+                              <td className="p-4 text-right font-bold text-gray-800">{fmtSGD(deathAnalysis.assets.insurance)}</td>
+                           </tr>
+                           <tr className="hover:bg-gray-50">
+                              <td className="p-4 text-gray-600">
+                                 <div className="font-bold text-gray-800">CPF Balances</div>
+                                 <div className="text-xs text-gray-400">Projected at Age {eventAge}</div>
+                              </td>
+                              <td className="p-4 text-right font-bold text-gray-800">{fmtSGD(deathAnalysis.assets.cpf)}</td>
+                           </tr>
+                           <tr className="hover:bg-gray-50">
+                              <td className="p-4 text-gray-600">
+                                 <div className="font-bold text-gray-800">Investments</div>
+                                 <div className="text-xs text-gray-400">Accumulated & Liquidated</div>
+                              </td>
+                              <td className="p-4 text-right font-bold text-gray-800">{fmtSGD(deathAnalysis.assets.investments)}</td>
+                           </tr>
+                           <tr className="hover:bg-gray-50">
+                              <td className="p-4 text-gray-600">
+                                 <div className="font-bold text-gray-800">Cash Savings</div>
+                                 <div className="text-xs text-gray-400">Accumulated Savings</div>
+                              </td>
+                              <td className="p-4 text-right font-bold text-gray-800">{fmtSGD(deathAnalysis.assets.cash)}</td>
+                           </tr>
+                        </tbody>
+                     </table>
+                  </div>
+               </div>
+            </div>
+         </div>
       )}
 
-      {/* CHART SECTION */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
-        <div className="flex justify-between items-center mb-4">
-           <h3 className="text-lg font-bold text-gray-800">Liquid Assets Trajectory</h3>
-           <span className="text-[10px] bg-gray-100 text-gray-500 px-2 py-1 rounded">Excludes CPF (Locked)</span>
-        </div>
-        <LineChart
-          height={320}
-          xLabels={projection.filter((_, i) => i % 5 === 0).map(d => `Age ${d.age}`)}
-          series={[
-             {
-                name: selectedEvent === 'none' ? 'Projected Liquid Assets' : 'Liquid Assets (After Event)',
-                values: projection.filter((_, i) => i % 5 === 0).map(d => d.liquidWealth),
-                stroke: selectedEvent === 'none' ? '#3b82f6' : '#f59e0b'
-             }
-          ]}
-          onFormatY={(v) => v >= 1000000 ? `$${(v/1000000).toFixed(1)}M` : `$${(v/1000).toFixed(0)}k`}
-        />
-        
-        {/* Chart Annotation */}
-        {selectedEvent !== 'none' && (
-           <div className="text-center mt-2 text-xs text-amber-600 font-bold">
-              ⚡ Event occurs at Age {eventAge} (Visible change in trajectory)
-           </div>
-        )}
-      </div>
-
-      {/* IMPACT SUMMARY CARDS */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-         {/* Card 1: Payout Impact */}
-         <Card 
-            title={selectedEvent === 'none' ? `Projected Legacy (Total)` : 'Immediate Cash Injection'}
-            value={selectedEvent === 'none' ? fmtSGD(finalYear?.netWorth || 0) : fmtSGD(eventYearData?.payoutReceived || 0)}
-            tone="success"
-            icon="💰"
-         />
-
-         {/* Card 2: Sustainability */}
-         <div className={`p-4 rounded-lg border-2 ${zeroWealthYear ? 'bg-red-50 border-red-200' : 'bg-emerald-50 border-emerald-200'}`}>
-            <div className="text-xs font-bold uppercase mb-1 opacity-70">
-               {zeroWealthYear ? 'Cash Depletion Age' : 'Sustainability'}
+      {/* --- LIVING SCENARIOS (TPD/CI) --- */}
+      {selectedEvent !== 'death' && selectedEvent !== 'none' && livingSnapshot && (
+         <div className="animate-fade-in">
+            {/* Control Panel */}
+            <div className="bg-white border-l-4 border-amber-500 rounded-xl p-6 mb-6 shadow-sm">
+               <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-center">
+                  <div>
+                     <label className="block text-sm font-bold text-gray-800 mb-2">
+                        Event occurs at Age: <span className="text-amber-600 text-lg">{eventAge}</span>
+                     </label>
+                     <input 
+                       type="range" 
+                       min={Math.min(age + 1, MAX_PROJECTION_AGE - 1)}
+                       max={MAX_PROJECTION_AGE} 
+                       value={eventAge} 
+                       onChange={(e) => setEventAge(Number(e.target.value))}
+                       className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-amber-600"
+                     />
+                     {selectedEvent === 'ci' && (
+                        <div className="mt-4">
+                           <label className="block text-xs font-bold text-gray-600 mb-1">
+                              Recovery Period (Income Stops): {recoveryYears} Years
+                           </label>
+                           <input 
+                             type="range" min="1" max="10" 
+                             value={recoveryYears} 
+                             onChange={(e) => setRecoveryYears(Number(e.target.value))}
+                             className="w-full h-1 bg-gray-200 accent-red-500"
+                           />
+                        </div>
+                     )}
+                  </div>
+                  
+                  {/* Snapshot Summary for Living Scenarios */}
+                  <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                     <h4 className="text-xs font-bold text-gray-500 uppercase mb-3">Financial Strength at Event (Age {eventAge})</h4>
+                     <div className="grid grid-cols-2 gap-y-3 gap-x-4">
+                        <div>
+                           <div className="text-[10px] text-gray-400">Insurance Payout</div>
+                           <div className="text-lg font-bold text-emerald-600">{fmtSGD(livingSnapshot.payout)}</div>
+                        </div>
+                        <div>
+                           <div className="text-[10px] text-gray-400">Accumulated Cash</div>
+                           <div className="text-sm font-bold text-gray-700">{fmtSGD(livingSnapshot.cash)}</div>
+                        </div>
+                        <div>
+                           <div className="text-[10px] text-gray-400">Investments</div>
+                           <div className="text-sm font-bold text-gray-700">{fmtSGD(livingSnapshot.investments)}</div>
+                        </div>
+                        <div>
+                           <div className="text-[10px] text-gray-400">CPF Balance</div>
+                           <div className="text-sm font-bold text-gray-700">{fmtSGD(livingSnapshot.cpf)}</div>
+                           {selectedEvent === 'ci' && <span className="text-[9px] text-red-400">(Not Liquid)</span>}
+                        </div>
+                     </div>
+                  </div>
+               </div>
             </div>
-            <div className={`text-2xl font-bold ${zeroWealthYear ? 'text-red-700' : 'text-emerald-700'}`}>
-               {zeroWealthYear ? `Age ${zeroWealthYear.age}` : `Lasts > Age ${MAX_PROJECTION_AGE}`}
+
+            {/* Chart */}
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
+               <h3 className="text-lg font-bold text-gray-800 mb-4">Liquid Assets Trajectory</h3>
+               <LineChart
+                 height={300}
+                 xLabels={projection.filter((_, i) => i % 5 === 0).map(d => `Age ${d.age}`)}
+                 series={[{
+                    name: 'Liquid Wealth',
+                    values: projection.filter((_, i) => i % 5 === 0).map(d => d.liquidWealth),
+                    stroke: '#f59e0b'
+                 }]}
+                 onFormatY={(v) => v >= 1000000 ? `$${(v/1000000).toFixed(1)}M` : `$${(v/1000).toFixed(0)}k`}
+               />
             </div>
-            <div className="text-[10px] mt-1 opacity-80">
-               {zeroWealthYear 
-                  ? `Liquid funds run out before age ${MAX_PROJECTION_AGE}` 
-                  : 'Liquid assets sustain lifetime expenses'}
+
+            {/* Verdict */}
+            <div className={`p-5 rounded-xl border-l-4 ${crashAge ? 'bg-red-50 border-red-500' : 'bg-emerald-50 border-emerald-500'}`}>
+               <h3 className={`text-lg font-bold m-0 ${crashAge ? 'text-red-900' : 'text-emerald-900'}`}>
+                  {crashAge ? `⚠️ Funds Depleted at Age ${crashAge}` : '✅ Lifestyle Secure'}
+               </h3>
+               {crashAge && (
+                  <p className="text-sm text-red-800 mt-1">
+                     The payout is insufficient to sustain the income loss and increased expenses.
+                  </p>
+               )}
             </div>
          </div>
+      )}
 
-         {/* Card 3: Gap/Surplus */}
-         <div className="p-4 rounded-lg border-2 bg-white border-gray-200">
-             <div className="text-xs font-bold uppercase mb-1 text-gray-500">
-                Financial Status
-             </div>
-             {selectedEvent === 'none' ? (
-                <div className="text-sm text-gray-700">
-                   Standard retirement trajectory based on current savings & investments.
-                </div>
-             ) : (
-                <>
-                  <div className={`text-lg font-bold ${zeroWealthYear ? 'text-red-600' : 'text-emerald-600'}`}>
-                     {zeroWealthYear ? '⚠️ LIQUIDITY CRISIS' : '✅ SECURE'}
-                  </div>
-                  <div className="text-xs text-gray-600 mt-1 leading-tight">
-                     {zeroWealthYear 
-                        ? `Insurance payout of ${fmtSGD(eventYearData?.payoutReceived)} is insufficient to replace lost income.` 
-                        : `Insurance payout successfully bridges the income gap.`}
-                  </div>
-                </>
-             )}
+      {selectedEvent === 'none' && (
+         <div className="text-center p-10 bg-gray-50 rounded-xl border-2 border-dashed border-gray-200">
+            <div className="text-4xl mb-3">👈</div>
+            <h3 className="text-gray-600 font-bold">Select a Life Event</h3>
+            <p className="text-gray-400 text-sm">Choose a scenario above to stress-test the financial plan.</p>
          </div>
-      </div>
+      )}
     </div>
   );
 };

@@ -225,7 +225,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialError }) 
                   required
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg outline-none focus:border-indigo-500 transition-colors bg-white"
+                  className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg outline-none focus:border-indigo-500 transition-colors bg-white text-gray-900"
                   placeholder="you@agency.com"
                 />
               </div>
@@ -250,7 +250,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialError }) 
                     minLength={6}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg outline-none focus:border-indigo-500 transition-colors bg-white"
+                    className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg outline-none focus:border-indigo-500 transition-colors bg-white text-gray-900"
                     placeholder="••••••••"
                   />
                   {view === 'signup' && (

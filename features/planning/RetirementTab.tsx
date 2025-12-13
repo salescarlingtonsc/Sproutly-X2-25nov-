@@ -1,8 +1,7 @@
 
-
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { toNum, fmtSGD } from '../../lib/helpers';
-import { projectComprehensiveWealth } from '../../lib/calculators';
+import { projectComprehensiveWealth, runMonteCarloSimulation } from '../../lib/calculators';
 import LabeledText from '../../components/common/LabeledText';
 import Card from '../../components/common/Card';
 import LineChart from '../../components/common/LineChart';
@@ -26,6 +25,7 @@ const RetirementTab: React.FC<RetirementTabProps> = ({
   cashflowData, retirement, setRetirement, profile, age,
   investorState, setInvestorState, cpfState, cashflowState
 }) => {
+  const [showMonteCarlo, setShowMonteCarlo] = useState(false);
   
   if (!cashflowData) {
     return (
@@ -41,20 +41,22 @@ const RetirementTab: React.FC<RetirementTabProps> = ({
   
   // A. CASH
   const currentCash = toNum(cashflowState.currentSavings, 0);
-  const monthlyCashSavings = cashflowData.monthlySavings; // Total potential savings from cashflow tab
+  
+  // SYNC FIX: Use Custom Base Income if set, otherwise default to calculated monthly savings
+  const monthlyCashSavings = cashflowState.customBaseIncome && cashflowState.customBaseIncome !== '' 
+      ? toNum(cashflowState.customBaseIncome) 
+      : cashflowData.monthlySavings;
+
   const bankRate = toNum(cashflowState.bankInterestRate, 0.05) / 100;
 
   // B. INVESTMENTS
   const currentInvestments = toNum(investorState.portfolioValue, 0);
   
   // Calculate Monthly Investment Flow
-  // Logic: Use the profile's explicit investment amount if set. 
-  // Otherwise, use a percentage of the calculated monthly savings.
   let monthlyInvestment = 0;
   if (profile.monthlyInvestmentAmount && toNum(profile.monthlyInvestmentAmount) > 0) {
     monthlyInvestment = toNum(profile.monthlyInvestmentAmount);
   } else {
-    // Fallback: Default to 50% of savings if not specified, or use retirement setting
     const investmentPercent = toNum(retirement.investmentPercent, 50);
     monthlyInvestment = monthlyCashSavings * (investmentPercent / 100);
   }
@@ -74,7 +76,7 @@ const RetirementTab: React.FC<RetirementTabProps> = ({
   // D. RETIREMENT TARGET
   const expensesToday = toNum(profile.customRetirementExpense) || (cashflowData.totalExpenses * 0.7);
 
-  // --- 2. RUN COMPREHENSIVE PROJECTION ---
+  // --- 2. RUN STANDARD PROJECTION ---
   const projection = useMemo(() => {
     return projectComprehensiveWealth({
       currentAge,
@@ -83,7 +85,7 @@ const RetirementTab: React.FC<RetirementTabProps> = ({
       currentCash,
       currentInvestments,
       monthlyIncome: grossIncome,
-      monthlyCashSavings, // This is total surplus
+      monthlyCashSavings, // This is total surplus (now synced with override)
       monthlyInvestment,  // This is how much of surplus goes to stocks
       rates: {
         cpfOa: 0.025,
@@ -96,35 +98,42 @@ const RetirementTab: React.FC<RetirementTabProps> = ({
     });
   }, [currentAge, retirementAge, currentCpf, currentCash, currentInvestments, grossIncome, monthlyCashSavings, monthlyInvestment, bankRate, investmentRate, expensesToday]);
 
-  // --- 3. EXTRACT KEY METRICS ---
-  
-  // Snapshot at Target Retirement Age
+  // --- 3. RUN MONTE CARLO (Optional) ---
+  const monteCarloResults = useMemo(() => {
+    if (!showMonteCarlo) return null;
+    return runMonteCarloSimulation({
+      currentAge,
+      retirementAge,
+      currentCpf,
+      currentCash,
+      currentInvestments,
+      monthlyIncome: grossIncome,
+      monthlyCashSavings,
+      monthlyInvestment,
+      rates: {
+        cpfOa: 0.025,
+        cpfSa: 0.04,
+        cash: bankRate,
+        investments: investmentRate,
+        inflation: 0.03
+      },
+      expensesToday
+    });
+  }, [showMonteCarlo, currentAge, retirementAge, currentCpf, currentCash, currentInvestments, grossIncome, monthlyCashSavings, monthlyInvestment, bankRate, investmentRate, expensesToday]);
+
+  // --- 4. EXTRACT KEY METRICS ---
   const retirementSnapshot = projection.find(p => p.age === retirementAge) || projection[projection.length - 1];
-  
-  // Wealth at Retirement
   const cpfAtRetirement = retirementSnapshot.cpfTotal; 
   const cashAtRetirement = retirementSnapshot.cash;
   const invAtRetirement = retirementSnapshot.investments;
   const totalWealthAtRetirement = retirementSnapshot.totalNetWorth;
 
-  // CPF Life Estimation (Age 65)
-  // We look for the projection year where age is 65 to see the estimated payout
   const snapshot65 = projection.find(p => p.age === 65);
   const estimatedCpfLifePayout = snapshot65 ? snapshot65.cpfLifePayoutAnnual / 12 : 0;
   
-  // Age 55 Withdrawal Potential
   const snapshot55 = projection.find(p => p.age === 55);
-  // FRS in 2025 is 205800. If snapshot55 exists, we can estimate their balance.
-  // The calculator handles RA creation internally, so snapshot55.cpfRa has the RA amount.
-  // snapshot55.cpfLiquid (OA+SA) would be the excess if logic worked fully, but the calculator moves excess to RA until max?
-  // Let's rely on standard logic: 
-  // Excess = (OA + SA + RA) - FRS(at 55). 
-  // Wait, calculator logic transfers to RA up to FRS. So any remaining OA/SA is withdrawable.
   const withdrawableAt55 = snapshot55 ? (snapshot55.cpfLiquid > 5000 ? snapshot55.cpfLiquid : (snapshot55.cpfLiquid > 0 ? snapshot55.cpfLiquid : 0)) : 0;
-  // Actually, allow at least 5k if RA not full? 
-  // The rule is: Withdraw $5k unconditionally from 55. Or withdraw Excess of FRS.
   
-  // Determine the "Runway" - at what age do liquid assets hit 0?
   const brokePoint = projection.find(p => p.isRetired && p.totalLiquidWealth <= 0 && p.shortfallAnnual > 0);
   const brokeAge = brokePoint ? brokePoint.age : null;
 
@@ -136,7 +145,7 @@ const RetirementTab: React.FC<RetirementTabProps> = ({
           <div className="text-4xl">🚀</div>
           <div className="flex-1">
             <h3 className="m-0 text-indigo-900 text-xl font-bold">
-              Comprehensive Retirement Plan
+              Comprehensive Financial Independence Plan
             </h3>
             <p className="m-1 text-indigo-800 text-sm opacity-80">
               Integrating CPF Life (Standard Plan), Cash Savings, and Investment Returns.
@@ -172,7 +181,7 @@ const RetirementTab: React.FC<RetirementTabProps> = ({
                       type="number" 
                       value={investmentRatePercent}
                       onChange={(e) => setRetirement({...retirement, customReturnRate: e.target.value})}
-                      className="w-20 px-3 py-2 border rounded font-bold text-emerald-700"
+                      className="w-20 px-3 py-2 border rounded font-bold text-emerald-700 bg-white"
                     />
                     <div className="flex gap-1">
                        {[3, 5, 7, 9].map(r => (
@@ -248,12 +257,12 @@ const RetirementTab: React.FC<RetirementTabProps> = ({
            {/* BIG TARGET CARD */}
            <div className="bg-white border-2 border-indigo-600 rounded-xl p-6 mb-6 shadow-md relative overflow-hidden">
               <div className="absolute top-0 right-0 bg-indigo-600 text-white px-4 py-1 rounded-bl-xl text-xs font-bold">
-                 TARGET AGE: {retirementAge}
+                 TARGET FI AGE: {retirementAge}
               </div>
               
               <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                  <div>
-                    <h4 className="text-gray-500 text-xs font-bold uppercase tracking-wider mb-1">Projected Wealth at Age {retirementAge}</h4>
+                    <h4 className="text-gray-500 text-xs font-bold uppercase tracking-wider mb-1">Projected Wealth at FI Age {retirementAge}</h4>
                     <div className="text-3xl font-extrabold text-indigo-900 mb-2">{fmtSGD(totalWealthAtRetirement)}</div>
                     <div className="flex gap-2 text-xs">
                        <span className="px-2 py-1 bg-emerald-100 text-emerald-700 rounded font-bold">Inv: {fmtSGD(invAtRetirement)}</span>
@@ -286,9 +295,8 @@ const RetirementTab: React.FC<RetirementTabProps> = ({
                  
                  {/* Monthly Gap Calculation at Retirement */}
                  <div className="bg-white/60 p-3 rounded-lg text-right">
-                    <div className="text-xs text-gray-500 font-bold uppercase">Monthly Gap (at {retirementAge})</div>
+                    <div className="text-xs text-gray-500 font-bold uppercase">Monthly Gap (at FI Age {retirementAge})</div>
                     {(() => {
-                       const incomeNeededFuture = expensesToday * Math.pow(1.03, retirementAge - currentAge);
                        // We use the first year of retirement shortfall from projection
                        const firstRetirementYear = projection.find(p => p.age === retirementAge);
                        const shortfall = firstRetirementYear ? firstRetirementYear.shortfallAnnual / 12 : 0;
@@ -313,18 +321,51 @@ const RetirementTab: React.FC<RetirementTabProps> = ({
 
            {/* CHART */}
            <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm">
-              <h4 className="text-gray-800 font-bold mb-4">Wealth Decumulation Timeline</h4>
-              <LineChart
-                xLabels={projection.filter((_, i) => i % 5 === 0).map(p => `Age ${Math.floor(p.age)}`)}
-                series={[
-                  { name: 'Total Net Worth', values: projection.filter((_, i) => i % 5 === 0).map(p => p.totalNetWorth), stroke: '#4f46e5' },
-                  { name: 'Investments', values: projection.filter((_, i) => i % 5 === 0).map(p => p.investments), stroke: '#10b981' },
-                  { name: 'Cash', values: projection.filter((_, i) => i % 5 === 0).map(p => p.cash), stroke: '#f59e0b' },
-                  { name: 'CPF (Total)', values: projection.filter((_, i) => i % 5 === 0).map(p => p.cpfTotal), stroke: '#3b82f6' }
-                ]}
-                height={300}
-                onFormatY={(v) => v >= 1000000 ? `$${(v/1000000).toFixed(1)}M` : `$${(v/1000).toFixed(0)}k`}
-              />
+              <div className="flex justify-between items-center mb-4">
+                 <h4 className="text-gray-800 font-bold m-0">Wealth Decumulation Timeline</h4>
+                 
+                 {/* MONTE CARLO TOGGLE */}
+                 <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-gray-500 uppercase">Stress Test</span>
+                    <button 
+                       onClick={() => setShowMonteCarlo(!showMonteCarlo)}
+                       className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${showMonteCarlo ? 'bg-red-600' : 'bg-gray-200'}`}
+                    >
+                       <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${showMonteCarlo ? 'translate-x-6' : 'translate-x-1'}`} />
+                    </button>
+                 </div>
+              </div>
+
+              {showMonteCarlo && monteCarloResults ? (
+                 <div className="mb-4">
+                    <div className="text-xs bg-red-50 text-red-800 p-2 rounded mb-2 border border-red-200">
+                       <strong>🎲 Monte Carlo Simulation Active:</strong> Running 500 market scenarios with 12% volatility. 
+                       The shaded area shows the range of probable outcomes.
+                    </div>
+                    <LineChart
+                      xLabels={projection.filter((_, i) => i % 5 === 0).map(p => `Age ${Math.floor(p.age)}`)}
+                      series={[
+                        { name: 'Median Outcome (50%)', values: monteCarloResults.p50.filter((_, i) => i % 5 === 0), stroke: '#4f46e5' },
+                        { name: 'Worst Case (10%)', values: monteCarloResults.p10.filter((_, i) => i % 5 === 0), stroke: '#ef4444' },
+                        { name: 'Best Case (90%)', values: monteCarloResults.p90.filter((_, i) => i % 5 === 0), stroke: '#10b981' }
+                      ]}
+                      height={300}
+                      onFormatY={(v) => v >= 1000000 ? `$${(v/1000000).toFixed(1)}M` : `$${(v/1000).toFixed(0)}k`}
+                    />
+                 </div>
+              ) : (
+                 <LineChart
+                   xLabels={projection.filter((_, i) => i % 5 === 0).map(p => `Age ${Math.floor(p.age)}`)}
+                   series={[
+                     { name: 'Total Net Worth', values: projection.filter((_, i) => i % 5 === 0).map(p => p.totalNetWorth), stroke: '#4f46e5' },
+                     { name: 'Investments', values: projection.filter((_, i) => i % 5 === 0).map(p => p.investments), stroke: '#10b981' },
+                     { name: 'Cash', values: projection.filter((_, i) => i % 5 === 0).map(p => p.cash), stroke: '#f59e0b' },
+                     { name: 'CPF (Total)', values: projection.filter((_, i) => i % 5 === 0).map(p => p.cpfTotal), stroke: '#3b82f6' }
+                   ]}
+                   height={300}
+                   onFormatY={(v) => v >= 1000000 ? `$${(v/1000000).toFixed(1)}M` : `$${(v/1000).toFixed(0)}k`}
+                 />
+              )}
            </div>
 
         </div>

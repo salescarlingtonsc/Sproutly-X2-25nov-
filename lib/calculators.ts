@@ -1,5 +1,4 @@
 
-
 import { toNum, monthsSinceDob, parseDob } from './helpers';
 import { CPF_WAGE_CEILING, getCpfRates, getCpfAllocation } from './cpfRules';
 import { CpfData, Child, EducationSettings, Profile, CashflowData } from '../types';
@@ -228,6 +227,145 @@ export const projectComprehensiveWealth = (inputs: WealthProjectionInputs) => {
   }
 
   return projection;
+};
+
+// --- MONTE CARLO SIMULATION ---
+
+// Box-Muller transform to generate normally distributed random numbers
+// Returns a random number with mean 0 and standard deviation 1
+const randn_bm = () => {
+  let u = 0, v = 0;
+  while(u === 0) u = Math.random(); 
+  while(v === 0) v = Math.random();
+  return Math.sqrt( -2.0 * Math.log( u ) ) * Math.cos( 2.0 * Math.PI * v );
+};
+
+export const runMonteCarloSimulation = (
+  inputs: WealthProjectionInputs,
+  simulations: number = 500
+) => {
+  const allRuns: number[][] = [];
+  const volatility = 0.12; // 12% Standard Deviation for equity markets (typical assumption)
+  
+  for (let i = 0; i < simulations; i++) {
+    // Clone inputs but intercept the 'investments' rate inside the loop
+    const runResult = [];
+    
+    // Initial state
+    let investments = inputs.currentInvestments;
+    let cash = inputs.currentCash;
+    
+    // We re-implement a lightweight version of the logic specifically for the investment part
+    // to apply volatility year-over-year.
+    // For performance, we simplify CPF/Cash parts to be deterministic (linear), 
+    // and only randomize the Investment Return.
+    
+    // Re-run the main projection logic with randomized investment returns
+    const yearsToProject = 95 - inputs.currentAge;
+    
+    // Copy mutable values
+    let cpfOa = inputs.currentCpf.oa;
+    let cpfSa = inputs.currentCpf.sa;
+    let cpfMa = inputs.currentCpf.ma;
+    let cpfRa = 0;
+    let cpfLifePayoutMonthly = 0;
+    
+    let simInvestments = inputs.currentInvestments;
+    let simCash = inputs.currentCash;
+    let hasRetired = false;
+    const PAYOUT_RATIO = 1700 / 205800;
+    
+    for (let y = 0; y <= yearsToProject; y++) {
+      const age = inputs.currentAge + y;
+      if (age >= inputs.retirementAge) hasRetired = true;
+
+      // RANDOMIZED RETURN FOR THIS YEAR
+      // Return = Expected Mean + (Volatility * RandomNormal)
+      const randomReturn = inputs.rates.investments + (volatility * randn_bm());
+      
+      // Growth
+      simInvestments *= (1 + randomReturn);
+      simCash *= (1 + inputs.rates.cash);
+      
+      // Simplified CPF Growth (Deterministic)
+      cpfOa *= (1 + inputs.rates.cpfOa);
+      cpfSa *= (1 + inputs.rates.cpfSa);
+      cpfMa *= (1 + inputs.rates.cpfSa);
+      cpfRa *= 1.04;
+
+      // Inflows
+      if (!hasRetired) {
+        // Add Contributions
+        simInvestments += inputs.monthlyInvestment * 12;
+        simCash += (Math.max(0, inputs.monthlyCashSavings - inputs.monthlyInvestment) * 12);
+        
+        // Add CPF (approx)
+        const cpfData = computeCpf(inputs.monthlyIncome, age);
+        cpfOa += cpfData.oa * 12;
+        cpfSa += cpfData.sa * 12;
+        cpfMa += cpfData.ma * 12;
+      }
+
+      // Events (55 RA, 65 CPF Life)
+      if (Math.floor(age) === 55 && cpfRa === 0) {
+         // Simplified RA Creation logic for Monte Carlo speed
+         const frs = 205800 * Math.pow(1.035, 55 - inputs.currentAge);
+         const takeSa = Math.min(cpfSa, frs);
+         cpfSa -= takeSa;
+         cpfRa += takeSa;
+         if (takeSa < frs) {
+            const takeOa = Math.min(cpfOa, frs - takeSa);
+            cpfOa -= takeOa;
+            cpfRa += takeOa;
+         }
+      }
+      if (Math.floor(age) === 65 && cpfLifePayoutMonthly === 0) {
+         cpfLifePayoutMonthly = cpfRa * PAYOUT_RATIO;
+         cpfRa = 0;
+      }
+
+      // Outflows (Expenses)
+      if (hasRetired) {
+         const expenses = (inputs.expensesToday * 12) * Math.pow(1 + inputs.rates.inflation, y);
+         const cpfPayout = cpfLifePayoutMonthly * 12;
+         let needed = Math.max(0, expenses - cpfPayout);
+         
+         // Drain Cash first
+         if (simCash >= needed) {
+            simCash -= needed;
+            needed = 0;
+         } else {
+            needed -= simCash;
+            simCash = 0;
+         }
+         
+         // Drain Investments
+         if (needed > 0) {
+            simInvestments -= needed;
+         }
+      }
+
+      // Record Total Net Worth for this year in this simulation run
+      const totalNetWorth = Math.max(0, simInvestments + simCash + cpfOa + cpfSa + cpfMa + cpfRa);
+      runResult.push(totalNetWorth);
+    }
+    allRuns.push(runResult);
+  }
+
+  // Calculate Percentiles (10th, 50th, 90th)
+  const years = allRuns[0].length;
+  const p10 = [];
+  const p50 = [];
+  const p90 = [];
+
+  for (let y = 0; y < years; y++) {
+    const yearValues = allRuns.map(run => run[y]).sort((a, b) => a - b);
+    p10.push(yearValues[Math.floor(simulations * 0.1)]);
+    p50.push(yearValues[Math.floor(simulations * 0.5)]);
+    p90.push(yearValues[Math.floor(simulations * 0.9)]);
+  }
+
+  return { p10, p50, p90 };
 };
 
 export const calculateChildEducationCost = (child: Child, settings?: EducationSettings) => {

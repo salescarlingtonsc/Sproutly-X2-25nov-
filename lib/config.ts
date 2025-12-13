@@ -1,6 +1,5 @@
 
-
-import { SubscriptionTier, Expenses } from '../types';
+import { SubscriptionTier, Expenses, UserProfile } from '../types';
 
 // ============================================================================
 // ⚙️ CONFIGURATION SETTINGS
@@ -64,12 +63,20 @@ export const EXPENSE_CATEGORIES: { key: keyof Expenses; label: string }[] = [
   { key: 'others', label: 'Others' }
 ];
 
-export const canAccessTab = (tier: SubscriptionTier, tabId: string): boolean => {
-  // Admin tab is handled separately in AppShell
-  if (tabId === 'admin') return true;
+export const canAccessTab = (user: UserProfile | null, tabId: string): boolean => {
+  // Admin role gets access to everything + Admin tab
+  if (!user) return false;
+  if (user.role === 'admin') return true;
+  if (tabId === 'admin') return false; // Non-admins cannot see admin tab
+
+  // 1. Check for Manual Granular Permissions first
+  // If the user has a 'modules' array, that is the source of truth.
+  if (user.modules && Array.isArray(user.modules) && user.modules.length > 0) {
+    return user.modules.includes(tabId);
+  }
   
-  // Default to free tier if undefined
-  const currentTier = tier || 'free';
+  // 2. Fallback to Tier Logic
+  const currentTier = user.subscriptionTier || 'free';
   const config = TIER_CONFIG[currentTier];
   
   // Safety check

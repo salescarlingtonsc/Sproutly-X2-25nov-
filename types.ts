@@ -1,5 +1,4 @@
 
-
 export interface Child {
   id: number;
   name: string;
@@ -25,11 +24,14 @@ export interface InvestmentRates {
   growth: number;
 }
 
+export type LeadSource = 'IG' | 'FB' | 'LinkedIn' | 'Roadshow' | 'Referral' | 'Cold' | 'Other';
+
 export interface Profile {
   name: string;
   dob: string;
   gender: 'male' | 'female';
   employmentStatus?: 'employed' | 'self-employed';
+  jobTitle?: string; // New: Specific Job Title
   email: string;
   phone: string;
   monthlyIncome?: string;
@@ -40,10 +42,15 @@ export interface Profile {
   monthlyInvestmentAmount?: string;
   investmentRates?: InvestmentRates;
   wealthTarget?: string;
-  educationSettings?: EducationSettings; // New field
+  educationSettings?: EducationSettings;
   referenceYear: number;
   referenceMonth: number;
   children?: Child[];
+  tags?: string[];
+  
+  // Sales Specific
+  source?: LeadSource; // IG/FB
+  motivation?: string; // "Why do you want to win this?"
 }
 
 export interface Expenses {
@@ -113,6 +120,7 @@ export interface AdditionalIncome {
   startAge: number;
   startMonth: number;
   endAge?: any;
+  endMonth?: number; // Added endMonth
 }
 
 export interface CashflowWithdrawal {
@@ -123,6 +131,19 @@ export interface CashflowWithdrawal {
   frequency: string;
   startAge: number;
   startMonth: number;
+  endAge?: string | number; 
+  endMonth?: number; // Added endMonth
+}
+
+// NEW: Career Event Definition
+export interface CareerEvent {
+  id: number;
+  type: 'increment' | 'decrement' | 'pause' | 'resume';
+  age: number;
+  month?: number; // 0-11 for specific month trigger
+  amount?: string; // For increment/decrement (monthly amount change)
+  durationMonths?: string; // For pause
+  notes?: string;
 }
 
 export interface CashflowState {
@@ -131,6 +152,7 @@ export interface CashflowState {
   bankInterestRate: string;
   additionalIncomes: AdditionalIncome[];
   withdrawals: CashflowWithdrawal[];
+  careerEvents?: CareerEvent[]; // NEW: List of career events
   customBaseIncome?: string;
   customRetirementIncome?: string;
 }
@@ -185,12 +207,37 @@ export interface UserProfile {
   role: string;
   status: 'pending' | 'approved' | 'rejected';
   extraSlots: number;
+  modules?: string[];
+}
+
+// Updated Status Types for Financial Advisory
+export type ContactStatus = 
+  | 'new' 
+  | 'picked_up' 
+  | 'npu1' | 'npu2' | 'npu3' | 'npu4' | 'npu5' | 'npu6' 
+  | 'call_back' 
+  | 'not_keen' 
+  | 'appt_set' 
+  | 'client';
+
+export interface ClientDocument {
+  id: string;
+  name: string;
+  type: 'image' | 'pdf' | 'other';
+  dateAdded: string;
+  url?: string; // In real app, this is the storage URL
+}
+
+export interface AppointmentData {
+  firstApptDate: string | null;
+  nextFollowUpDate: string | null;
 }
 
 export interface FollowUp {
-  nextDate: string | null;
-  status: 'pending' | 'completed' | 'none';
+  status: ContactStatus;
   notes?: string;
+  // Legacy support
+  nextDate?: string | null; 
 }
 
 export type LifecycleStage = 'lead' | 'contacted' | 'meeting' | 'proposal' | 'client' | 'cold';
@@ -198,7 +245,7 @@ export type LifecycleStage = 'lead' | 'contacted' | 'meeting' | 'proposal' | 'cl
 export interface Client {
   id: string;
   referenceCode?: string;
-  lifecycleStage?: LifecycleStage; // New Field for CRM Workflow
+  lifecycleStage?: LifecycleStage; 
   profile: Profile;
   expenses: Expenses;
   customExpenses?: CustomExpense[];
@@ -210,7 +257,12 @@ export interface Client {
   investorState?: InvestorState;
   insuranceState?: InsuranceState;
   lastUpdated: string;
+  
+  // Enhanced Fields
   followUp: FollowUp;
+  appointments?: AppointmentData;
+  documents?: ClientDocument[];
+  
   ownerEmail?: string;
   _ownerId?: string;
 }

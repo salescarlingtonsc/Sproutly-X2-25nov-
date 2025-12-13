@@ -49,10 +49,10 @@ const AppShell: React.FC<AppShellProps> = ({
   const handleTabClick = (tabId: string) => {
     if (!user) return;
     
-    if (canAccessTab(user.subscriptionTier, tabId)) {
+    if (canAccessTab(user, tabId)) {
       setActiveTab(tabId);
     } else {
-      // If locked, open pricing modal
+      // If locked, open pricing modal to encourage upgrade
       onPricingClick();
     }
   };
@@ -127,10 +127,11 @@ const AppShell: React.FC<AppShellProps> = ({
                  {/* Global Save Button */}
                  <button
                     onClick={onSaveClick}
-                    className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg text-xs font-bold hover:bg-emerald-700 transition-colors shadow-sm border-b-2 border-emerald-800 active:border-b-0 active:translate-y-[2px]"
+                    disabled={saveStatus === 'saving'}
+                    className={`flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg text-xs font-bold hover:bg-emerald-700 transition-colors shadow-sm border-b-2 border-emerald-800 active:border-b-0 active:translate-y-[2px] ${saveStatus === 'saving' ? 'opacity-70 cursor-not-allowed' : ''}`}
                     title="Save current client"
                  >
-                   <span>💾</span> Save
+                   <span>💾</span> {saveStatus === 'saving' ? 'Saving...' : 'Save'}
                  </button>
 
                 {/* Status Badges & Actions */}
@@ -216,18 +217,21 @@ const AppShell: React.FC<AppShellProps> = ({
         <div className="max-w-7xl mx-auto px-6">
           <div className="flex gap-1 overflow-x-auto pb-2 pt-2">
             {TAB_DEFINITIONS.map(tab => {
-              const isLocked = user ? !canAccessTab(user.subscriptionTier, tab.id) : false;
+              const isLocked = user ? !canAccessTab(user, tab.id) : false;
+              
               return (
                 <TabButton
                   key={tab.id}
                   active={activeTab === tab.id}
                   onClick={() => handleTabClick(tab.id)}
                 >
-                  <div className="flex items-center">
+                  <div className={`flex items-center ${isLocked ? 'opacity-60 grayscale' : ''}`}>
                     <span className="mr-2">{tab.icon}</span>
                     {tab.label}
                     {isLocked && (
-                      <span className="ml-2 text-xs opacity-50">🔒</span>
+                      <span className="ml-2 text-[10px] bg-gray-200 text-gray-500 px-1.5 py-0.5 rounded font-bold">
+                        🔒
+                      </span>
                     )}
                   </div>
                 </TabButton>

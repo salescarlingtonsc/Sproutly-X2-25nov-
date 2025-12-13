@@ -1,3 +1,4 @@
+
 import React from 'react';
 import { toNum, fmtSGD } from '../../lib/helpers';
 import { InvestorState } from '../../types';
@@ -37,7 +38,7 @@ const InvestorTab: React.FC<InvestorTabProps> = ({ investorState, setInvestorSta
               type="text"
               value={portfolioValue}
               onChange={(e) => updateState('portfolioValue', e.target.value)}
-              className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg font-bold bg-white"
+              className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg font-bold bg-white text-gray-900"
             />
           </div>
           <div>
@@ -45,7 +46,7 @@ const InvestorTab: React.FC<InvestorTabProps> = ({ investorState, setInvestorSta
             <select 
               value={portfolioType} 
               onChange={(e) => updateState('portfolioType', e.target.value)}
-              className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg bg-white"
+              className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg bg-white text-gray-900"
             >
               <option value="stock-picking">Stock Picking</option>
               <option value="diversified">Diversified</option>

@@ -6,7 +6,7 @@ import { getCpfRates, CPF_WAGE_CEILING } from '../../lib/cpfRules';
 import LabeledText from '../../components/common/LabeledText';
 import LabeledSelect from '../../components/common/LabeledSelect';
 import LineChart from '../../components/common/LineChart';
-import { Profile, Expenses, CustomExpense, CpfData, CashflowData, Client } from '../../types';
+import { Profile, Expenses, CustomExpense, CpfData, CashflowData, Client, InvestorState, CashflowState } from '../../types';
 
 interface ProfileTabProps {
   profile: Profile;
@@ -18,8 +18,10 @@ interface ProfileTabProps {
   customExpenses: CustomExpense[];
   setCustomExpenses: (e: CustomExpense[]) => void;
   cashflowData: CashflowData | null;
-  // New props for client management
   clients?: Client[];
+  // New props for Lump Sum integration
+  investorState?: InvestorState;
+  cashflowState?: CashflowState;
   onLoadClient?: (client: Client) => void;
   onNewProfile?: () => void;
 }
@@ -35,6 +37,8 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
   setCustomExpenses, 
   cashflowData,
   clients = [],
+  investorState,
+  cashflowState,
   onLoadClient,
   onNewProfile
 }) => {
@@ -42,6 +46,7 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
   // --- CLIENT SEARCH STATE ---
   const [searchTerm, setSearchTerm] = useState('');
   const [showDropdown, setShowDropdown] = useState(false);
+  const [showAdvancedRates, setShowAdvancedRates] = useState(false);
   const searchRef = useRef<HTMLDivElement>(null);
 
   // Close dropdown on click outside
@@ -63,19 +68,18 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
     return clients.filter(c => 
       c.profile.name.toLowerCase().includes(lower) ||
       (c.referenceCode && c.referenceCode.toLowerCase().includes(lower))
-    ).slice(0, 5); // Limit results to 5
+    ).slice(0, 5);
   }, [clients, searchTerm]);
 
   // --- PERSISTENT INVESTMENT SETTINGS ---
-  const rate1 = profile.investmentRates?.conservative || 0.05;
+  const rate1 = profile.investmentRates?.conservative || 3;
   const rate2 = profile.investmentRates?.moderate || 6;
-  const rate3 = profile.investmentRates?.growth || 12;
+  const rate3 = profile.investmentRates?.growth || 9;
   const customInvestmentTarget = profile.wealthTarget || '100000';
 
-  const setRate1 = (v: number) => setProfile({...profile, investmentRates: {...(profile.investmentRates || { conservative: 0.05, moderate: 6, growth: 12 }), conservative: v}});
-  const setRate2 = (v: number) => setProfile({...profile, investmentRates: {...(profile.investmentRates || { conservative: 0.05, moderate: 6, growth: 12 }), moderate: v}});
-  const setRate3 = (v: number) => setProfile({...profile, investmentRates: {...(profile.investmentRates || { conservative: 0.05, moderate: 6, growth: 12 }), growth: v}});
-  const setCustomInvestmentTarget = (v: string) => setProfile({...profile, wealthTarget: v});
+  const setRate1 = (v: number) => setProfile({...profile, investmentRates: {...(profile.investmentRates || { conservative: 3, moderate: 6, growth: 9 }), conservative: v}});
+  const setRate2 = (v: number) => setProfile({...profile, investmentRates: {...(profile.investmentRates || { conservative: 3, moderate: 6, growth: 9 }), moderate: v}});
+  const setRate3 = (v: number) => setProfile({...profile, investmentRates: {...(profile.investmentRates || { conservative: 3, moderate: 6, growth: 9 }), growth: v}});
 
   // --- CALCULATIONS ---
 
@@ -106,21 +110,101 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
   const retirementYears = Math.max(10, lifeExpectancy - toNum(profile.retirementAge, 65));
   const retirementNestEgg = futureMonthlyRetirementExpenses * 12 * retirementYears;
   
-  // Required monthly investment (simple PMT approximation)
-  const monthlyRate = 0.08 / 12;
-  const requiredMonthlyInvestment = retirementNestEgg / ((Math.pow(1 + monthlyRate, yearsToRetirement * 12) - 1) / monthlyRate);
+  // Human Capital Calculation
+  const grossAnnual = toNum(profile.grossSalary || profile.monthlyIncome) * 12;
+  const humanCapital = grossAnnual * yearsToRetirement;
 
-  // Children Cost Calculation
-  const totalChildrenEducationCost = useMemo(() => {
-    if (!profile.children) return 0;
-    return profile.children.reduce((sum, child) => {
-       return sum + calculateChildEducationCost(child, profile.educationSettings);
-    }, 0);
-  }, [profile.children, profile.educationSettings]);
+  // Required monthly investment (simple PMT approximation)
+  // Formula: PMT = FV * r / ((1+r)^n - 1)
+  const calcRate = rate2 / 100 / 12;
+  const nPer = yearsToRetirement * 12;
+  const requiredMonthlyInvestment = calcRate > 0 
+    ? retirementNestEgg * calcRate / (Math.pow(1 + calcRate, nPer) - 1)
+    : retirementNestEgg / nPer;
+
+  const currentMonthlySavings = cashflowData ? cashflowData.monthlySavings : 0;
+  const shortfall = Math.max(0, requiredMonthlyInvestment - currentMonthlySavings);
+  const hasSurplus = currentMonthlySavings >= requiredMonthlyInvestment;
+
+  // --- COMPOUNDING PROJECTION (THE "LINES") ---
+  const compoundingData = useMemo(() => {
+    const monthly = toNum(profile.monthlyInvestmentAmount);
+    
+    // Get Starting Lump Sum (PV)
+    const currentPortfolio = investorState ? toNum(investorState.portfolioValue) : 0;
+    const currentCash = cashflowState ? toNum(cashflowState.currentSavings) : 0;
+    const startingPrincipal = currentPortfolio + currentCash;
+
+    if (monthly <= 0 && startingPrincipal <= 0) return null;
+
+    const rates = [
+       { key: 'conservative', label: 'Conservative', rate: rate1, color: '#3b82f6', icon: '🛡️' }, 
+       { key: 'moderate', label: 'Moderate', rate: rate2, color: '#10b981', icon: '⚖️' },     
+       { key: 'growth', label: 'Growth', rate: rate3, color: '#8b5cf6', icon: '🚀' }        
+    ];
+
+    const milestonesCheck = [250000, 500000, 1000000];
+    const maxAge = toNum(profile.retirementAge, 65);
+    const duration = maxAge - age;
+    
+    const chartData = [];
+    const stats = rates.map(r => ({
+        ...r,
+        finalAmount: 0,
+        milestones: { 250000: null as number|null, 500000: null as number|null, 1000000: null as number|null }
+    }));
+
+    for (let y = 0; y <= duration + 5; y++) {
+        const currentSimAge = age + y;
+        // Optimization: Only push data points periodically to keep chart clean if duration is long
+        const shouldRecord = duration > 30 ? y % 2 === 0 : true;
+        
+        const row: any = { age: `Age ${currentSimAge}` };
+        
+        stats.forEach(s => {
+            const r = s.rate / 100;
+            const monthlyRate = r / 12;
+            const months = y * 12;
+
+            // FV = PV * (1+r)^n + PMT * ...
+            // Part 1: Lump Sum Growth
+            const pvGrowth = startingPrincipal * Math.pow(1 + monthlyRate, months);
+            
+            // Part 2: Monthly Contribution Growth
+            const pmtGrowth = monthlyRate > 0 
+                ? monthly * ( (Math.pow(1 + monthlyRate, months) - 1) / monthlyRate )
+                : monthly * months;
+            
+            const val = pvGrowth + pmtGrowth;
+            
+            row[s.key] = Math.round(val);
+            
+            if (currentSimAge === maxAge) s.finalAmount = val;
+
+            milestonesCheck.forEach(m => {
+                if (val >= m && s.milestones[m as keyof typeof s.milestones] === null) {
+                    s.milestones[m as keyof typeof s.milestones] = currentSimAge;
+                }
+            });
+        });
+        
+        if (y <= duration && shouldRecord) chartData.push(row);
+    }
+    
+    return { chartData, stats, startingPrincipal };
+  }, [profile.monthlyInvestmentAmount, rate1, rate2, rate3, age, profile.retirementAge, investorState?.portfolioValue, cashflowState?.currentSavings]);
+
+  // Lifestyle Presets
+  const LIFESTYLES = [
+    { label: 'Basic', value: '1500', icon: '🏠', desc: 'HDB, Simple living' },
+    { label: 'Comfort', value: '3500', icon: '☕', desc: 'Dining out, Holiday' },
+    { label: 'Affluent', value: '6000', icon: '✈️', desc: 'Car, Frequent Travel' },
+    { label: 'Luxury', value: '10000', icon: '💎', desc: 'Legacy, Premium' },
+  ];
 
   return (
-    <div className="p-5">
-      {/* --- NEW: CLIENT MANAGEMENT TOOLBAR --- */}
+    <div className="p-5 max-w-7xl mx-auto">
+      {/* --- CLIENT MANAGEMENT TOOLBAR --- */}
       <div className="flex flex-col sm:flex-row justify-between items-end sm:items-center gap-4 mb-6 bg-white p-4 rounded-xl border border-gray-200 shadow-sm relative z-20">
           <div className="w-full sm:flex-1 relative" ref={searchRef}>
              <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">🔍 Find Existing Client</label>
@@ -134,12 +218,11 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
                   }}
                   onFocus={() => setShowDropdown(true)}
                   placeholder="Search by name or reference..."
-                  className="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                  className="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all bg-white text-gray-900"
                />
                <span className="absolute left-3 top-2.5 text-gray-400">🔎</span>
              </div>
              
-             {/* Dropdown Results */}
              {showDropdown && searchTerm && (
                 <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-xl z-50 max-h-60 overflow-y-auto animate-fade-in">
                    {filteredClients.length > 0 ? (
@@ -185,16 +268,23 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
        </div>
 
       {/* Welcome Banner */}
-      <div className="bg-gradient-to-br from-blue-50 to-blue-100 border border-blue-500 rounded-xl p-6 mb-5 shadow-sm">
+      <div className="bg-gradient-to-br from-indigo-50 to-indigo-100 border border-indigo-200 rounded-xl p-6 mb-5 shadow-sm flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="text-3xl">👋</div>
+          <div className="text-4xl">👋</div>
           <div>
-            <h3 className="m-0 text-blue-800 text-xl font-semibold">Let's Get to Know You</h3>
-            <p className="m-1 text-blue-800 text-sm opacity-80">
-              Your personal details help us create a customized financial roadmap
+            <h3 className="m-0 text-indigo-900 text-xl font-bold">Discovery & Profile</h3>
+            <p className="m-1 text-indigo-800 text-sm opacity-80">
+              Build your financial identity
             </p>
           </div>
         </div>
+        {/* Human Capital Badge */}
+        {humanCapital > 0 && (
+           <div className="hidden md:block text-right">
+              <div className="text-xs font-bold text-indigo-400 uppercase tracking-widest">Your Human Capital</div>
+              <div className="text-2xl font-extrabold text-indigo-600">{fmtSGD(humanCapital)}</div>
+           </div>
+        )}
       </div>
 
       {/* Personal Info */}
@@ -203,944 +293,514 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
         
         {/* Profile Display Card */}
         {profile.name && age > 0 && (
-          <div className="mb-5 p-4 bg-gradient-to-br from-emerald-50 to-emerald-100 rounded-xl border-2 border-emerald-500">
-            <div className="flex items-center gap-3">
+          <div className="mb-5 p-4 bg-gradient-to-br from-emerald-50 to-emerald-100 rounded-xl border-2 border-emerald-500 relative overflow-hidden">
+            <div className="absolute top-0 right-0 p-3 opacity-10">
+               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-24 h-24 text-emerald-900">
+                  <path fillRule="evenodd" d="M7.5 6a4.5 4.5 0 119 0 4.5 4.5 0 01-9 0zM3.751 20.105a8.25 8.25 0 0116.498 0 .75.75 0 01-.437.695A18.683 18.683 0 0112 22.5c-2.786 0-5.433-.608-7.812-1.7a.75.75 0 01-.437-.695z" clipRule="evenodd" />
+               </svg>
+            </div>
+            <div className="flex items-center gap-3 relative z-10">
               <div className="text-4xl">👤</div>
               <div>
                 <div className="text-2xl font-bold text-emerald-800">
-                  {profile.name}, {age} years old
+                  {profile.name}, {age}
                 </div>
-                <div className="text-sm text-emerald-800 mt-1">
-                  {profile.employmentStatus === 'employed' ? '💼 Employed' : '🏢 Self-Employed'} • 
-                  {profile.gender === 'male' ? ' ♂️ Male' : ' ♀️ Female'} • 
-                  Target Retirement: Age {profile.retirementAge || 65}
+                <div className="text-sm text-emerald-800 mt-1 flex gap-2">
+                  <span className="bg-emerald-200/50 px-2 py-0.5 rounded">{profile.employmentStatus === 'employed' ? 'Employed' : 'Self-Employed'}</span>
+                  <span className="bg-emerald-200/50 px-2 py-0.5 rounded">{profile.gender === 'male' ? 'Male' : 'Female'}</span>
                 </div>
               </div>
             </div>
+          </div>
+        )}
+
+        {/* Life Stage Visualization - Visual Fix */}
+        {age > 0 && (
+          <div className="mt-8 mb-12"> {/* Increased bottom margin for markers */}
+             <div className="flex justify-between items-end mb-4 px-1">
+                <div className="flex items-center gap-3">
+                   <div className="p-2 bg-indigo-50 rounded-lg text-indigo-600">
+                      {/* Hourglass Icon */}
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6">
+                        <path d="M12 22C6.477 22 2 17.523 2 12S6.477 2 12 2s10 4.477 10 10-4.477 10-10 10zm0-2a8 8 0 100-16 8 8 0 000 16zm-5-9h10v2H7v-2z" />
+                      </svg>
+                   </div>
+                   <div>
+                      <h4 className="text-sm font-extrabold text-slate-800 uppercase tracking-widest m-0">Your Financial Runway</h4>
+                      <div className="text-xs text-slate-500 mt-0.5">
+                         Visualizing your journey from <strong>{age}</strong> to <strong>{lifeExpectancy}</strong>
+                      </div>
+                   </div>
+                </div>
+                <div className="text-right">
+                   <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-0.5">Planning Horizon</div>
+                   <div className="text-2xl font-black text-indigo-600 leading-none">{lifeExpectancy - age} <span className="text-sm font-bold text-indigo-400">Years</span></div>
+                </div>
+             </div>
+             
+             {/* The Track Container */}
+             <div className="relative h-16 select-none">
+                
+                {/* 1. The Bar Itself (Rounded & Masked) */}
+                <div className="absolute inset-0 rounded-2xl overflow-hidden flex shadow-sm ring-1 ring-slate-900/5">
+                    
+                    {/* PAST */}
+                    <div 
+                       style={{ width: `${(age / lifeExpectancy) * 100}%` }} 
+                       className="h-full bg-slate-100 border-r border-slate-300/50 relative"
+                    >
+                       <div className="absolute inset-0 opacity-10" 
+                            style={{ backgroundImage: 'repeating-linear-gradient(45deg, #000 0, #000 1px, transparent 0, transparent 50%)', backgroundSize: '10px 10px' }}>
+                       </div>
+                       <span className="absolute bottom-2 left-3 text-[10px] font-bold text-slate-300 uppercase tracking-wider">Past</span>
+                    </div>
+
+                    {/* ACCUMULATION */}
+                    <div 
+                       style={{ width: `${((Math.max(0, toNum(profile.retirementAge, 65) - age)) / lifeExpectancy) * 100}%` }} 
+                       className="h-full bg-gradient-to-r from-emerald-500 to-teal-400 flex items-center justify-center relative overflow-hidden group"
+                    >
+                       <div className="absolute inset-0 bg-white/10 group-hover:bg-transparent transition-colors"></div>
+                       <div className="text-center z-10">
+                          <span className="block text-[10px] font-black text-emerald-900/40 uppercase tracking-[0.2em] mb-0.5">Accumulation</span>
+                          <span className="block text-[11px] font-bold text-white drop-shadow-md">{Math.max(0, toNum(profile.retirementAge, 65) - age)} Years</span>
+                       </div>
+                    </div>
+
+                    {/* RETIREMENT */}
+                    <div 
+                       style={{ width: `${(Math.max(0, lifeExpectancy - toNum(profile.retirementAge, 65)) / lifeExpectancy) * 100}%` }}
+                       className="h-full bg-gradient-to-r from-amber-400 to-orange-500 flex items-center justify-center relative overflow-hidden group"
+                    >
+                        <div className="absolute inset-0 bg-white/10 group-hover:bg-transparent transition-colors"></div>
+                        <div className="text-center z-10">
+                          <span className="block text-[10px] font-black text-amber-900/30 uppercase tracking-[0.2em] mb-0.5">Freedom</span>
+                          <span className="block text-[11px] font-bold text-white drop-shadow-md">{Math.max(0, lifeExpectancy - toNum(profile.retirementAge, 65))} Years</span>
+                       </div>
+                    </div>
+                </div>
+
+                {/* 2. Markers (Outside the Overflow Hidden Bar) */}
+                
+                {/* Current Age Marker */}
+                <div 
+                   className="absolute top-0 bottom-0 w-0.5 bg-slate-800 z-20 shadow-[0_0_10px_rgba(0,0,0,0.2)]" 
+                   style={{ left: `${(age / lifeExpectancy) * 100}%` }}
+                >
+                   {/* Top Flag */}
+                   <div className="absolute -top-3 -translate-x-1/2 flex flex-col items-center">
+                      <div className="bg-slate-800 text-white text-[10px] font-bold px-2 py-1 rounded-md shadow-lg min-w-[30px] text-center">
+                         {age}
+                      </div>
+                      <div className="w-0 h-0 border-l-[4px] border-l-transparent border-r-[4px] border-r-transparent border-t-[4px] border-t-slate-800"></div>
+                   </div>
+                   
+                   {/* Bottom Tag */}
+                   <div className="absolute -bottom-3 -translate-x-1/2 flex flex-col items-center">
+                      <div className="w-0 h-0 border-l-[4px] border-l-transparent border-r-[4px] border-r-transparent border-b-[4px] border-b-white"></div>
+                      <div className="bg-white text-slate-800 text-[9px] font-extrabold px-2 py-0.5 rounded-full shadow-md border border-slate-200 tracking-wider">
+                         NOW
+                      </div>
+                   </div>
+                </div>
+
+                {/* Retirement Age Marker */}
+                <div 
+                   className="absolute top-0 bottom-0 w-0.5 bg-white/60 z-20 border-l border-dashed border-white mix-blend-overlay" 
+                   style={{ left: `${(toNum(profile.retirementAge, 65) / lifeExpectancy) * 100}%` }}
+                >
+                   <div className="absolute -top-3 -translate-x-1/2 flex flex-col items-center">
+                      <div className="bg-indigo-600 text-white text-[10px] font-bold px-2 py-1 rounded-md shadow-lg border border-indigo-500 min-w-[30px] text-center">
+                         {profile.retirementAge || 65}
+                      </div>
+                      <div className="w-0 h-0 border-l-[4px] border-l-transparent border-r-[4px] border-r-transparent border-t-[4px] border-t-indigo-600"></div>
+                   </div>
+                </div>
+
+             </div>
+             
+             {/* Footer Labels */}
+             <div className="flex justify-between mt-4 px-1">
+                <div className="flex items-center gap-1.5 text-slate-400">
+                   <span className="text-lg">👶</span>
+                   <div className="text-[10px] font-bold uppercase tracking-wider">Birth <span className="opacity-50">({new Date(profile.dob).getFullYear() || '?'})</span></div>
+                </div>
+                <div className="flex items-center gap-1.5 text-slate-400">
+                   <div className="text-right">
+                      <div className="text-[10px] font-bold uppercase tracking-wider">Life Expectancy <span className="opacity-50">({lifeExpectancy})</span></div>
+                   </div>
+                   <span className="text-lg">🏁</span>
+                </div>
+             </div>
           </div>
         )}
 
         {/* Contact Info Row */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-          <LabeledText 
-            label='Full Name' 
-            value={profile.name} 
-            onChange={(val) => setProfile({ ...profile, name: val })} 
-            placeholder='Enter client name' 
-          />
-          <LabeledText 
-            label='Email Address' 
-            value={profile.email} 
-            onChange={(val) => setProfile({ ...profile, email: val })} 
-            placeholder='client@email.com' 
-            type="email"
-          />
-          <LabeledText 
-            label='Phone Number (WhatsApp)' 
-            value={profile.phone} 
-            onChange={(val) => setProfile({ ...profile, phone: val })} 
-            placeholder='e.g. 6591234567' 
-            type="tel"
-          />
+          <LabeledText label='Full Name' value={profile.name} onChange={(val) => setProfile({ ...profile, name: val })} placeholder='e.g. John Tan' />
+          <LabeledText label='Email Address' value={profile.email} onChange={(val) => setProfile({ ...profile, email: val })} placeholder='client@email.com' type="email"/>
+          <LabeledText label='Phone Number' value={profile.phone} onChange={(val) => setProfile({ ...profile, phone: val })} placeholder='9123 4567' type="tel"/>
         </div>
 
         {/* Demographics Row */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <LabeledText 
-            label='Date of Birth' 
-            value={profile.dob} 
-            onChange={(val) => setProfile({ ...profile, dob: val })} 
-            type='date' 
-          />
+          <LabeledText label='Date of Birth' value={profile.dob} onChange={(val) => setProfile({ ...profile, dob: val })} type='date' />
           <LabeledSelect
             label='Gender'
             value={profile.gender}
             onChange={(val) => setProfile({ ...profile, gender: val as 'male' | 'female' })}
-            options={[
-              { label: 'Male (Life: 82 yrs)', value: 'male' },
-              { label: 'Female (Life: 86 yrs)', value: 'female' }
-            ]}
+            options={[{ label: 'Male (Life Exp: 82)', value: 'male' }, { label: 'Female (Life Exp: 86)', value: 'female' }]}
           />
           <LabeledSelect
             label='Employment Status'
             value={profile.employmentStatus || 'employed'}
             onChange={(val) => setProfile({ ...profile, employmentStatus: val as any })}
-            options={[
-              { label: '💼 Employed', value: 'employed' },
-              { label: '🏢 Self-Employed', value: 'self-employed' }
-            ]}
+            options={[{ label: '💼 Employed', value: 'employed' }, { label: '🏢 Self-Employed', value: 'self-employed' }]}
           />
         </div>
 
-        <div className="mt-3 mb-3 p-3 bg-blue-50 rounded-lg border border-blue-200 text-xs text-blue-800">
-          <strong>💡 Auto-Sync:</strong> {age ? 
-            `Enter either Gross OR Take-Home salary - the other calculates automatically based on your age and CPF rates! ${profile.employmentStatus === 'self-employed' ? '(Self-employed: No employer CPF)' : ''}` : 
-            '⚠️ Fill in your Date of Birth above first, then enter either salary field to enable auto-calculation!'}
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <LabeledText 
-              label='Monthly Gross Salary (SGD) 💼' 
-              value={profile.grossSalary || ''} 
-              onChange={(val) => {
-                const gross = toNum(val);
-                const cpfCalc = computeCpf(gross, age); 
-                setProfile({ 
-                  ...profile, 
-                  grossSalary: val,
-                  monthlyIncome: val,
-                  takeHome: cpfCalc.takeHome.toFixed(2)
-                });
-              }} 
-              placeholder='e.g., 6000' 
-            />
-             <div className="text-xs text-gray-500 mt-1">
-              🏦 Used for CPF calculations • Auto-syncs with Take-Home
-            </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
+          <div className="space-y-4">
+             <div className="flex justify-between items-end">
+                <label className="text-sm font-bold text-gray-700">Monthly Gross Salary ($)</label>
+                {grossAnnual > 0 && <span className="text-xs text-gray-500 font-mono">~{fmtSGD(grossAnnual)}/yr</span>}
+             </div>
+             <input 
+                type="text" 
+                value={profile.grossSalary || ''}
+                onChange={(e) => {
+                   const val = e.target.value;
+                   const gross = toNum(val);
+                   const cpfCalc = computeCpf(gross, age); 
+                   setProfile({ ...profile, grossSalary: val, monthlyIncome: val, takeHome: cpfCalc.takeHome.toFixed(2) });
+                }}
+                className="w-full text-xl font-bold p-3 border-2 border-gray-300 rounded-lg focus:border-indigo-500 outline-none text-indigo-900 bg-gray-50"
+                placeholder="6000"
+             />
+             <div className="text-xs text-gray-500">🏦 Used for CPF & Human Capital calculation</div>
           </div>
-          <div>
-            <LabeledText 
-              label='Monthly Take-Home (SGD) 💵' 
-              value={profile.takeHome || ''} 
-              onChange={(val) => {
-                const takeHome = toNum(val);
-                const rates = getCpfRates(age);
-                const maxCPFDeduction = CPF_WAGE_CEILING * rates.employee;
-                const ceilingTakeHome = CPF_WAGE_CEILING - maxCPFDeduction;
-                let gross;
-                if (takeHome <= ceilingTakeHome) {
-                  gross = takeHome / (1 - rates.employee);
-                } else {
-                  gross = takeHome + maxCPFDeduction;
-                }
-                setProfile({ 
-                  ...profile, 
-                  takeHome: val,
-                  grossSalary: gross.toFixed(2),
-                  monthlyIncome: gross.toFixed(2)
-                });
-              }} 
-              placeholder='e.g., 4800' 
-            />
-            <div className="text-xs text-gray-500 mt-1">
-              💸 Used for Cashflow calculations • Auto-syncs with Gross
-            </div>
+          
+          <div className="space-y-4">
+             <div className="flex justify-between items-end">
+                <label className="text-sm font-bold text-gray-700">Monthly Take-Home ($)</label>
+                {toNum(profile.takeHome) > 0 && <span className="text-xs text-emerald-600 font-bold">Spendable Income</span>}
+             </div>
+             <input 
+                type="text" 
+                value={profile.takeHome || ''}
+                onChange={(e) => {
+                   const val = e.target.value;
+                   const takeHome = toNum(val);
+                   const rates = getCpfRates(age);
+                   const maxCPFDeduction = CPF_WAGE_CEILING * rates.employee;
+                   const ceilingTakeHome = CPF_WAGE_CEILING - maxCPFDeduction;
+                   let gross;
+                   if (takeHome <= ceilingTakeHome) gross = takeHome / (1 - rates.employee);
+                   else gross = takeHome + maxCPFDeduction;
+                   setProfile({ ...profile, takeHome: val, grossSalary: gross.toFixed(2), monthlyIncome: gross.toFixed(2) });
+                }}
+                className="w-full text-xl font-bold p-3 border-2 border-emerald-300 rounded-lg focus:border-emerald-500 outline-none text-emerald-900 bg-emerald-50"
+                placeholder="4800"
+             />
+             <div className="text-xs text-gray-500">💸 Used for Cashflow planning</div>
           </div>
         </div>
 
-        {/* Salary Breakdown Info Cards */}
-        {profile.grossSalary && age > 0 && (
-          <div className="mt-4 grid grid-cols-2 md:grid-cols-3 gap-3">
-            <div className="p-3 bg-gradient-to-br from-blue-50 to-blue-100 rounded-lg border border-blue-500">
-              <div className="text-xs font-bold text-blue-800 uppercase mb-1">💰 Gross Salary</div>
-              <div className="text-xl font-bold text-blue-800">{fmtSGD(profile.grossSalary)}</div>
-              <div className="text-[10px] text-blue-600 mt-1 opacity-80">Before CPF deductions</div>
-            </div>
-            
-            <div className="p-3 bg-gradient-to-br from-amber-50 to-amber-100 rounded-lg border border-amber-500">
-              <div className="text-xs font-bold text-amber-800 uppercase mb-1">👤 Employee CPF</div>
-              <div className="text-xl font-bold text-amber-800">
-                {fmtSGD(computeCpf(toNum(profile.grossSalary, 0), age).employee)}
+        {/* HUMAN CAPITAL VISUALIZER */}
+        {humanCapital > 0 && (
+           <div className="mt-6 p-5 bg-gradient-to-r from-slate-800 to-slate-900 rounded-xl text-white shadow-lg relative overflow-hidden group hover:scale-[1.01] transition-transform duration-300">
+              <div className="absolute right-0 top-0 h-full w-32 bg-white/5 skew-x-12 transform translate-x-10 group-hover:translate-x-0 transition-transform duration-700"></div>
+              <div className="relative z-10">
+                 <div className="flex justify-between items-start">
+                    <div>
+                       <div className="text-xs font-bold text-indigo-300 uppercase tracking-widest mb-1">Your Economic Value</div>
+                       <div className="text-3xl font-extrabold text-white mb-2">{fmtSGD(humanCapital)}</div>
+                       <p className="text-xs text-slate-400 max-w-sm">
+                          This is the asset value of your future work until age {profile.retirementAge || 65}. 
+                          If this "money machine" stops working tomorrow (due to illness/accident), does your family lose this asset?
+                       </p>
+                    </div>
+                    <div className="text-4xl opacity-50">💎</div>
+                 </div>
               </div>
-              <div className="text-[10px] text-amber-800 mt-1 opacity-80">
-                 {(getCpfRates(age).employee * 100).toFixed(0)}% contribution
-              </div>
-            </div>
-
-            {profile.employmentStatus === 'employed' && (
-              <div className="p-3 bg-gradient-to-br from-emerald-50 to-emerald-100 rounded-lg border border-emerald-500">
-                <div className="text-xs font-bold text-emerald-800 uppercase mb-1">🏢 Employer CPF</div>
-                <div className="text-xl font-bold text-emerald-800">
-                  {fmtSGD(computeCpf(toNum(profile.grossSalary, 0), age).employer)}
-                </div>
-                <div className="text-[10px] text-emerald-800 mt-1 opacity-80">
-                   {(getCpfRates(age).employer * 100).toFixed(1)}% contribution
-                </div>
-              </div>
-            )}
-          </div>
+           </div>
         )}
-
-        {/* CPF Wage Ceiling Warning */}
-        {profile.grossSalary && age > 0 && toNum(profile.grossSalary, 0) > CPF_WAGE_CEILING && (
-          <div className="mt-4 p-4 bg-amber-50 rounded-lg border-2 border-amber-400">
-            <div className="text-sm font-bold text-amber-900 mb-2 flex items-center gap-2">
-              <span className="text-lg">ℹ️</span> CPF Wage Ceiling Applied
-            </div>
-            <div className="text-xs text-amber-800 space-y-1">
-              <div>• Your gross salary: <strong>{fmtSGD(toNum(profile.grossSalary, 0))}</strong></div>
-              <div>• CPF calculated on: <strong>{fmtSGD(CPF_WAGE_CEILING)}</strong> (2025 wage ceiling)</div>
-              <div>• Excess amount: <strong>{fmtSGD(toNum(profile.grossSalary, 0) - CPF_WAGE_CEILING)}</strong> (no CPF on this amount)</div>
-              <div className="mt-2">💡 Consider using this excess for voluntary SRS contributions or other investments!</div>
-            </div>
-          </div>
-        )}
-
-        <div className="mt-4 max-w-xs">
-           <LabeledText 
-              label='🎯 Target Financial Independence Age' 
-              value={profile.retirementAge} 
-              onChange={(val) => setProfile({ ...profile, retirementAge: val })} 
-              placeholder='e.g., 65' 
-            />
-            <div className="text-xs text-gray-500 mt-1">
-              Age when you plan to achieve financial independence and stop working
-            </div>
-        </div>
       </div>
 
-      {/* Expenses (Moved Above Investment Planning) */}
+      {/* Expenses */}
       <div className="bg-white border border-gray-200 rounded-xl p-6 mb-5 shadow-sm">
-        <h3 className="mt-0 text-lg font-bold text-gray-800">💰 Monthly Expenses Breakdown</h3>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <h3 className="mt-0 text-lg font-bold text-gray-800 mb-4">💰 Current Monthly Expenses</h3>
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
           {Object.keys(expenses).map((key) => (
-            <LabeledText
-              key={key}
-              label={key.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')}
-              value={expenses[key]}
-              onChange={(v) => setExpenses({ ...expenses, [key]: v })}
-              placeholder='0'
-            />
+            <div key={key} className="bg-gray-50 p-2 rounded-lg border border-gray-200 focus-within:border-indigo-500 focus-within:bg-white transition-colors">
+               <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">{key}</label>
+               <input 
+                  type="text"
+                  value={expenses[key]}
+                  onChange={(e) => setExpenses({ ...expenses, [key]: e.target.value })}
+                  className="w-full bg-transparent outline-none font-bold text-gray-800"
+                  placeholder="0"
+               />
+            </div>
           ))}
         </div>
-        <div className="mt-6">
-           <div className="flex justify-between items-center mb-2">
-             <h4 className="m-0 text-sm font-bold text-gray-700">➕ Custom Expenses</h4>
-             <button 
-               onClick={() => setCustomExpenses([...customExpenses, { id: Date.now(), name: '', amount: '' }])}
-               className="px-3 py-1.5 bg-indigo-500 text-white text-xs rounded-md hover:bg-indigo-600"
-             >
-               + Add Custom Expense
-             </button>
+        
+        {customExpenses.length > 0 && (
+           <div className="mt-3 grid gap-2">
+              {customExpenses.map(exp => (
+                 <div key={exp.id} className="flex gap-2 items-center">
+                    <input 
+                      type="text" 
+                      value={exp.name} 
+                      onChange={(e) => setCustomExpenses(customExpenses.map(x => x.id === exp.id ? {...x, name: e.target.value} : x))} 
+                      className="flex-1 p-2 border rounded text-sm bg-white text-gray-900" 
+                      placeholder="Expense Name"
+                    />
+                    <input 
+                      type="text" 
+                      value={exp.amount} 
+                      onChange={(e) => setCustomExpenses(customExpenses.map(x => x.id === exp.id ? {...x, amount: e.target.value} : x))} 
+                      className="w-24 p-2 border rounded text-sm bg-white text-gray-900" 
+                      placeholder="Amount"
+                    />
+                    <button onClick={() => setCustomExpenses(customExpenses.filter(x => x.id !== exp.id))} className="text-red-500 px-2">×</button>
+                 </div>
+              ))}
            </div>
-           {customExpenses && customExpenses.length > 0 && (
-             <div className="grid gap-3">
-                {customExpenses.map((exp) => (
-                  <div key={exp.id} className="grid grid-cols-[2fr_1fr_auto] gap-3 items-end">
-                    <LabeledText label="Expense Name" value={exp.name} onChange={(v) => setCustomExpenses(customExpenses.map(e => e.id === exp.id ? {...e, name: v} : e))} placeholder="e.g. Pet Care" />
-                    <LabeledText label="Amount (SGD)" value={exp.amount} onChange={(v) => setCustomExpenses(customExpenses.map(e => e.id === exp.id ? {...e, amount: v} : e))} placeholder="0" />
-                    <button onClick={() => setCustomExpenses(customExpenses.filter(e => e.id !== exp.id))} className="mb-2 px-3 py-2.5 bg-red-500 text-white text-xs rounded">Remove</button>
-                  </div>
-                ))}
-             </div>
-           )}
-        </div>
-        <div className="mt-4 p-4 bg-gray-100 rounded-lg flex justify-between items-center">
-          <span className="font-bold text-gray-700">Total Monthly Expenses:</span>
-          <span className="text-xl font-bold text-indigo-600">{fmtSGD(totalMonthlyExpenses)}</span>
+        )}
+        <div className="mt-3 flex justify-between items-center">
+           <button onClick={() => setCustomExpenses([...customExpenses, {id: Date.now(), name: '', amount: ''}])} className="text-xs font-bold text-indigo-600 hover:underline">+ Add Custom</button>
+           <div className="text-sm font-bold text-gray-700">Total: {fmtSGD(totalMonthlyExpenses)}/mo</div>
         </div>
       </div>
 
-      {/* Investment Planning - Accumulation Phase */}
-      {age > 0 && (cpfData?.takeHome || profile.takeHome) && (
-         <div className="bg-white border border-gray-200 rounded-xl p-6 mb-5 shadow-sm">
-            <h3 className="mt-0 text-lg font-bold text-gray-800 mb-2">📊 Investment Planning & Accumulation</h3>
-            <p className="text-sm text-gray-500 mb-4">Determine your monthly investment capacity and visualize potential growth</p>
+      {/* --- RETIREMENT LIFESTYLE DESIGN --- */}
+      <div className="bg-white border border-gray-200 rounded-xl p-6 mb-5 shadow-sm">
+         <div className="flex justify-between items-center mb-4">
+            <h3 className="m-0 text-lg font-bold text-gray-800">🌅 Retirement Lifestyle Design</h3>
+            <div className="flex items-center gap-2">
+               <label className="text-xs font-bold text-gray-600">Target Age:</label>
+               <input 
+                  type="number" 
+                  value={profile.retirementAge || 65} 
+                  onChange={(e) => setProfile({...profile, retirementAge: e.target.value})}
+                  className="w-16 p-1 border rounded text-center font-bold text-indigo-600 bg-white"
+               />
+            </div>
+         </div>
+
+         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+            {LIFESTYLES.map((style) => {
+               const isSelected = toNum(profile.customRetirementExpense) === toNum(style.value);
+               return (
+                  <button 
+                     key={style.label}
+                     onClick={() => setProfile({...profile, customRetirementExpense: style.value})}
+                     className={`p-3 rounded-xl border-2 text-left transition-all hover:scale-105 ${isSelected ? 'border-indigo-600 bg-indigo-50 ring-1 ring-indigo-600' : 'border-gray-200 hover:border-indigo-300'}`}
+                  >
+                     <div className="text-2xl mb-2">{style.icon}</div>
+                     <div className={`font-bold text-sm ${isSelected ? 'text-indigo-900' : 'text-gray-700'}`}>{style.label}</div>
+                     <div className={`text-xs ${isSelected ? 'text-indigo-700' : 'text-gray-500'} mb-1`}>{fmtSGD(style.value)}/m</div>
+                     <div className="text-[10px] text-gray-400 leading-tight">{style.desc}</div>
+                  </button>
+               );
+            })}
+         </div>
+
+         <div className="flex flex-col sm:flex-row gap-4 items-center bg-gray-50 p-4 rounded-lg border border-gray-200">
+            <div className="flex-1">
+               <label className="text-xs font-bold text-gray-500 uppercase">Custom Monthly Retirement Income Needed (Today's Value)</label>
+               <input 
+                  type="text" 
+                  value={profile.customRetirementExpense || ''} 
+                  onChange={(e) => setProfile({...profile, customRetirementExpense: e.target.value})}
+                  className="w-full bg-transparent text-xl font-bold text-gray-800 outline-none border-b border-gray-300 focus:border-indigo-500"
+                  placeholder={fmtSGD(monthlyRetirementExpenses)}
+               />
+            </div>
+            <div className="text-right">
+               <div className="text-xs text-gray-500">Inflation Adjusted ({yearsToRetirement} yrs @ {inflationRate*100}%)</div>
+               <div className="text-xl font-bold text-indigo-600">{fmtSGD(futureMonthlyRetirementExpenses)}/mo</div>
+            </div>
+         </div>
+      </div>
+
+      {/* --- GOAL FEASIBILITY (Green/Red) --- */}
+      <div className={`p-6 rounded-xl border-l-4 shadow-sm mb-5 ${hasSurplus ? 'bg-emerald-50 border-emerald-500' : 'bg-red-50 border-red-500'}`}>
+         <h3 className={`mt-0 text-lg font-bold mb-4 ${hasSurplus ? 'text-emerald-900' : 'text-red-900'}`}>
+            🎯 Goal Feasibility Check
+         </h3>
+         
+         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div>
+               <div className="text-xs font-bold uppercase tracking-wider opacity-70">Target Nest Egg</div>
+               <div className="text-2xl font-bold">{fmtSGD(retirementNestEgg)}</div>
+               <div className="text-xs mt-1">Needed at age {profile.retirementAge || 65}</div>
+            </div>
             
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-5">
-               <LabeledText label="Conservative (%)" value={rate1} onChange={(v) => setRate1(toNum(v))} type="number" placeholder="0.05" />
-               <LabeledText label="Moderate (%)" value={rate2} onChange={(v) => setRate2(toNum(v))} type="number" placeholder="6" />
-               <LabeledText label="Growth (%)" value={rate3} onChange={(v) => setRate3(toNum(v))} type="number" placeholder="12" />
+            <div>
+               <div className="text-xs font-bold uppercase tracking-wider opacity-70">Required Investment</div>
+               <div className="text-2xl font-bold">{fmtSGD(requiredMonthlyInvestment)}/mo</div>
+               <div className="text-xs mt-1">To hit target @ {rate2}% return</div>
             </div>
 
-            <div className="mb-4 p-4 bg-gradient-to-br from-blue-50 to-blue-100 rounded-lg border-2 border-blue-400">
-               <div className="flex flex-wrap gap-4 items-center">
-                  <div className="flex-1 min-w-[200px]">
-                     <LabeledText 
-                        label="💰 Monthly Investment Amount (SGD)" 
-                        value={profile.monthlyInvestmentAmount || ''} 
-                        onChange={(val) => setProfile({ ...profile, monthlyInvestmentAmount: val })} 
-                        placeholder={cashflowData ? fmtSGD(cashflowData.monthlySavings) : '0'} 
-                     />
-                     <div className="text-[10px] text-blue-800 mt-1">
-                        {cashflowData ? `Your current monthly savings: ${fmtSGD(cashflowData.monthlySavings)}` : 'Enter amount'}
-                     </div>
-                     
-                     {/* Quick Preset Buttons */}
-                     <div className="flex gap-1.5 flex-wrap mt-2 items-center">
-                        <div className="text-[10px] text-blue-800 mr-1">Quick:</div>
-                        {[500, 1000, 2000, 3000, 5000].map(v => (
-                           <button 
-                              key={v} 
-                              onClick={() => setProfile({ ...profile, monthlyInvestmentAmount: String(v) })}
-                              className={`px-2 py-1 rounded text-[10px] font-bold border border-blue-400 ${toNum(profile.monthlyInvestmentAmount) === v ? 'bg-blue-500 text-white' : 'bg-white text-blue-800'}`}
-                           >
-                              ${v}
-                           </button>
-                        ))}
-                        {cashflowData && cashflowData.monthlySavings > 0 && (
-                           <button 
-                              onClick={() => setProfile({ ...profile, monthlyInvestmentAmount: '' })}
-                              className="px-2 py-1 rounded text-[10px] font-bold border border-blue-400 bg-white text-blue-800"
-                           >
-                              Reset
-                           </button>
-                        )}
-                     </div>
-                  </div>
-                  
-                  {toNum(profile.monthlyInvestmentAmount) > 0 && (
-                     <div className="p-4 bg-white rounded-lg border-2 border-blue-400 min-w-[150px]">
-                        <div className="text-[10px] font-bold text-blue-800 mb-1">Monthly Investment</div>
-                        <div className="text-xl font-bold text-blue-600">{fmtSGD(profile.monthlyInvestmentAmount)}</div>
+            <div>
+               <div className="text-xs font-bold uppercase tracking-wider opacity-70">Your Savings Capacity</div>
+               <div className={`text-2xl font-bold ${hasSurplus ? 'text-emerald-700' : 'text-red-700'}`}>
+                  {fmtSGD(currentMonthlySavings)}/mo
+               </div>
+               <div className="text-xs mt-1 font-bold">
+                  {hasSurplus 
+                     ? '✅ You have enough surplus!' 
+                     : `⚠️ Shortfall of ${fmtSGD(shortfall)}`}
+               </div>
+            </div>
+         </div>
+         
+         {!hasSurplus && shortfall > 0 && (
+            <div className="mt-4 p-3 bg-red-100/50 rounded-lg text-xs text-red-800 flex items-center gap-2">
+               <span>🚨</span>
+               <span>You need to increase your savings or investment returns to meet this goal.</span>
+            </div>
+         )}
+         
+         {hasSurplus && (
+            <div className="mt-4">
+               <button 
+                  onClick={() => setProfile({...profile, monthlyInvestmentAmount: String(Math.round(requiredMonthlyInvestment))})}
+                  className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm font-bold shadow-sm hover:bg-emerald-700 transition-colors"
+               >
+                  Commit Required Amount ({fmtSGD(requiredMonthlyInvestment)})
+               </button>
+            </div>
+         )}
+      </div>
+
+      {/* --- POWER OF COMPOUNDING SECTION (New) --- */}
+      {age > 0 && (
+         <div className="bg-white border-2 border-indigo-600 rounded-xl p-6 mb-5 shadow-lg">
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
+               <div>
+                  <h3 className="m-0 text-xl font-bold text-indigo-900">📈 The Power of Compounding</h3>
+                  <p className="text-xs text-indigo-600 mt-1">
+                     How specific return rates accelerate your wealth journey
+                  </p>
+                  {compoundingData && compoundingData.startingPrincipal > 0 && (
+                     <div className="mt-2 inline-flex items-center gap-2 bg-indigo-50 border border-indigo-200 px-2 py-1 rounded text-xs text-indigo-800 font-medium">
+                        <span>💰 Includes Starting Wealth: <strong>{fmtSGD(compoundingData.startingPrincipal)}</strong></span>
+                        <span className="text-[9px] opacity-70">(Cash + Investments, Excl CPF)</span>
                      </div>
                   )}
                </div>
-
-               {/* Investment Scenarios Comparison - Moved INSIDE the blue box */}
-               <div className="mt-4 p-3 bg-white/80 rounded-lg border border-blue-200">
-                  <div className="text-xs font-bold text-gray-700 mb-2">💡 Investment Scenarios Comparison</div>
-                  <div className="grid gap-2">
-                     {(() => {
-                        const monthly = toNum(profile.monthlyInvestmentAmount) || (cashflowData?.monthlySavings || 0);
-                        const m = yearsToRetirement * 12;
-                        
-                        const scenarios = [
-                           { label: 'Conservative', rate: rate1, color: '#000000', bg: 'bg-white' },
-                           { label: 'Moderate', rate: rate2, color: '#92400e', bg: 'bg-white' },
-                           { label: 'Growth', rate: rate3, color: '#10b981', bg: 'bg-emerald-50' }
-                        ];
-                        
-                        const results = scenarios.map(s => {
-                           const r = s.rate / 100 / 12;
-                           const fv = monthly * ((Math.pow(1 + r, m) - 1) / r);
-                           return { ...s, fv };
-                        });
-                        
-                        const maxVal = Math.max(...results.map(r => r.fv));
-
-                        return results.map(res => (
-                           <div key={res.label} className={`p-2 rounded border ${res.fv === maxVal ? 'border-emerald-500 bg-emerald-50' : 'border-gray-200 bg-white'} flex justify-between items-center`}>
-                              <div>
-                                 <div className="text-xs font-bold text-gray-700">
-                                    {res.label} ({res.rate}%)
-                                    {res.fv === maxVal && <span className="ml-2 text-emerald-600 text-[10px]">🏆 Best Growth</span>}
-                                 </div>
-                                 <div className="text-[10px] text-gray-500">{fmtSGD(monthly)}/m for {yearsToRetirement} years</div>
-                              </div>
-                              <div className="text-sm font-bold" style={{ color: res.color }}>{fmtSGD(res.fv)}</div>
-                           </div>
-                        ));
-                     })()}
-                  </div>
+               
+               <div className="w-full md:w-auto bg-gray-50 p-2 rounded-lg border border-gray-200">
+                  <label className="text-[10px] font-bold text-gray-500 uppercase block mb-1">Monthly Investment</label>
+                  <input 
+                     type="text" 
+                     value={profile.monthlyInvestmentAmount || ''} 
+                     onChange={(e) => setProfile({...profile, monthlyInvestmentAmount: e.target.value})}
+                     className="w-full md:w-32 bg-white px-2 py-1 border rounded font-bold text-indigo-600 text-lg outline-none focus:ring-1 focus:ring-indigo-500"
+                     placeholder={fmtSGD(cashflowData ? cashflowData.monthlySavings : 0)}
+                  />
                </div>
             </div>
 
-            {/* Financial Planning Insights - Moved here from Retirement Journey Section */}
-            {retirementNestEgg > 0 && (
-              <div className="mb-5 p-4 bg-indigo-50 border-2 border-indigo-400 rounded-xl shadow-sm">
-                <div className="text-xs font-bold text-indigo-800 mb-2">💡 Financial Planning Insights:</div>
-                <div className="text-xs text-indigo-700 space-y-1.5 leading-relaxed">
-                  <p>• <strong>Wealth Building Phase:</strong> You have {toNum(profile.retirementAge, 65) - Math.round(age)} years to save. Compound interest works best here.</p>
-                  <p>• <strong>Retirement Duration:</strong> Your money needs to last {retirementYears} years. Plan for {fmtSGD(futureMonthlyRetirementExpenses)}/month.</p>
-                  <p>• <strong>Required Nest Egg:</strong> Target {fmtSGD(retirementNestEgg)} by age {toNum(profile.retirementAge, 65)}.</p>
-                </div>
-              </div>
-            )}
-            
-            {/* Chart Section (Accumulation) */}
-            {(() => {
-               const monthly = toNum(profile.monthlyInvestmentAmount) || (cashflowData?.monthlySavings || 0);
-               if (monthly <= 0) return null;
-               
-               const data = [];
-               for (let y=0; y<=yearsToRetirement + 5; y++) {
-                  const m = y*12;
-                  const calc = (r: number) => monthly * ((Math.pow(1+r/100/12, m)-1)/(r/100/12));
-                  data.push({
-                     age: `Age ${Math.round(age+y)}`,
-                     con: calc(rate1),
-                     mod: calc(rate2),
-                     gro: calc(rate3)
-                  });
-               }
-
-               const target = toNum(customInvestmentTarget);
-
-               return (
-                  <>
-                     {/* Custom Target Input & Logic */}
-                     <div className="mb-5 p-4 bg-gradient-to-br from-amber-50 to-amber-100 rounded-lg border-2 border-amber-400">
-                        <div className="flex flex-wrap gap-4 items-center mb-3">
-                           <div className="flex-1">
-                              <LabeledText label="🎯 Target Portfolio Goal (SGD)" value={customInvestmentTarget} onChange={setCustomInvestmentTarget} placeholder="100000" />
-                              <div className="text-[10px] text-amber-800 mt-1">See when you'll achieve this goal</div>
-                           </div>
-                           <div className="flex gap-1.5 items-center self-end pb-3">
-                              <span className="text-[10px] text-amber-800 font-bold">Quick:</span>
-                              {[50000, 100000, 250000, 500000, 1000000].map(v => (
-                                 <button key={v} onClick={() => setCustomInvestmentTarget(String(v))} className={`px-2 py-1 border border-amber-400 rounded text-[10px] font-bold ${toNum(customInvestmentTarget)===v ? 'bg-amber-500 text-white' : 'bg-white text-amber-800'}`}>
-                                    ${v>=1000000 ? v/1000000+'M' : v/1000+'k'}
-                                 </button>
-                              ))}
-                           </div>
-                        </div>
-                     </div>
-
-                     <div className="mb-5 bg-white rounded-lg border border-gray-200 p-4">
-                        <div className="text-sm font-bold text-gray-700 mb-4">📈 Investment Growth Over Time (Starting Age: {Math.round(age)})</div>
-                        
-                        {/* Time to Reach Target Summary */}
-                        {target > 0 && (
-                           <div className="mb-4 p-3 bg-amber-50 rounded border border-amber-300">
-                              <div className="text-xs font-bold text-amber-900 mb-2 flex items-center gap-2"><span className="text-sm">🎯</span> Time to Reach {fmtSGD(target)}</div>
-                              <div className="grid grid-cols-3 gap-2">
-                                 {[
-                                    { l: 'Con', v: data.findIndex(d=>d.con>=target), c: '#000000' },
-                                    { l: 'Mod', v: data.findIndex(d=>d.mod>=target), c: '#92400e' },
-                                    { l: 'Gro', v: data.findIndex(d=>d.gro>=target), c: '#10b981' }
-                                 ].map(x => (
-                                    <div key={x.l} className="p-2 bg-white rounded border text-center">
-                                       <div className="text-[10px] font-bold" style={{color:x.c}}>{x.l}</div>
-                                       <div className="text-sm font-bold">{x.v > 0 ? `${x.v} yrs` : '-'}</div>
-                                    </div>
-                                 ))}
-                              </div>
-                           </div>
-                        )}
-                        
-                        <LineChart 
-                           xLabels={data.map(d => d.age)}
-                           series={[
-                              { name: `Conservative (${rate1}%)`, values: data.map(d => d.con), stroke: '#000000' },
-                              { name: `Moderate (${rate2}%)`, values: data.map(d => d.mod), stroke: '#92400e' },
-                              { name: `Growth (${rate3}%)`, values: data.map(d => d.gro), stroke: '#10b981' }
-                           ]}
-                           height={320}
-                           onFormatY={(v) => v>=1000000 ? `$${(v/1000000).toFixed(1)}M` : `$${(v/1000).toFixed(0)}k`}
-                           onFormatX={(v,i) => i===0 || i===data.length-1 || i%5===0 ? v : ''}
-                        />
-                        <div className="text-[10px] text-gray-500 text-center mt-2">Based on monthly investment of {fmtSGD(monthly)}</div>
-                     </div>
-
-                     {/* Milestone Cards (Vertical) */}
-                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                        {[
-                           { l: `Conservative (${rate1}%)`, v: data, k: 'con', c: '#000000' },
-                           { l: `Moderate (${rate2}%)`, v: data, k: 'mod', c: '#92400e' },
-                           { l: `Growth (${rate3}%)`, v: data, k: 'gro', c: '#10b981' }
-                        ].map(s => (
-                           <div key={s.k} className="p-4 bg-white rounded-lg border-2 shadow-sm" style={{borderColor: s.c}}>
-                              <div className="text-xs font-bold uppercase mb-3" style={{color: s.c}}>{s.l}</div>
-                              <div className="space-y-2">
-                                 {[100000, 250000, 500000, 1000000].map(milestone => {
-                                    const idx = s.v.findIndex((d: any) => d[s.k] >= milestone);
-                                    if(idx === -1) return null;
-                                    const isCustom = milestone === target;
-                                    return (
-                                       <div key={milestone} className={`flex justify-between items-center p-2 rounded ${isCustom ? 'bg-amber-100 border border-amber-300' : 'bg-gray-50'}`}>
-                                          <div>
-                                             <div className="text-[10px] font-bold text-gray-700">
-                                                {milestone>=1000000 ? `$${milestone/1000000}M` : `$${milestone/1000}k`}
-                                                {isCustom && <span className="ml-1 text-[9px] bg-amber-500 text-white px-1 rounded">GOAL</span>}
-                                             </div>
-                                             <div className="text-[9px] text-gray-500">Age {Math.round(age+idx)}</div>
-                                          </div>
-                                          <div className="text-xs font-bold" style={{color:s.c}}>{idx} yrs</div>
-                                       </div>
-                                    );
-                                 })}
-                              </div>
-                              <div className="mt-3 pt-3 border-t border-gray-100 text-[10px] text-gray-500">
-                                 Final Value: <span className="font-bold" style={{color:s.c}}>{fmtSGD(s.v[s.v.length-1][s.k])}</span>
-                              </div>
-                           </div>
-                        ))}
-                     </div>
-                     
-                     {/* Key Insights Box */}
-                     <div className="mt-5 p-4 bg-gradient-to-br from-amber-50 to-amber-100 border-2 border-amber-400 rounded-lg">
-                        <div className="text-xs font-bold text-amber-900 mb-2">💡 Key Insights from Your Scenarios:</div>
-                        <div className="text-xs text-amber-800 leading-relaxed space-y-1.5">
-                           <p>• <strong>Return Impact:</strong> The difference between conservative ({rate1}%) and aggressive ({rate3}%) investing is <strong>{fmtSGD(data[data.length-1].gro - data[data.length-1].con)}</strong> — that's {((data[data.length-1].gro - data[data.length-1].con)/data[data.length-1].con*100).toFixed(0)}% more wealth!</p>
-                           <p>• <strong>Time Advantage:</strong> Starting at age {Math.round(age)}, you have {yearsToRetirement} years for compound growth.</p>
-                        </div>
-                     </div>
-                  </>
-               );
-            })()}
-         </div>
-      )}
-
-      {/* Retirement Expense Planning */}
-      <div className="bg-white border border-gray-200 rounded-xl p-6 mb-5 shadow-sm">
-        <h3 className="mt-0 text-lg font-bold text-gray-800 mb-4">🌅 Retirement Expense Planning</h3>
-        
-        {/* Visual Retirement Journey Chart */}
-        {age > 0 && retirementNestEgg > 0 && (
-          <>
-            <div className="mb-5 p-6 bg-gradient-to-br from-blue-50 to-blue-100 rounded-xl border-2 border-blue-500 shadow-sm">
-              <h4 className="m-0 text-blue-800 text-lg font-bold mb-2 flex items-center gap-2">
-                <span className="text-2xl">📊</span> Your Wealth Building & Retirement Journey
-              </h4>
-              <p className="m-0 mb-4 text-blue-600 text-sm">
-                Visual timeline from age {Math.round(age)} to {lifeExpectancy}: See exactly when you're building wealth vs living off it
-              </p>
-
-              {/* Phase Overview Cards */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-                 {/* Accumulation Phase Card */}
-                 <div className="p-5 bg-emerald-100 rounded-xl border-2 border-emerald-500 relative overflow-hidden">
-                   <div className="text-3xl mb-2">💼</div>
-                   <div className="text-xs font-bold text-emerald-800 uppercase mb-1 tracking-wider">WEALTH BUILDING PHASE</div>
-                   <div className="text-xl font-bold text-emerald-900 mb-2">Age {Math.round(age)} → {toNum(profile.retirementAge, 65)}</div>
-                   <div className="text-sm text-emerald-800 mb-3">Working, saving, investing - growing your nest egg</div>
-                   <div className="inline-flex items-center gap-2 px-3 py-1.5 bg-white/80 rounded-md">
-                     <span className="text-xs font-bold text-emerald-800">Duration:</span>
-                     <span className="text-base font-bold text-emerald-600">{toNum(profile.retirementAge, 65) - Math.round(age)} years</span>
-                   </div>
-                 </div>
-
-                 {/* Drawdown Phase Card */}
-                 <div className="p-5 bg-amber-100 rounded-xl border-2 border-amber-500 relative overflow-hidden">
-                   <div className="text-3xl mb-2">🏖️</div>
-                   <div className="text-xs font-bold text-amber-800 uppercase mb-1 tracking-wider">LIVING OFF WEALTH PHASE</div>
-                   <div className="text-xl font-bold text-amber-900 mb-2">Age {toNum(profile.retirementAge, 65)} → {lifeExpectancy}</div>
-                   <div className="text-sm text-amber-800 mb-3">Retired, withdrawing from savings and investments</div>
-                   <div className="inline-flex items-center gap-2 px-3 py-1.5 bg-white/80 rounded-md">
-                     <span className="text-xs font-bold text-amber-800">Duration:</span>
-                     <span className="text-base font-bold text-amber-600">{retirementYears} years</span>
-                   </div>
-                 </div>
-              </div>
-              
-              {/* Visual Timeline Bar */}
-              <div className="mb-6">
-                 <div className="text-xs font-bold text-blue-800 mb-3">📅 Life Timeline Visualization</div>
-                 <div className="relative h-20 bg-gray-100 rounded-lg overflow-hidden border-2 border-gray-200 flex">
-                    <div 
-                      style={{ width: `${((toNum(profile.retirementAge, 65) - age) / (lifeExpectancy - age)) * 100}%` }} 
-                      className="h-full bg-gradient-to-r from-emerald-400 to-emerald-600 flex items-center justify-center text-white font-bold text-sm border-r-2 border-white"
-                    >
-                      💼 BUILDING
-                    </div>
-                    <div className="flex-1 h-full bg-gradient-to-r from-amber-400 to-amber-600 flex items-center justify-center text-white font-bold text-sm">
-                      🏖️ LIVING
-                    </div>
-                 </div>
-              </div>
-
-              {/* Detailed Timeline Breakdown */}
-              <div className="bg-white p-4 rounded-xl border border-gray-200">
-                <div className="text-sm font-bold text-gray-700 mb-3">📋 Detailed Age Breakdown</div>
-                <div className="grid gap-3">
-                  <div className="flex items-center gap-3 p-3 bg-emerald-50 border-2 border-emerald-500 rounded-lg">
-                    <div className="text-2xl">👤</div>
-                    <div className="flex-1">
-                      <div className="text-xs font-bold text-emerald-800">Current Age</div>
-                      <div className="text-[10px] text-emerald-800">You are here now</div>
-                    </div>
-                    <div className="text-xl font-bold text-emerald-600">{Math.round(age)}</div>
-                  </div>
-                  
-                  <div className="flex items-center gap-3 p-3 bg-red-50 border-2 border-red-500 rounded-lg">
-                    <div className="text-2xl">🎯</div>
-                    <div className="flex-1">
-                      <div className="text-xs font-bold text-red-800">Financial Independence</div>
-                      <div className="text-[10px] text-red-800">Stop working, start living</div>
-                    </div>
-                    <div className="text-xl font-bold text-red-600">{toNum(profile.retirementAge, 65)}</div>
+            {compoundingData ? (
+               <>
+                  <div className="mb-6">
+                     <LineChart
+                        xLabels={compoundingData.chartData.map(d => d.age)}
+                        series={[
+                           { name: 'Conservative', values: compoundingData.chartData.map(d => d.conservative), stroke: '#3b82f6' },
+                           { name: 'Moderate', values: compoundingData.chartData.map(d => d.moderate), stroke: '#10b981' },
+                           { name: 'Growth', values: compoundingData.chartData.map(d => d.growth), stroke: '#8b5cf6' }
+                        ]}
+                        height={300}
+                        onFormatY={(v) => v >= 1000000 ? `$${(v/1000000).toFixed(1)}M` : `$${(v/1000).toFixed(0)}k`}
+                     />
                   </div>
 
-                  <div className="flex items-center gap-3 p-3 bg-amber-50 border-2 border-amber-500 rounded-lg">
-                    <div className="text-2xl">🌅</div>
-                    <div className="flex-1">
-                      <div className="text-xs font-bold text-amber-800">Life Expectancy</div>
-                      <div className="text-[10px] text-amber-800">Plan savings to last until here</div>
-                    </div>
-                    <div className="text-xl font-bold text-amber-600">{lifeExpectancy}</div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </>
-        )}
-
-        {/* Quick Adjustments */}
-        <div className="mb-4">
-          <div className="text-sm font-bold text-gray-700 mb-3">📊 Current Monthly Expenses: {fmtSGD(totalMonthlyExpenses)}</div>
-          <div className="mb-4">
-             <div className="text-xs font-bold text-gray-500 mb-2">Quick Adjustments:</div>
-             <div className="flex flex-wrap gap-2">
-               <button onClick={() => setProfile({ ...profile, customRetirementExpense: (totalMonthlyExpenses * 0.5).toFixed(2) })} className="px-3 py-2 bg-emerald-500 text-white text-xs font-bold rounded hover:bg-emerald-600 shadow-sm transition-colors">-50% ({fmtSGD(totalMonthlyExpenses * 0.5)})</button>
-               <button onClick={() => setProfile({ ...profile, customRetirementExpense: (totalMonthlyExpenses * 0.75).toFixed(2) })} className="px-3 py-2 bg-emerald-500 text-white text-xs font-bold rounded hover:bg-emerald-600 shadow-sm transition-colors">-25% ({fmtSGD(totalMonthlyExpenses * 0.75)})</button>
-               <button onClick={() => setProfile({ ...profile, customRetirementExpense: totalMonthlyExpenses.toFixed(2) })} className="px-3 py-2 bg-blue-500 text-white text-xs font-bold rounded hover:bg-blue-600 shadow-sm transition-colors">Same ({fmtSGD(totalMonthlyExpenses)})</button>
-               <button onClick={() => setProfile({ ...profile, customRetirementExpense: (totalMonthlyExpenses * 1.25).toFixed(2) })} className="px-3 py-2 bg-amber-500 text-white text-xs font-bold rounded hover:bg-amber-600 shadow-sm transition-colors">+25% ({fmtSGD(totalMonthlyExpenses * 1.25)})</button>
-               <button onClick={() => setProfile({ ...profile, customRetirementExpense: (totalMonthlyExpenses * 1.5).toFixed(2) })} className="px-3 py-2 bg-amber-500 text-white text-xs font-bold rounded hover:bg-amber-600 shadow-sm transition-colors">+50% ({fmtSGD(totalMonthlyExpenses * 1.5)})</button>
-             </div>
-          </div>
-          
-          <div className="max-w-md">
-             <LabeledText
-              label='💰 Custom Retirement Monthly Expense (Before Inflation)'
-              value={profile.customRetirementExpense || ''}
-              onChange={(val) => setProfile({ ...profile, customRetirementExpense: val })}
-              placeholder={`Default: ${fmtSGD(monthlyRetirementExpenses)}`}
-            />
-             <div className="text-[10px] text-gray-500 mt-1 mb-4">
-               💡 Enter your expected monthly expenses in retirement (today's dollars). We'll automatically adjust for inflation over {yearsToRetirement} years.
-             </div>
-          </div>
-
-          <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-sm text-emerald-900">
-             <div className="font-bold text-xs mb-1">📝 Retirement Calculation Using:</div>
-             <div>Today's Monthly Expense: <strong>{fmtSGD(monthlyRetirementExpenses)}</strong></div>
-             <div className="mt-1 text-red-700 font-bold">
-               After {yearsToRetirement} years @ 3% inflation: {fmtSGD(futureMonthlyRetirementExpenses)}/month
-             </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Complete Financial Blueprint */}
-      {retirementNestEgg > 0 && (
-        <div className="bg-gradient-to-br from-amber-50 to-amber-100 border-2 border-amber-500 rounded-xl p-6 mb-5 shadow-sm">
-           <h3 className="m-0 text-amber-900 text-xl font-bold mb-4">🎯 Your Complete Financial Blueprint</h3>
-           
-           <div className="mb-3 p-3 bg-white/70 rounded-lg">
-              <div className="text-xs text-amber-900 font-bold">📊 Retirement Expense Calculation:</div>
-              <div className="text-xs text-amber-900 mt-1">
-                 Using {profile.customRetirementExpense ? 'custom' : 'calculated'} base: <strong>{fmtSGD(monthlyRetirementExpenses)}/month</strong>
-              </div>
-           </div>
-
-           <div className="bg-emerald-500/10 p-4 rounded-lg border border-emerald-500/20 mb-4">
-              <div className="text-sm font-bold text-emerald-800 mb-1">🌅 Retirement Nest Egg Target</div>
-              <div className="text-3xl font-bold text-emerald-900">{fmtSGD(retirementNestEgg)}</div>
-              <div className="text-xs text-emerald-700 mt-2">
-                 {fmtSGD(futureMonthlyRetirementExpenses)}/month × {retirementYears} years
-              </div>
-              <div className="text-[10px] text-emerald-800 mt-3 leading-relaxed opacity-90">
-                 From age {toNum(profile.retirementAge, 65)} to {lifeExpectancy} (life expectancy for {profile.gender} in SG)
-              </div>
-           </div>
-
-           <div className="bg-white p-5 rounded-lg border-2 border-emerald-500 text-center">
-              <div className="text-base font-bold text-emerald-800 mb-2">💎 TOTAL RETIREMENT GOAL</div>
-              <div className="text-4xl font-extrabold text-emerald-600 mb-3">{fmtSGD(retirementNestEgg)}</div>
-              <div className="text-xs text-emerald-800 mb-4">
-                 This covers {retirementYears} years from age {toNum(profile.retirementAge, 65)} to {lifeExpectancy} at {fmtSGD(futureMonthlyRetirementExpenses)}/month
-              </div>
-              <div className="p-4 bg-gradient-to-r from-indigo-500 to-purple-600 rounded-lg text-white">
-                 <div className="text-sm opacity-90 mb-2">To reach this goal, invest approximately:</div>
-                 <div className="text-3xl font-bold mb-2">
-                   {fmtSGD(requiredMonthlyInvestment)}/month
-                 </div>
-                 <div className="text-xs opacity-90">at 8% annual returns over {yearsToRetirement} years</div>
-              </div>
-           </div>
-        </div>
-      )}
-
-      {/* CPF Shortfall Reality Check */}
-      {age > 0 && yearsToRetirement > 0 && (
-        <div className="bg-gradient-to-br from-red-50 to-red-100 border-2 border-red-500 rounded-xl p-6 mb-5">
-           <div className="text-center mb-5">
-             <div className="text-4xl mb-3">⚠️</div>
-             <h3 className="text-xl font-bold text-red-900 m-0">
-               {profile.name || 'Your'} Reality: Why CPF Alone Won't Be Enough
-             </h3>
-           </div>
-           
-           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-5">
-              <div className="bg-white/60 p-4 rounded-lg">
-                 <div className="text-2xl font-bold text-red-900 mb-1">$1,379</div>
-                 <div className="text-xs text-red-800 leading-tight"><strong>Average CPF Life payout</strong> per month. Can you live comfortably on this?</div>
-              </div>
-              <div className="bg-white/60 p-4 rounded-lg">
-                 <div className="text-2xl font-bold text-red-900 mb-1">3%</div>
-                 <div className="text-xs text-red-800 leading-tight"><strong>Annual inflation.</strong> Your savings lose value every year.</div>
-              </div>
-              <div className="bg-red-200/50 p-4 rounded-lg">
-                 <div className="text-2xl font-bold text-red-900 mb-1">{fmtSGD(futureMonthlyRetirementExpenses).replace('SGD ', '$')}</div>
-                 <div className="text-xs text-red-800 leading-tight"><strong>What YOUR lifestyle will cost</strong> at retirement in {yearsToRetirement} years!</div>
-              </div>
-           </div>
-        </div>
-      )}
-
-      {/* Detailed Coffee Example (Retirement Income Strategy) */}
-      {age > 0 && yearsToRetirement > 0 && (
-         <div className="bg-gradient-to-br from-amber-50 to-amber-100 border-2 border-amber-500 rounded-xl p-6 mb-5">
-            <div className="flex items-start gap-3">
-               <div className="text-3xl">💡</div>
-               <div className="flex-1">
-                  <h4 className="m-0 text-amber-900 text-lg font-bold mb-2">Your Retirement Income Strategy: Year {new Date().getFullYear() + yearsToRetirement}</h4>
-                  <div className="text-sm text-amber-900 mb-4 leading-relaxed">
-                     CPF Life provides a <strong>safety net</strong> with monthly payouts that escalate over time. 
-                     The <strong>Escalating Plan</strong> starts at ~$1,379. But will it be enough?
-                  </div>
-
-                  {(() => {
-                     // CPF Life Escalating Plan
-                     const cpfLifeBaselineToday = 1379;
-                     const cpfInflationAdjustment = 0.02; // 2% escalation
-                     const cpfLifeFuture = cpfLifeBaselineToday * Math.pow(1 + cpfInflationAdjustment, yearsToRetirement);
-                     const shortfall = Math.max(0, futureMonthlyRetirementExpenses - cpfLifeFuture);
-                     const retirementYearsCalc = Math.max(10, lifeExpectancy - toNum(profile.retirementAge, 65));
-                     const totalSupplementaryNeeded = shortfall * 12 * retirementYearsCalc;
-                     
-                     return (
-                        <div className="grid gap-3">
-                           {/* Current Lifestyle */}
-                           <div className="p-4 bg-white rounded-lg border-2 border-blue-500 flex justify-between items-center">
-                              <div>
-                                 <div className="font-bold text-blue-900 text-xs mb-1">📊 Your Lifestyle Today</div>
-                                 <div className="text-[10px] text-blue-600">Monthly expenses in today's dollars</div>
+                  {/* Milestone Cards */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                     {compoundingData.stats.map(stat => (
+                        <div key={stat.key} className="border rounded-xl overflow-hidden relative">
+                           <div className={`h-2 w-full`} style={{ backgroundColor: stat.color }} />
+                           <div className="p-4">
+                              <div className="flex justify-between items-center mb-3">
+                                 <div className="font-bold text-gray-800 flex items-center gap-2">
+                                    <span className="text-xl">{stat.icon}</span> {stat.label}
+                                 </div>
+                                 <div className="text-sm font-bold bg-gray-100 px-2 py-1 rounded">
+                                    {stat.rate}%
+                                 </div>
                               </div>
-                              <div className="text-xl font-bold text-blue-600">{fmtSGD(monthlyRetirementExpenses)}/m</div>
-                           </div>
-
-                           {/* Future Needs */}
-                           <div className="p-4 bg-white rounded-lg border-2 border-amber-500 flex justify-between items-center">
-                              <div>
-                                 <div className="font-bold text-amber-900 text-xs mb-1">💰 Same Lifestyle at Retirement</div>
-                                 <div className="text-[10px] text-amber-600">After {yearsToRetirement} years of 3% inflation</div>
-                              </div>
-                              <div className="text-xl font-bold text-amber-600">{fmtSGD(futureMonthlyRetirementExpenses)}/m</div>
-                           </div>
-
-                           {/* Income Breakdown */}
-                           <div className="p-5 bg-white rounded-lg border-2 border-emerald-500">
-                              <div className="text-sm font-bold text-emerald-800 mb-3">🏛️ Your Retirement Income Sources:</div>
                               
-                              {/* CPF Life */}
-                              <div className="flex justify-between items-center mb-2 p-3 bg-emerald-50 rounded-lg">
-                                 <div>
-                                    <div className="text-xs font-bold text-emerald-800">✅ CPF Life - Escalating Plan</div>
-                                    <div className="text-[10px] text-emerald-600">Starts at $1,379, grows ~2% yearly</div>
-                                 </div>
-                                 <div className="text-right">
-                                    <div className="text-lg font-bold text-emerald-600">{fmtSGD(cpfLifeFuture)}</div>
-                                    <div className="text-[10px] text-emerald-600">at age {toNum(profile.retirementAge, 65)}</div>
-                                 </div>
+                              <div className="text-center mb-4 p-3 bg-gray-50 rounded-lg">
+                                 <div className="text-[10px] text-gray-500 uppercase tracking-widest font-bold">At Retirement ({profile.retirementAge})</div>
+                                 <div className="text-xl font-extrabold text-gray-900">{fmtSGD(stat.finalAmount)}</div>
                               </div>
 
-                              {/* The Gap */}
-                              {shortfall > 0 && (
-                                 <div className="flex justify-between items-center mb-2 p-3 bg-amber-50 rounded-lg">
-                                    <div>
-                                       <div className="text-xs font-bold text-amber-900">⚠️ Lifestyle Gap (The Problem)</div>
-                                       <div className="text-[10px] text-amber-600">CPF grows 2%, but inflation is 3%</div>
-                                    </div>
-                                    <div className="text-lg font-bold text-amber-600">{fmtSGD(shortfall)}</div>
+                              <div className="space-y-2 text-xs">
+                                 <div className="flex justify-between items-center">
+                                    <span className="text-gray-500">Hit $250k</span>
+                                    <span className={`font-bold ${stat.milestones[250000] ? 'text-gray-900' : 'text-gray-300'}`}>
+                                       {stat.milestones[250000] ? `Age ${stat.milestones[250000]}` : '-'}
+                                    </span>
                                  </div>
-                              )}
-
-                              {/* Supplementary Needed */}
-                              {shortfall > 0 && (
-                                 <div className="flex justify-between items-center p-3 bg-blue-50 rounded-lg">
-                                    <div>
-                                       <div className="text-xs font-bold text-blue-900">🎯 Your Investments (Solution)</div>
-                                       <div className="text-[10px] text-blue-600">To maintain your lifestyle</div>
-                                    </div>
-                                    <div className="text-lg font-bold text-blue-600">{fmtSGD(shortfall)}</div>
+                                 <div className="flex justify-between items-center">
+                                    <span className="text-gray-500">Hit $500k</span>
+                                    <span className={`font-bold ${stat.milestones[500000] ? 'text-gray-900' : 'text-gray-300'}`}>
+                                       {stat.milestones[500000] ? `Age ${stat.milestones[500000]}` : '-'}
+                                    </span>
                                  </div>
-                              )}
-
-                              {/* Total */}
-                              <div className="mt-3 p-4 bg-gradient-to-r from-emerald-500 to-emerald-600 rounded-lg flex justify-between items-center text-white">
-                                 <div className="text-sm font-bold">💎 Total Monthly Income Needed</div>
-                                 <div className="text-2xl font-extrabold">{fmtSGD(futureMonthlyRetirementExpenses)}</div>
+                                 <div className="flex justify-between items-center pt-2 border-t border-gray-100">
+                                    <span className="text-emerald-700 font-bold">Hit $1 Million 🏆</span>
+                                    <span className={`font-bold bg-emerald-100 px-2 py-0.5 rounded ${stat.milestones[1000000] ? 'text-emerald-800' : 'text-gray-400 bg-gray-100'}`}>
+                                       {stat.milestones[1000000] ? `Age ${stat.milestones[1000000]}` : 'Not Reached'}
+                                    </span>
+                                 </div>
                               </div>
                            </div>
-
-                           {/* Key Insight */}
-                           {shortfall > 0 && (
-                              <div className="p-4 bg-emerald-500/10 border border-emerald-500 rounded-lg text-xs text-emerald-900 leading-relaxed">
-                                 💡 <strong>The Reality:</strong> CPF Life escalates at ~2% yearly, but actual inflation averages 3%. 
-                                 This 1% gap compounds over time! By age {toNum(profile.retirementAge, 65)}, CPF Life will provide 
-                                 <strong> {fmtSGD(cpfLifeFuture)}</strong> leaving a <strong>{fmtSGD(shortfall)}/month</strong> gap. 
-                                 You'll need <strong>{fmtSGD(totalSupplementaryNeeded)}</strong> in supplementary investments.
-                              </div>
-                           )}
                         </div>
-                     );
-                  })()}
+                     ))}
+                  </div>
+                  
+                  {/* Advanced Rate Toggles */}
+                  <div className="mt-4 text-center">
+                     <button onClick={() => setShowAdvancedRates(!showAdvancedRates)} className="text-xs text-gray-400 hover:text-gray-600 underline">
+                        {showAdvancedRates ? 'Hide' : 'Adjust'} Return Rate Assumptions
+                     </button>
+                     {showAdvancedRates && (
+                        <div className="grid grid-cols-3 gap-3 mt-3 max-w-md mx-auto bg-gray-50 p-3 rounded-lg">
+                           <LabeledText label="Conservative %" value={rate1} onChange={(v) => setRate1(toNum(v))} type="number" />
+                           <LabeledText label="Moderate %" value={rate2} onChange={(v) => setRate2(toNum(v))} type="number" />
+                           <LabeledText label="Growth %" value={rate3} onChange={(v) => setRate3(toNum(v))} type="number" />
+                        </div>
+                     )}
+                  </div>
+               </>
+            ) : (
+               <div className="text-center p-8 text-gray-500 bg-gray-50 rounded-lg">
+                  Please enter a monthly investment amount above to see the power of compounding.
                </div>
-            </div>
+            )}
          </div>
       )}
 
-      {/* Early Investment Impact */}
-      {age > 0 && yearsToRetirement > 0 && cashflowData && cashflowData.monthlySavings > 0 && (
-         <div className="bg-gradient-to-br from-emerald-100 to-emerald-200 border-2 border-emerald-500 rounded-xl p-6 mb-5">
-            <div className="flex items-start gap-3">
-               <div className="text-3xl">⏰</div>
-               <div className="flex-1">
-                  <h4 className="m-0 text-emerald-900 text-lg font-bold mb-2">The Power of Starting Early</h4>
-                  <div className="text-sm text-emerald-800 mb-4 leading-relaxed">
-                     See the dramatic difference between investing NOW versus waiting 5 or 10 years. 
-                     Every year you delay costs you tens of thousands in lost compound growth!
-                  </div>
-
-                  {(() => {
-                     const monthly = cashflowData.monthlySavings;
-                     const r = 0.12 / 12;
-                     const calcFV = (years: number) => monthly * ((Math.pow(1 + r, years * 12) - 1) / r);
-                     
-                     const fvNow = calcFV(yearsToRetirement);
-                     const fvLater5 = yearsToRetirement > 5 ? calcFV(yearsToRetirement - 5) : 0;
-                     const fvLater10 = yearsToRetirement > 10 ? calcFV(yearsToRetirement - 10) : 0;
-                     
-                     const loss5 = fvNow - fvLater5;
-                     const loss10 = fvNow - fvLater10;
-
-                     return (
-                        <div className="grid gap-3">
-                           <div className="bg-white p-4 rounded-lg border-[3px] border-emerald-500 shadow-sm flex justify-between items-center">
-                              <div>
-                                 <div className="text-emerald-600 font-bold text-sm mb-1">✅ START NOW (Age {age})</div>
-                                 <div className="text-xs text-emerald-800">Invest {fmtSGD(monthly)}/month for {yearsToRetirement} years @ 12%</div>
-                              </div>
-                              <div className="text-right">
-                                 <div className="text-2xl font-extrabold text-emerald-600">{fmtSGD(fvNow)}</div>
-                                 <div className="text-xs font-bold text-emerald-700">🏆 BEST OUTCOME</div>
-                              </div>
-                           </div>
-
-                           {yearsToRetirement > 5 && (
-                              <div className="bg-white p-4 rounded-lg border-2 border-amber-500 flex justify-between items-center">
-                                 <div>
-                                    <div className="text-amber-600 font-bold text-sm mb-1">⚠️ START IN 5 YEARS (Age {age + 5})</div>
-                                    <div className="text-xs text-amber-900">Invest {fmtSGD(monthly)}/month for {yearsToRetirement - 5} years</div>
-                                 </div>
-                                 <div className="text-right">
-                                    <div className="text-xl font-bold text-amber-600">{fmtSGD(fvLater5)}</div>
-                                    <div className="text-[11px] font-bold text-red-600 mt-1">Lost: {fmtSGD(loss5)} 💸</div>
-                                 </div>
-                              </div>
-                           )}
-
-                           {yearsToRetirement > 10 && (
-                              <div className="bg-white p-4 rounded-lg border-2 border-red-500 flex justify-between items-center">
-                                 <div>
-                                    <div className="text-red-600 font-bold text-sm mb-1">🚨 START IN 10 YEARS (Age {age + 10})</div>
-                                    <div className="text-xs text-red-900">Invest {fmtSGD(monthly)}/month for {yearsToRetirement - 10} years</div>
-                                 </div>
-                                 <div className="text-right">
-                                    <div className="text-xl font-bold text-red-600">{fmtSGD(fvLater10)}</div>
-                                    <div className="text-[11px] font-bold text-red-600 mt-1">Lost: {fmtSGD(loss10)} 💸💸</div>
-                                 </div>
-                              </div>
-                           )}
-                        </div>
-                     );
-                  })()}
-                  
-                  <div className="mt-4 p-3 bg-emerald-500/20 rounded-lg text-center text-emerald-900 font-bold text-sm">
-                     💚 The choice is yours: Start Today or Lose Hundreds of Thousands Tomorrow?
-                  </div>
-               </div>
+      {/* Snapshot Summary Footer */}
+      {retirementNestEgg > 0 && (
+         <div className="bg-slate-900 text-white p-5 rounded-xl flex flex-col md:flex-row justify-between items-center gap-4">
+            <div>
+               <div className="text-xs text-slate-400 uppercase tracking-widest font-bold">Financial Independence Target</div>
+               <div className="text-2xl font-bold">{fmtSGD(retirementNestEgg)}</div>
+               <div className="text-xs text-slate-400">To sustain {fmtSGD(futureMonthlyRetirementExpenses)}/mo lifestyle</div>
             </div>
-         </div>
-      )}
-
-      {/* Complete Financial Picture with Children */}
-      {totalChildrenEducationCost > 0 && (
-         <div className="bg-gradient-to-br from-purple-100 to-purple-200 border-2 border-purple-500 rounded-xl p-6 mb-5">
-            <div className="text-center mb-5">
-               <div className="text-4xl mb-3">💰</div>
-               <h3 className="text-purple-900 text-xl font-bold m-0">Your Complete Financial Picture</h3>
-            </div>
-            <div className="bg-white p-5 rounded-lg border-2 border-purple-400">
-               <div className="mb-4">
-                  <div className="text-sm font-bold text-purple-900 mb-2">📊 Total Financial Goals (Inflation-Adjusted):</div>
-                  <div className="grid gap-3">
-                     <div className="bg-purple-50 p-3 rounded-lg flex justify-between items-center">
-                        <span className="text-sm text-purple-900">🌅 Retirement Nest Egg</span>
-                        <span className="text-base font-bold text-purple-900">{fmtSGD(retirementNestEgg)}</span>
-                     </div>
-                     <div className="bg-purple-50 p-3 rounded-lg flex justify-between items-center">
-                        <span className="text-sm text-purple-900">🎓 Children's Education ({profile.children?.length} children)</span>
-                        <span className="text-base font-bold text-purple-900">{fmtSGD(totalChildrenEducationCost)}</span>
-                     </div>
-                     <div className="bg-gradient-to-br from-purple-600 to-indigo-600 p-4 rounded-lg flex justify-between items-center mt-2 text-white">
-                        <span className="font-bold text-sm">💎 TOTAL FINANCIAL GOAL</span>
-                        <span className="text-2xl font-bold">{fmtSGD(retirementNestEgg + totalChildrenEducationCost)}</span>
-                     </div>
-                  </div>
+            {humanCapital > 0 && (
+               <div className="md:text-right">
+                  <div className="text-xs text-slate-400 uppercase tracking-widest font-bold">Unprotected Asset (Human Capital)</div>
+                  <div className="text-2xl font-bold text-indigo-400">{fmtSGD(humanCapital)}</div>
                </div>
-               <div className="bg-amber-50 p-3 rounded-lg border border-amber-200">
-                  <div className="text-xs font-bold text-amber-900 mb-1">💡 Smart Investment Strategy:</div>
-                  <div className="text-xs text-amber-900 leading-relaxed">
-                     To reach your combined goal of <strong>{fmtSGD(retirementNestEgg + totalChildrenEducationCost)}</strong>, 
-                     consider investing approximately <strong>{fmtSGD((retirementNestEgg + totalChildrenEducationCost) / Math.max(1, yearsToRetirement * 12))}/month</strong> at 
-                     8% annual returns.
-                  </div>
-               </div>
-            </div>
-         </div>
-      )}
-
-      {/* Actual Retirement Age with Children */}
-      {totalChildrenEducationCost > 0 && profile.children && profile.children.length > 0 && (
-         <div className="bg-gradient-to-br from-sky-100 to-sky-200 border-2 border-sky-500 rounded-xl p-6">
-            <div className="flex items-start gap-3 mb-3">
-               <div className="text-3xl">🗓️</div>
-               <div className="flex-1">
-                  <h4 className="m-0 text-sky-900 text-lg font-bold">Your Actual Retirement Timeline with Children</h4>
-               </div>
-            </div>
-            
-            {(() => {
-               const currentYear = new Date().getFullYear();
-               let latestRetirement = { year: 0, age: 0, childName: '' };
-               
-               const durUni = profile.educationSettings ? toNum(profile.educationSettings.universityDuration, 4) : 4;
-
-               profile.children.forEach(child => {
-                  if (!child.dobISO) return;
-                  const childDob = parseDob(child.dobISO);
-                  if (!childDob) return;
-                  const ageInMonths = monthsSinceDob(childDob, currentYear, new Date().getMonth());
-                  const currentAge = Math.floor(ageInMonths / 12);
-                  
-                  const uniStartAge = child.gender === 'male' ? 21 : 19;
-                  const uniEndAge = uniStartAge + durUni;
-                  
-                  const uniEndYear = currentYear + (uniEndAge - currentAge);
-                  const parentAgeAtUniEnd = age + (uniEndAge - currentAge);
-                  
-                  if (uniEndYear > latestRetirement.year) {
-                     latestRetirement = { year: uniEndYear, age: parentAgeAtUniEnd, childName: child.name || 'Youngest' };
-                  }
-               });
-               
-               const standardRetirementAge = toNum(profile.retirementAge, 65);
-               const delayedYears = Math.max(0, latestRetirement.age - standardRetirementAge);
-               
-               return (
-                  <div className="text-sm text-sky-900 leading-relaxed space-y-3">
-                     <div className="bg-white/70 p-3 rounded border border-sky-300">
-                        📅 Standard Retirement Plan: <strong>Age {standardRetirementAge}</strong>
-                     </div>
-                     
-                     <div className={`p-4 rounded-lg border-2 ${delayedYears > 0 ? 'bg-amber-50 border-amber-400' : 'bg-emerald-50 border-emerald-400'}`}>
-                        <div className={`font-bold text-base mb-2 ${delayedYears > 0 ? 'text-amber-800' : 'text-emerald-800'}`}>
-                           {delayedYears > 0 ? '⚠️' : '✅'} Your Realistic Retirement: Age {Math.round(latestRetirement.age)} ({latestRetirement.year})
-                        </div>
-                        <div className="text-xs mb-2 opacity-90">
-                           {latestRetirement.childName} finishes university in {latestRetirement.year} when you'll be {Math.round(latestRetirement.age)} years old.
-                        </div>
-                        {delayedYears > 0 ? (
-                           <div className="font-bold text-amber-900 text-xs">
-                              ⏰ That's {Math.round(delayedYears)} years later than standard retirement! Plan your savings to last from Age {Math.round(latestRetirement.age)}.
-                           </div>
-                        ) : (
-                           <div className="font-bold text-emerald-900 text-xs">
-                              🎉 Great news! You can retire on schedule while supporting your children's education.
-                           </div>
-                        )}
-                     </div>
-                     
-                     <div className="p-3 bg-sky-500/10 rounded text-xs italic text-sky-800">
-                        💡 <strong>Pro Tip:</strong> Check the Children tab for a detailed timeline showing exactly when each education cost hits!
-                     </div>
-                  </div>
-               );
-            })()}
+            )}
          </div>
       )}
     </div>
