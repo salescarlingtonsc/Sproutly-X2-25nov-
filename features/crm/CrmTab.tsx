@@ -75,8 +75,9 @@ const calculateDealMetrics = (c: Client) => {
   if (potentialRevenue === 0) potentialRevenue = 1000; 
 
   // 2. Probability Weighted Value
-  const statusKey = c.followUp.status as ContactStatus;
-  const probability = STATUS_METRICS[statusKey]?.prob || 0.1;
+  // SAFETY CHECK: Ensure followUp exists
+  const statusKey = c.followUp?.status || 'new';
+  const probability = STATUS_METRICS[statusKey as ContactStatus]?.prob || 0.1;
   const weightedValue = potentialRevenue * probability;
 
   // 3. Stale Logic
@@ -192,7 +193,9 @@ const CrmTab: React.FC<CrmTabProps> = (props) => {
       const matchesSearch = 
         c.profile.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
         c.profile.phone.includes(searchTerm);
-      const matchesStatus = filterStatus === 'all' || c.followUp.status === filterStatus;
+      // SAFETY CHECK: Ensure followUp exists
+      const currentStatus = c.followUp?.status || 'new';
+      const matchesStatus = filterStatus === 'all' || currentStatus === filterStatus;
       return matchesSearch && matchesStatus;
     }).sort((a, b) => b.lastUpdated.localeCompare(a.lastUpdated)); // Newest first
   }, [clients, searchTerm, filterStatus]);
@@ -210,7 +213,8 @@ const CrmTab: React.FC<CrmTabProps> = (props) => {
       totalWeighted += c.metrics.weightedValue;
       if (c.metrics.isStale) staleCount++;
 
-      const statusKey = c.followUp.status;
+      // SAFETY CHECK: Ensure followUp exists (THIS WAS THE CRASH)
+      const statusKey = c.followUp?.status || 'new';
       const label = STATUS_METRICS[statusKey as ContactStatus]?.label || statusKey;
       
       if (!stageMap[label]) {
@@ -394,7 +398,7 @@ const CrmTab: React.FC<CrmTabProps> = (props) => {
                            </span>
                         </td>
                         <td className="p-3 border-r border-gray-100">
-                           <StatusBadge status={client.followUp.status} />
+                           <StatusBadge status={client.followUp?.status || 'new'} />
                         </td>
                         <td className="p-3 border-r border-gray-100 text-right font-mono text-gray-600">
                            {fmtSGD(client.metrics.potentialRevenue)}
@@ -454,7 +458,7 @@ const CrmTab: React.FC<CrmTabProps> = (props) => {
                    <div className="grid grid-cols-2 gap-3">
                       <select 
                         className="w-full p-2 text-sm border border-indigo-200 rounded-lg bg-white font-bold text-indigo-900 focus:ring-2 focus:ring-indigo-500 outline-none"
-                        value={activeClient.followUp.status}
+                        value={activeClient.followUp?.status || 'new'}
                         onChange={(e) => updateActiveClient('status', e.target.value, 'followUp')}
                       >
                          {Object.keys(STATUS_METRICS).map(k => (
