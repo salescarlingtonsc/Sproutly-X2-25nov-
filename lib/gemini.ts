@@ -6,7 +6,7 @@ const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 /**
  * Generates a hyper-personalized sales closing script based on client data.
- * Uses Gemini 2.5 Flash for speed.
+ * Uses Gemini 2.5 Flash Lite for low-latency response.
  */
 export const generateClientStrategy = async (clientProfile: any, financialMetrics: any) => {
   try {
@@ -27,7 +27,7 @@ export const generateClientStrategy = async (clientProfile: any, financialMetric
     `;
 
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-2.5-flash-lite", // FAST
       contents: prompt,
       config: {
         responseMimeType: "application/json",
@@ -52,11 +52,12 @@ export const generateClientStrategy = async (clientProfile: any, financialMetric
 
 /**
  * Uses Google Search Grounding to find live market data.
+ * Uses Gemini 2.5 Flash Lite for low-latency response.
  */
 export const getMarketRealityCheck = async (query: string) => {
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-2.5-flash-lite", // FAST
       contents: `Provide a concise answer with current data for: ${query}. Focus on Singapore context if applicable.`,
       config: {
         tools: [{ googleSearch: {} }],
@@ -92,7 +93,7 @@ export const runDeepRiskAnalysis = async (clientData: any) => {
     `;
 
     const response = await ai.models.generateContent({
-      model: "gemini-3-pro-preview",
+      model: "gemini-3-pro-preview", // INTELLIGENT
       contents: prompt,
       config: {
         thinkingConfig: { thinkingBudget: 32768 }, // Max thinking for deep reasoning
@@ -137,6 +138,7 @@ export const runDeepRiskAnalysis = async (clientData: any) => {
 
 /**
  * Generates a follow-up message for CRM.
+ * Uses Gemini 2.5 Flash Lite for low-latency response.
  */
 export const generateFollowUpEmail = async (clientName: string, lastInteractionDate: string, notes: string) => {
   try {
@@ -150,7 +152,7 @@ export const generateFollowUpEmail = async (clientName: string, lastInteractionD
     `;
 
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-2.5-flash-lite", // FAST
       contents: prompt,
     });
 
@@ -163,7 +165,7 @@ export const generateFollowUpEmail = async (clientName: string, lastInteractionD
 
 /**
  *  Conversational AI Agent (Chatbot)
- *  Uses Gemini 3 Pro to reason across the entire client state.
+ *  Uses Gemini 3 Pro with Thinking Mode to reason across the entire client state.
  */
 export const chatWithFinancialContext = async (history: any[], userMessage: string, clientState: any) => {
   try {
@@ -185,9 +187,10 @@ export const chatWithFinancialContext = async (history: any[], userMessage: stri
 
     // Construct chat history for the API
     const chat = ai.chats.create({
-      model: 'gemini-3-pro-preview',
+      model: 'gemini-3-pro-preview', // INTELLIGENT
       config: {
         systemInstruction: systemInstruction,
+        thinkingConfig: { thinkingBudget: 32768 }, // Max thinking for conversational reasoning
       },
       history: history.map(h => ({
         role: h.role === 'user' ? 'user' : 'model',

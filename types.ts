@@ -119,7 +119,7 @@ export interface AdditionalIncome {
   frequency: string;
   startAge: number;
   startMonth: number;
-  endAge?: any;
+  endAge?: string | number;
   endMonth?: number; // Added endMonth
 }
 

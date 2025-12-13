@@ -4,10 +4,8 @@ import { toNum, fmtSGD, monthNames } from '../../lib/helpers';
 import { getBaseRetirementExpense } from '../../lib/calculators';
 import { EXPENSE_CATEGORIES } from '../../lib/config';
 import LabeledText from '../../components/common/LabeledText';
-import LabeledSelect from '../../components/common/LabeledSelect';
 import Card from '../../components/common/Card';
 import LineChart from '../../components/common/LineChart';
-import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts';
 import {
   CpfData,
   Expenses,
@@ -17,7 +15,6 @@ import {
   RetirementSettings,
   CashflowState,
   CpfState,
-  CareerEvent
 } from '../../types';
 
 interface CashflowTabProps {
