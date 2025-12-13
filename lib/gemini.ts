@@ -1,14 +1,43 @@
 
+
 import { GoogleGenAI, Type } from "@google/genai";
 
-// Initialize Gemini with the environment variable
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+// --- ROBUST API KEY LOADER ---
+// Prevents "process is not defined" crash in Vite/Browser environments
+const getApiKey = () => {
+  let key = '';
+  
+  // 1. Try Vite / Modern Browser Standard
+  try {
+    if (typeof import.meta !== 'undefined' && (import.meta as any).env) {
+      key = (import.meta as any).env.VITE_GOOGLE_API_KEY || (import.meta as any).env.VITE_GEMINI_API_KEY || '';
+    }
+  } catch (e) {}
+
+  // 2. Try Node.js / Process Fallback
+  if (!key) {
+    try {
+      if (typeof process !== 'undefined' && process.env) {
+        key = process.env.API_KEY || process.env.VITE_GOOGLE_API_KEY || '';
+      }
+    } catch (e) {}
+  }
+  
+  return key;
+};
+
+const apiKey = getApiKey();
+
+// Initialize safely - if no key, we don't crash immediately, but functions will fail gracefully
+const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
 
 /**
  * Generates a hyper-personalized sales closing script based on client data.
  * Uses Gemini 2.5 Flash Lite for low-latency response.
  */
 export const generateClientStrategy = async (clientProfile: any, financialMetrics: any) => {
+  if (!ai) throw new Error("Missing Google API Key. Please configure VITE_GOOGLE_API_KEY.");
+  
   try {
     const prompt = `
       You are a world-class financial advisor closing a deal. 
@@ -55,6 +84,8 @@ export const generateClientStrategy = async (clientProfile: any, financialMetric
  * Uses Gemini 2.5 Flash Lite for low-latency response.
  */
 export const getMarketRealityCheck = async (query: string) => {
+  if (!ai) throw new Error("Missing Google API Key.");
+
   try {
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash-lite", // FAST
@@ -79,6 +110,8 @@ export const getMarketRealityCheck = async (query: string) => {
  * This simulates economic scenarios against the client's specific portfolio.
  */
 export const runDeepRiskAnalysis = async (clientData: any) => {
+  if (!ai) throw new Error("Missing Google API Key.");
+
   try {
     const prompt = `
       Perform a deep-dive financial risk analysis for this client.
@@ -141,6 +174,8 @@ export const runDeepRiskAnalysis = async (clientData: any) => {
  * Uses Gemini 2.5 Flash Lite for low-latency response.
  */
 export const generateFollowUpEmail = async (clientName: string, lastInteractionDate: string, notes: string) => {
+  if (!ai) return "Error: AI not configured.";
+
   try {
     const prompt = `
       Write a short, professional, yet warm WhatsApp/Email follow-up message for a financial advisor.
@@ -168,6 +203,8 @@ export const generateFollowUpEmail = async (clientName: string, lastInteractionD
  *  Uses Gemini 3 Pro with Thinking Mode to reason across the entire client state.
  */
 export const chatWithFinancialContext = async (history: any[], userMessage: string, clientState: any) => {
+  if (!ai) return "AI Service Unavailable. Please configure API Key.";
+
   try {
     const systemInstruction = `
       You are "Sproutly Quantum AI", a world-class financial planning assistant.
