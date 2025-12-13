@@ -261,7 +261,7 @@ const AppShell: React.FC<AppShellProps> = ({
       <div className="bg-white border-t border-gray-200 mt-12">
         <div className="max-w-7xl mx-auto p-6 text-center">
           <p className="text-xs text-gray-500">
-            Sproutly Quantum v2.3.6 | A next-generation financial experience | {user ? 'Online Mode' : 'Local Mode'}
+            Sproutly Quantum v2.3.3 | A next-generation financial experience | {user ? 'Online Mode' : 'Local Mode'}
           </p>
         </div>
       </div>

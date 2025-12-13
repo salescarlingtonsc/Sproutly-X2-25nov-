@@ -387,7 +387,7 @@ const LifeEventsTab: React.FC<LifeEventsTabProps> = ({
                  onFormatY={(v) => v >= 1000000 ? `$${(v/1000000).toFixed(1)}M` : `$${(v/1000).toFixed(0)}k`}
                />
                <div className="text-center text-xs text-gray-500 mt-2">
-                  The crossing point highlights when you become "Self-Insured" (Assets &gt; Liabilities).
+                  The crossing point shows when you become "Self-Insured" (Assets &gt; Liabilities).
                </div>
             </div>
 
