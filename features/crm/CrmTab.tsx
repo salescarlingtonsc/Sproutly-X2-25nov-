@@ -1,3 +1,4 @@
+
 import React, { useMemo, useState } from 'react';
 import { Client, Profile, ContactStatus, LeadSource, ClientDocument } from '../../types';
 import { toNum, fmtSGD, getAge } from '../../lib/helpers';
@@ -54,11 +55,6 @@ const SOURCE_CONFIG: Record<LeadSource, { label: string; color: string }> = {
 // --- SMART LOGIC HELPER ---
 const calculateDealMetrics = (c: Client) => {
   // 1. Estimated Deal Size (The "Value")
-  // Logic: 
-  // - If Wealth Tool used: Annual Premium * 50% (approx commission)
-  // - If Investment Portfolio: 1% fee
-  // - If Income known (Insurance Capacity): 5% of Annual Income
-  
   let potentialRevenue = 0;
   
   const annualPrem = toNum(c.wealthState?.annualPremium);
@@ -66,7 +62,7 @@ const calculateDealMetrics = (c: Client) => {
   const income = toNum(c.profile.monthlyIncome) || toNum(c.profile.grossSalary);
 
   if (annualPrem > 0) {
-    potentialRevenue += annualPrem * 0.5; // High confidence (user entered data)
+    potentialRevenue += annualPrem * 0.5; // High confidence
   } else if (income > 0) {
     potentialRevenue += (income * 12) * 0.03; // Estimated 3% of annual income as revenue
   }
@@ -83,13 +79,25 @@ const calculateDealMetrics = (c: Client) => {
   const probability = STATUS_METRICS[statusKey]?.prob || 0.1;
   const weightedValue = potentialRevenue * probability;
 
-  // 3. Stale Logic (Days since last edit)
+  // 3. Stale Logic
   const lastEdit = new Date(c.lastUpdated).getTime();
   const now = new Date().getTime();
   const daysInactive = Math.floor((now - lastEdit) / (1000 * 60 * 60 * 24));
   const isStale = daysInactive > 14;
 
-  return { potentialRevenue, probability, weightedValue, daysInactive, isStale };
+  // 4. SMART TAGGING (AUTOMATION)
+  const autoTags = [];
+  const netWorth = toNum(c.cashflowState?.currentSavings) + portfolio;
+  const insuranceDeath = toNum(c.insuranceState?.currentDeath);
+  
+  if (netWorth > 1000000) autoTags.push({ label: '🐳 Whale', color: 'bg-purple-100 text-purple-800' });
+  else if (income > 10000) autoTags.push({ label: '💰 High Income', color: 'bg-emerald-100 text-emerald-800' });
+  
+  if (income > 0 && insuranceDeath < income * 5) autoTags.push({ label: '🛡️ Gap', color: 'bg-red-100 text-red-800' });
+  
+  if (c.profile.children && c.profile.children.length > 0) autoTags.push({ label: '👶 Family', color: 'bg-blue-50 text-blue-600' });
+
+  return { potentialRevenue, probability, weightedValue, daysInactive, isStale, autoTags };
 };
 
 // --- COMPONENTS ---
@@ -194,7 +202,6 @@ const CrmTab: React.FC<CrmTabProps> = (props) => {
 
     // Convert map to array for Recharts, sorted by probability (Pipeline Flow)
     const chartData = Object.values(stageMap).sort((a, b) => {
-       // Reverse engineer sort order from STATUS_METRICS keys is hard, simpler to sort by typical flow
        const order = ['New Lead', 'Contacted', 'Appt Set', 'Won', 'Lost', 'NPU 1', 'NPU 2', 'Call Back'];
        return order.indexOf(a.name) - order.indexOf(b.name);
     });
@@ -343,8 +350,8 @@ const CrmTab: React.FC<CrmTabProps> = (props) => {
                     <th className="p-3 text-[10px] font-extrabold text-gray-400 uppercase border-b border-r border-gray-200 w-[140px]">Status</th>
                     <th className="p-3 text-[10px] font-extrabold text-gray-400 uppercase border-b border-r border-gray-200 w-[120px] text-right">Deal Value</th>
                     <th className="p-3 text-[10px] font-extrabold text-gray-400 uppercase border-b border-r border-gray-200 w-[100px] text-right">Prob %</th>
-                    <th className="p-3 text-[10px] font-extrabold text-gray-400 uppercase border-b border-r border-gray-200 w-[120px] text-right">Weighted</th>
-                    <th className="p-3 text-[10px] font-extrabold text-gray-400 uppercase border-b border-r border-gray-200 w-[150px]">Last Touch</th>
+                    <th className="p-3 text-[10px] font-extrabold text-gray-400 uppercase border-b border-r border-gray-200 w-[150px]">Smart Tags</th>
+                    <th className="p-3 text-[10px] font-extrabold text-gray-400 uppercase border-b border-r border-gray-200 w-[120px]">Last Touch</th>
                     <th className="p-3 text-[10px] font-extrabold text-gray-400 uppercase border-b border-gray-200">Source</th>
                   </tr>
                 </thead>
@@ -371,8 +378,14 @@ const CrmTab: React.FC<CrmTabProps> = (props) => {
                               {(client.metrics.probability * 100).toFixed(0)}%
                            </span>
                         </td>
-                        <td className="p-3 border-r border-gray-100 text-right font-bold text-emerald-600 font-mono">
-                           {fmtSGD(client.metrics.weightedValue)}
+                        <td className="p-3 border-r border-gray-100">
+                           <div className="flex gap-1 flex-wrap">
+                              {client.metrics.autoTags.map((tag, i) => (
+                                 <span key={i} className={`text-[9px] px-1.5 py-0.5 rounded border border-transparent ${tag.color}`}>
+                                    {tag.label}
+                                 </span>
+                              ))}
+                           </div>
                         </td>
                         <td className="p-3 border-r border-gray-100">
                            <div className="flex items-center gap-2">
