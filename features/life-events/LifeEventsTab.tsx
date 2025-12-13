@@ -1,3 +1,4 @@
+
 import React, { useMemo, useState, useEffect } from 'react';
 import { toNum, fmtSGD } from '../../lib/helpers';
 import { calculateChildEducationCost } from '../../lib/calculators';
@@ -386,7 +387,7 @@ const LifeEventsTab: React.FC<LifeEventsTabProps> = ({
                  onFormatY={(v) => v >= 1000000 ? `$${(v/1000000).toFixed(1)}M` : `$${(v/1000).toFixed(0)}k`}
                />
                <div className="text-center text-xs text-gray-500 mt-2">
-                  The crossing point indicates when you become "Self-Insured" (Assets > Liabilities).
+                  The crossing point indicates when you become "Self-Insured" (Assets &gt; Liabilities).
                </div>
             </div>
 
