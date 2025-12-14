@@ -1,3 +1,4 @@
+
 import React from 'react';
 
 interface LandingPageProps {
@@ -6,56 +7,115 @@ interface LandingPageProps {
 
 const LandingPage: React.FC<LandingPageProps> = ({ onLogin }) => {
   return (
-    <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center p-6 text-white font-sans relative overflow-hidden">
-      {/* Background decorations */}
-      <div className="absolute top-0 left-0 w-full h-full overflow-hidden z-0 pointer-events-none">
-        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-indigo-600/20 rounded-full blur-[100px]"></div>
-        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-emerald-600/20 rounded-full blur-[100px]"></div>
+    <div className="min-h-screen bg-[#0F172A] flex flex-col items-center justify-center p-6 text-white font-sans relative overflow-hidden">
+      
+      {/* --- BACKGROUND FX --- */}
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        {/* Animated Orbs */}
+        <div className="absolute top-[-20%] left-[-10%] w-[800px] h-[800px] bg-indigo-600/30 rounded-full blur-[120px] animate-pulse-slow"></div>
+        <div className="absolute bottom-[-20%] right-[-10%] w-[600px] h-[600px] bg-emerald-600/20 rounded-full blur-[120px] animate-pulse-slow delay-700"></div>
+        {/* Grid Pattern */}
+        <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-20"></div>
+        <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.03)_1px,transparent_1px)] bg-[size:40px_40px] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_0%,#000_70%,transparent_100%)]"></div>
       </div>
 
-      <div className="max-w-md w-full text-center space-y-8 relative z-10">
-        <div className="inline-flex items-center justify-center w-20 h-20 rounded-2xl bg-gradient-to-br from-indigo-500 to-emerald-500 shadow-lg mb-2">
-          <svg 
-            xmlns="http://www.w3.org/2000/svg" 
-            viewBox="0 0 24 24" 
-            fill="none" 
-            stroke="currentColor" 
-            strokeWidth="2" 
-            strokeLinecap="round" 
-            strokeLinejoin="round" 
-            className="w-12 h-12 text-white"
-          >
-            <path d="M7 20h10" />
-            <path d="M10 20c5.5-2.5.8-6.4 3-10" />
-            <path d="M9.5 9.4c1.1.8 1.8 2.2 2.3 3.7-2 .4-3.5.4-4.8-.3-1.2-.6-2.3-1.9-3-4.2 2.8-.5 4.4 0 5.5.8z" />
-            <path d="M14.1 6a7 7 0 0 0-1.1 4c1.9-.1 3.3-.6 4.3-1.4 1-1 1.6-2.3 1.7-4.6-2.7.1-4 1-4.9 2z" />
-          </svg>
-        </div>
+      {/* --- CONTENT --- */}
+      <div className="max-w-5xl w-full flex flex-col md:flex-row items-center justify-between gap-12 relative z-10">
         
-        <div className="space-y-3">
-          <h1 className="text-3xl font-bold tracking-tight text-white">Sproutly Quantum</h1>
-          <p className="text-slate-400 text-base">A next-generation financial experience</p>
-        </div>
-
-        <div className="bg-white/5 backdrop-blur-md p-8 rounded-2xl border border-white/10 shadow-2xl">
-          <h2 className="text-lg font-semibold text-white mb-2">Advisor Portal</h2>
-          <p className="text-sm text-slate-300 mb-6 leading-relaxed">
-            Please log in to access your client dashboard, financial calculators, and CRM tools.
-          </p>
+        {/* LEFT: The Pitch - REVISED PSYCHOLOGY */}
+        <div className="flex-1 text-center md:text-left space-y-8">
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-xs font-bold uppercase tracking-widest backdrop-blur-md">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+            System Operational • v2.4
+          </div>
           
-          <button
-            onClick={onLogin}
-            className="w-full py-3.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl font-bold text-sm transition-all shadow-lg shadow-indigo-500/30 flex items-center justify-center gap-2 group"
-          >
-            <span>🔐</span> 
-            <span>Login / Sign Up</span>
-            <span className="group-hover:translate-x-1 transition-transform">→</span>
-          </button>
+          <h1 className="text-5xl md:text-7xl font-extrabold tracking-tight leading-tight">
+            <span className="text-transparent bg-clip-text bg-gradient-to-r from-white via-indigo-100 to-indigo-300">
+              Financial Clarity.
+            </span>
+            <br />
+            <span className="text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-teal-200">
+              Engineered Precision.
+            </span>
+          </h1>
+          
+          <p className="text-slate-400 text-lg md:text-xl leading-relaxed max-w-lg mx-auto md:mx-0">
+            Advanced modeling for complex lives. Sproutly Quantum uses 
+            <span className="text-indigo-400 font-bold"> Generative AI</span> and 
+            <span className="text-emerald-400 font-bold"> Deep Math</span> to visualize your future with uncompromising accuracy.
+          </p>
+
+          <div className="flex flex-col sm:flex-row items-center gap-4 pt-4">
+            <button
+              onClick={onLogin}
+              className="w-full sm:w-auto px-8 py-4 bg-white text-slate-900 hover:bg-slate-50 rounded-xl font-bold text-sm transition-all shadow-[0_0_40px_-10px_rgba(255,255,255,0.3)] flex items-center justify-center gap-2 group"
+            >
+              <span>🔐</span> 
+              <span>Access Secure Portal</span>
+              <span className="group-hover:translate-x-1 transition-transform">→</span>
+            </button>
+            <div className="flex items-center gap-[-10px]">
+               {/* Social Proof Avatars */}
+               {[1,2,3].map(i => (
+                 <div key={i} className={`w-8 h-8 rounded-full border-2 border-slate-900 bg-slate-700 -ml-3 first:ml-0 z-${10-i} flex items-center justify-center text-[10px]`}>
+                    Adv
+                 </div>
+               ))}
+               <span className="ml-3 text-xs text-slate-500 font-medium">Trusted by Top Advisors</span>
+            </div>
+          </div>
         </div>
 
-        <div className="text-xs text-slate-600">
-          &copy; {new Date().getFullYear()} Sproutly Quantum • Authorized Access Only
+        {/* RIGHT: The Login Card (Glassmorphism) */}
+        <div className="w-full md:w-[400px]">
+          <div className="bg-slate-800/40 backdrop-blur-xl p-8 rounded-3xl border border-white/10 shadow-2xl relative group">
+            {/* Glow Effect behind card */}
+            <div className="absolute -inset-1 bg-gradient-to-r from-indigo-500 to-emerald-500 rounded-3xl opacity-20 blur transition duration-1000 group-hover:opacity-40"></div>
+            
+            <div className="relative">
+              <div className="flex items-center justify-between mb-8">
+                <h2 className="text-xl font-bold text-white">Advisor Sign-In</h2>
+                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-emerald-500 flex items-center justify-center shadow-lg">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-6 h-6 text-white">
+                    <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+                  </svg>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <button
+                  onClick={onLogin}
+                  className="w-full py-4 bg-white text-slate-900 rounded-xl font-bold text-sm hover:bg-slate-50 transition-all flex items-center justify-center gap-3 shadow-lg"
+                >
+                  <img src="https://www.svgrepo.com/show/475656/google-color.svg" className="w-5 h-5" alt="Google" />
+                  Continue with Google
+                </button>
+                <button
+                  onClick={onLogin}
+                  className="w-full py-4 bg-slate-700/50 text-white border border-white/10 rounded-xl font-bold text-sm hover:bg-slate-700 transition-all flex items-center justify-center gap-3"
+                >
+                  <span>📧</span>
+                  Continue with Email
+                </button>
+              </div>
+
+              <div className="mt-8 pt-6 border-t border-white/10 text-center">
+                <p className="text-xs text-slate-400">
+                  Secured Environment. <br/>
+                  <span className="text-emerald-400 flex items-center justify-center gap-1 mt-1">
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>
+                    256-bit Encryption Active
+                  </span>
+                </p>
+              </div>
+            </div>
+          </div>
         </div>
+
+      </div>
+
+      <div className="absolute bottom-6 text-xs text-slate-600 font-mono">
+        QUANTUM ENGINE: <span className="text-emerald-500">ONLINE</span> • LATENCY: 12ms
       </div>
     </div>
   );

@@ -11,37 +11,35 @@ export const TIER_CONFIG = {
   free: {
     label: 'Free Trial',
     clientLimit: 1, // Limit for free users
-    // Added 'life_events' so you can test the new feature immediately
-    allowedTabs: ['disclaimer', 'profile', 'life_events'], 
+    // Added 'dashboard' to all tiers
+    allowedTabs: ['disclaimer', 'dashboard', 'profile', 'life_events', 'report'], 
     color: 'gray'
   },
   platinum: {
     label: 'Platinum',
     clientLimit: 10, // Limit for platinum users
-    // Tabs: Profile, Education (Children), Cashflow, CRM, Insurance
-    allowedTabs: ['disclaimer', 'profile', 'children', 'cashflow', 'insurance', 'crm', 'life_events'], 
+    allowedTabs: ['disclaimer', 'dashboard', 'profile', 'children', 'cashflow', 'insurance', 'crm', 'life_events', 'report'], 
     color: 'indigo'
   },
   diamond: {
     label: 'Diamond',
     clientLimit: 30, // Limit for diamond users
-    // Tabs: All access including Analytics
-    allowedTabs: ['disclaimer', 'profile', 'life_events', 'children', 'cpf', 'cashflow', 'insurance', 'retirement', 'investor', 'wealth', 'property', 'analytics', 'crm'],
+    allowedTabs: ['disclaimer', 'dashboard', 'profile', 'life_events', 'children', 'cpf', 'cashflow', 'insurance', 'retirement', 'investor', 'wealth', 'property', 'vision', 'analytics', 'crm', 'report'],
     color: 'emerald'
   },
   organisation: {
     label: 'Organisation',
     clientLimit: 100, // Base limit for organisations (customizable via extra slots)
-    // Added 'life_events' here to ensure Admin/Organisation users can see it
-    allowedTabs: ['disclaimer', 'profile', 'life_events', 'children', 'cpf', 'cashflow', 'insurance', 'retirement', 'investor', 'wealth', 'property', 'analytics', 'crm'],
+    allowedTabs: ['disclaimer', 'dashboard', 'profile', 'life_events', 'children', 'cpf', 'cashflow', 'insurance', 'retirement', 'investor', 'wealth', 'property', 'vision', 'analytics', 'crm', 'report'],
     color: 'purple'
   }
 };
 
 export const TAB_DEFINITIONS = [
-  { id: 'disclaimer', label: 'Disclaimer', icon: '⚠️' },
+  { id: 'disclaimer', label: 'Protocol', icon: '⚖️' },
+  { id: 'dashboard', label: 'Command', icon: '🚀' }, // NEW DASHBOARD
   { id: 'profile', label: 'Profile', icon: '👤' },
-  { id: 'life_events', label: 'Life Events', icon: '⚡' }, // Positioned right after Profile
+  { id: 'life_events', label: 'Life Events', icon: '⚡' },
   { id: 'children', label: 'Children', icon: '👶' },
   { id: 'cpf', label: 'CPF', icon: '💰' },
   { id: 'cashflow', label: 'Cashflow', icon: '📊' },
@@ -50,8 +48,38 @@ export const TAB_DEFINITIONS = [
   { id: 'investor', label: 'Investor', icon: '📈' },
   { id: 'wealth', label: 'Wealth Tool', icon: '💎' },
   { id: 'property', label: 'Property', icon: '🏠' },
-  { id: 'analytics', label: 'AI Analytics', icon: '🤖' },
-  { id: 'crm', label: 'CRM', icon: '📋' }
+  { id: 'vision', label: 'Vision Board', icon: '🎥' },
+  { id: 'analytics', label: 'Analytics', icon: '🤖' },
+  { id: 'report', label: 'Deliverable', icon: '📄' }, // NEW REPORT TAB
+  { id: 'crm', label: 'CRM', icon: '📋' },
+  { id: 'admin', label: 'Admin', icon: '🔧' }
+];
+
+export const TAB_GROUPS = [
+  {
+    title: 'Overview',
+    tabs: ['dashboard', 'crm']
+  },
+  {
+    title: 'Discovery',
+    tabs: ['profile', 'children', 'life_events']
+  },
+  {
+    title: 'Financial Core',
+    tabs: ['cashflow', 'cpf', 'insurance', 'retirement']
+  },
+  {
+    title: 'Wealth & Assets',
+    tabs: ['investor', 'wealth', 'property']
+  },
+  {
+    title: 'Intelligence',
+    tabs: ['vision', 'analytics', 'report']
+  },
+  {
+    title: 'System',
+    tabs: ['admin', 'disclaimer']
+  }
 ];
 
 export const EXPENSE_CATEGORIES: { key: keyof Expenses; label: string }[] = [

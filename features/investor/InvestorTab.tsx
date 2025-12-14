@@ -1,73 +1,149 @@
 
-import React from 'react';
+import React, { useState } from 'react';
+import { useClient } from '../../contexts/ClientContext';
+import { useAi } from '../../contexts/AiContext';
 import { toNum, fmtSGD } from '../../lib/helpers';
-import { InvestorState } from '../../types';
+import { generateInvestmentThesis } from '../../lib/gemini';
+import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
+import PageHeader from '../../components/layout/PageHeader';
+import SectionCard from '../../components/layout/SectionCard';
 
-interface InvestorTabProps {
-  investorState: InvestorState;
-  setInvestorState: (s: InvestorState) => void;
-}
-
-const InvestorTab: React.FC<InvestorTabProps> = ({ investorState, setInvestorState }) => {
+const InvestorTab: React.FC = () => {
+  const { investorState, setInvestorState, profile } = useClient();
+  const { openAiWithPrompt } = useAi();
   const { portfolioValue, portfolioType } = investorState;
+  const currentVal = toNum(portfolioValue, 0);
 
-  const updateState = (key: keyof InvestorState, value: any) => {
-    setInvestorState({ ...investorState, [key]: value });
-  };
+  // --- SIMULATION LOGIC ---
+  const data = [];
+  const years = 20;
+  const cashRate = 0.005; // 0.5% bank interest
+  const marketRate = portfolioType === 'conservative' ? 0.04 : (portfolioType === 'growth' ? 0.08 : 0.06);
   
-  const value = toNum(portfolioValue, 0);
-  
-  // Simplified for brevity, logic remains same as original
-  const scenarios = {
-    'stock-picking': { best: 0.30, crash: -0.50 },
-    'diversified': { best: 0.25, crash: -0.35 },
-    'index': { best: 0.20, crash: -0.30 }
+  for (let i = 0; i <= years; i++) {
+     data.push({
+        year: `Year ${i}`,
+        cash: Math.round(currentVal * Math.pow(1 + cashRate, i)),
+        invested: Math.round(currentVal * Math.pow(1 + marketRate, i))
+     });
+  }
+
+  const finalCash = data[years].cash;
+  const finalInvested = data[years].invested;
+  const opportunityCost = finalInvested - finalCash;
+
+  const handleAiThesis = async () => {
+     openAiWithPrompt(`Analyze my portfolio strategy. I have $${currentVal} allocated in a '${portfolioType}' strategy. My age is ${2025 - (new Date(profile.dob).getFullYear() || 2000)}. Is this appropriate? Use thinking mode to calculate my inflation-adjusted returns.`);
   };
-  const scenario = scenarios[portfolioType as keyof typeof scenarios] || scenarios['index'];
+
+  const headerAction = (
+    <button 
+      onClick={handleAiThesis}
+      className="flex items-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-700 rounded-lg text-xs font-bold hover:bg-indigo-100 transition-colors"
+    >
+      <span>🧠</span> AI Investment Thesis
+    </button>
+  );
 
   return (
-    <div className="p-5">
-      <div className="bg-gradient-to-br from-indigo-900 to-indigo-800 border-2 border-indigo-500 rounded-xl p-6 mb-5 shadow-md">
-        <h3 className="m-0 text-white text-2xl font-bold">Investor Education</h3>
+    <div className="p-6 max-w-7xl mx-auto space-y-8">
+      
+      <PageHeader 
+        title="Portfolio Architect" 
+        icon="📈" 
+        subtitle="Analyze asset allocation and calculate the cost of inaction."
+        action={headerAction}
+      />
+      
+      {/* 1. TRADING DESK HEADER */}
+      <div className="bg-[#0B1120] rounded-2xl p-8 text-white shadow-2xl relative overflow-hidden">
+         <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-600/30 rounded-full blur-[80px]"></div>
+         <div className="relative z-10 grid grid-cols-1 md:grid-cols-2 gap-8 items-center">
+            <div>
+               <h2 className="text-xs font-bold text-indigo-400 uppercase tracking-widest mb-2">Capital Deployment</h2>
+               <div className="text-4xl md:text-5xl font-black tracking-tight mb-2 flex items-baseline">
+                  <span className="text-gray-500 mr-1">$</span>
+                  <input 
+                     type="text" 
+                     value={portfolioValue}
+                     onChange={(e) => setInvestorState({ ...investorState, portfolioValue: e.target.value })}
+                     className="bg-transparent outline-none w-[300px] placeholder-gray-700 text-white"
+                     placeholder="0"
+                  />
+               </div>
+               <p className="text-sm text-gray-400">Enter investable capital to see the cost of inaction.</p>
+            </div>
+            
+            <div className="flex gap-2 bg-white/5 p-1 rounded-xl w-fit backdrop-blur-sm border border-white/10">
+               {['conservative', 'balanced', 'growth'].map((type) => (
+                  <button
+                     key={type}
+                     onClick={() => setInvestorState({ ...investorState, portfolioType: type })}
+                     className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${portfolioType === type ? 'bg-indigo-600 text-white shadow-lg' : 'text-gray-400 hover:text-white'}`}
+                  >
+                     {type}
+                  </button>
+               ))}
+            </div>
+         </div>
       </div>
-      <div className="bg-white border-l-4 border-red-600 rounded-xl p-6 mb-5 shadow-sm">
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
-          <div>
-            <label className="block text-xs font-bold text-gray-700 mb-2">Your Portfolio Value (SGD)</label>
-            <input
-              type="text"
-              value={portfolioValue}
-              onChange={(e) => updateState('portfolioValue', e.target.value)}
-              className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg font-bold bg-white text-gray-900"
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-bold text-gray-700 mb-2">Strategy</label>
-            <select 
-              value={portfolioType} 
-              onChange={(e) => updateState('portfolioType', e.target.value)}
-              className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg bg-white text-gray-900"
-            >
-              <option value="stock-picking">Stock Picking</option>
-              <option value="diversified">Diversified</option>
-              <option value="index">Index Fund</option>
-            </select>
-          </div>
-        </div>
-        <div className="p-5 bg-gradient-to-br from-blue-500 to-blue-700 rounded-xl mb-5 text-center text-white">
-          <div className="text-4xl font-extrabold mb-1">{fmtSGD(value)}</div>
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-           <div className="p-3 bg-emerald-50 border border-emerald-500 rounded text-center">
-              <div className="text-xs font-bold">BEST CASE (+{(scenario.best * 100).toFixed(0)}%)</div>
-              <div className="font-bold text-emerald-800">{fmtSGD(value * (1 + scenario.best))}</div>
-           </div>
-           <div className="p-3 bg-red-50 border border-red-500 rounded text-center">
-              <div className="text-xs font-bold">CRASH ({(scenario.crash * 100).toFixed(0)}%)</div>
-              <div className="font-bold text-red-800">{fmtSGD(value * (1 + scenario.crash))}</div>
-           </div>
-        </div>
-      </div>
+
+      {/* 2. THE GAP VISUALIZER */}
+      {currentVal > 0 && (
+         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            
+            {/* Chart */}
+            <SectionCard title="Wealth Divergence (20 Years)" className="lg:col-span-2">
+               <div className="h-[300px] w-full">
+                  <ResponsiveContainer>
+                     <AreaChart data={data}>
+                        <defs>
+                           <linearGradient id="colorInv" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%" stopColor="#4f46e5" stopOpacity={0.3}/>
+                              <stop offset="95%" stopColor="#4f46e5" stopOpacity={0}/>
+                           </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f0f0f0" />
+                        <XAxis dataKey="year" fontSize={10} axisLine={false} tickLine={false} tickMargin={10} />
+                        <YAxis hide />
+                        <Tooltip 
+                           contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
+                           formatter={(val: number) => fmtSGD(val)}
+                        />
+                        <Area type="monotone" dataKey="invested" stroke="#4f46e5" strokeWidth={3} fillOpacity={1} fill="url(#colorInv)" name="Invested" />
+                        <Area type="monotone" dataKey="cash" stroke="#9ca3af" strokeWidth={2} strokeDasharray="5 5" fill="transparent" name="Cash (Bank)" />
+                     </AreaChart>
+                  </ResponsiveContainer>
+               </div>
+            </SectionCard>
+
+            {/* The Bill */}
+            <SectionCard className="flex flex-col justify-center">
+               <div className="text-center">
+                  <div className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-4">The Cost of Waiting</div>
+                  
+                  <div className="mb-6">
+                     <div className="text-sm text-gray-500 mb-1">Projected Loss (Inflation Adjusted)</div>
+                     <div className="text-3xl font-black text-red-500">{fmtSGD(opportunityCost)}</div>
+                  </div>
+
+                  <div className="space-y-3 text-left bg-gray-50 p-4 rounded-xl text-xs border border-gray-100">
+                     <div className="flex justify-between">
+                        <span className="text-gray-500">Bank Rate</span>
+                        <span className="font-bold text-gray-800">0.5%</span>
+                     </div>
+                     <div className="flex justify-between">
+                        <span className="text-gray-500">Market Rate ({portfolioType})</span>
+                        <span className="font-bold text-indigo-600">{(marketRate * 100).toFixed(1)}%</span>
+                     </div>
+                     <div className="pt-2 border-t border-gray-200 mt-2 text-center text-gray-400 italic">
+                        "Time in the market beats timing the market."
+                     </div>
+                  </div>
+               </div>
+            </SectionCard>
+         </div>
+      )}
     </div>
   );
 };

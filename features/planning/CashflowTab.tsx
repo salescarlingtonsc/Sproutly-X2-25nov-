@@ -1,861 +1,500 @@
 
 import React, { useMemo, useState } from 'react';
+import { useClient } from '../../contexts/ClientContext';
+import { useAi } from '../../contexts/AiContext';
 import { toNum, fmtSGD, monthNames } from '../../lib/helpers';
-import { getBaseRetirementExpense } from '../../lib/calculators';
-import { EXPENSE_CATEGORIES } from '../../lib/config';
-import LabeledText from '../../components/common/LabeledText';
-import Card from '../../components/common/Card';
 import LineChart from '../../components/common/LineChart';
-import {
-  CpfData,
-  Expenses,
-  CashflowData,
-  Profile,
-  CustomExpense,
-  RetirementSettings,
-  CashflowState,
-  CpfState,
-} from '../../types';
+import PageHeader from '../../components/layout/PageHeader';
+import SectionCard from '../../components/layout/SectionCard';
+import { CashflowState } from '../../types';
 
-interface CashflowTabProps {
-  cpfData: CpfData | null;
-  expenses: Expenses;
-  setExpenses: (e: Expenses) => void;
-  cashflowData: CashflowData | null;
-  profile: Profile;
-  customExpenses: CustomExpense[];
-  setCustomExpenses: (e: CustomExpense[]) => void;
-  retirement: RetirementSettings;
-  cashflowState: CashflowState;
-  setCashflowState: (s: CashflowState | ((prev: CashflowState) => CashflowState)) => void;
-  age: number;
-  cpfState: CpfState;
-}
+const CashflowTab: React.FC = () => {
+  const { 
+    cashflowData, currentSavings, 
+    expenses, setExpenses,
+    customExpenses, setCustomExpenses,
+    profile, retirement,
+    cashflowState, setCashflowState,
+    age, cpfData
+  } = useClient();
 
-const CashflowTab: React.FC<CashflowTabProps> = ({
-  cpfData,
-  expenses,
-  setExpenses,
-  cashflowData,
-  profile,
-  customExpenses,
-  setCustomExpenses,
-  retirement,
-  cashflowState,
-  setCashflowState,
-  age
-}) => {
-  const {
-    currentSavings,
-    projectToAge,
-    bankInterestRate,
-    additionalIncomes,
-    withdrawals,
-    careerEvents = [],
-    customBaseIncome,
-    customRetirementIncome
-  } = cashflowState;
+  const { openAiWithPrompt } = useAi();
+  const [ledgerView, setLedgerView] = useState<'yearly' | 'monthly'>('yearly');
 
-  const [viewMode, setViewMode] = useState<'summary' | 'monthly'>('summary');
-  const [monthsToShow, setMonthsToShow] = useState(120); // Start with 10 years
-
+  const { projectToAge, bankInterestRate, additionalIncomes, withdrawals, careerEvents = [], customBaseIncome } = cashflowState;
+  
+  // Handlers for state updates
   const updateState = (key: keyof CashflowState, value: any) => {
-    setCashflowState((prev) => ({
-      ...prev,
-      [key]: value
-    }));
+    setCashflowState((prev) => ({ ...prev, [key]: value }));
   };
 
   const currentAge = age;
   const currentYear = new Date().getFullYear();
 
-  // --- CAREER EVENTS HANDLERS ---
-  const addCareerEvent = () => {
-    setCashflowState(prev => ({
-      ...prev,
-      careerEvents: [...(prev.careerEvents || []), {
-        id: Date.now(),
-        type: 'increment',
-        age: currentAge + 1,
-        month: 0, // Default Jan
-        amount: '',
-        durationMonths: '24', // Default for breaks
-        notes: ''
-      }]
-    }));
-  };
+  // --- HANDLERS ---
+  const addCareerEvent = () => setCashflowState(prev => ({...prev, careerEvents: [...(prev.careerEvents||[]), {id: Date.now(), type: 'increment', age: currentAge+1, month: 0, amount: '', durationMonths: '24', notes: ''}]}));
+  const updateCareerEvent = (id: number, field: string, val: any) => setCashflowState(prev => ({...prev, careerEvents: (prev.careerEvents||[]).map(e => e.id === id ? {...e, [field]: val} : e)}));
+  const removeCareerEvent = (id: number) => setCashflowState(prev => ({...prev, careerEvents: (prev.careerEvents||[]).filter(e => e.id !== id)}));
+  
+  const addIncome = () => setCashflowState(prev => ({...prev, additionalIncomes: [...prev.additionalIncomes, {id: Date.now(), name: '', amount: '', type: 'recurring', frequency: 'monthly', startAge: currentAge, startMonth: 0, endAge: '', endMonth: 11}]}));
+  const updateIncomeItem = (id: number, field: string, val: any) => setCashflowState(prev => ({...prev, additionalIncomes: prev.additionalIncomes.map(i => i.id === id ? {...i, [field]: val} : i)}));
+  const removeIncome = (id: number) => setCashflowState(prev => ({...prev, additionalIncomes: prev.additionalIncomes.filter(i => i.id !== id)}));
 
-  const updateCareerEvent = (id: number, field: string, value: any) => {
-    setCashflowState(prev => ({
-      ...prev,
-      careerEvents: (prev.careerEvents || []).map(e => e.id === id ? { ...e, [field]: value } : e)
-    }));
-  };
+  const addWithdrawal = () => setCashflowState(prev => ({...prev, withdrawals: [...prev.withdrawals, {id: Date.now(), name: '', amount: '', type: 'onetime', frequency: 'monthly', startAge: currentAge, startMonth: 0, endAge: '', endMonth: 11}]}));
+  const updateWithdrawalItem = (id: number, field: string, val: any) => setCashflowState(prev => ({...prev, withdrawals: prev.withdrawals.map(w => w.id === id ? {...w, [field]: val} : w)}));
+  const removeWithdrawal = (id: number) => setCashflowState(prev => ({...prev, withdrawals: prev.withdrawals.filter(w => w.id !== id)}));
 
-  const removeCareerEvent = (id: number) => {
-    setCashflowState(prev => ({
-      ...prev,
-      careerEvents: (prev.careerEvents || []).filter(e => e.id !== id)
-    }));
-  };
-
-  // --- INCOME & WITHDRAWAL HANDLERS ---
-  const addIncome = () => {
-    const currentMonth = new Date().getMonth();
-    setCashflowState((prev) => ({
-      ...prev,
-      additionalIncomes: [
-        ...prev.additionalIncomes,
-        {
-          id: Date.now(),
-          name: '',
-          amount: '',
-          type: 'recurring',
-          frequency: 'monthly',
-          startAge: currentAge,
-          startMonth: currentMonth,
-          endAge: null,
-          endMonth: 11 // Default Dec
-        }
-      ]
-    }));
-  };
-
-  const removeIncome = (id: number) => {
-    setCashflowState((prev) => ({
-      ...prev,
-      additionalIncomes: prev.additionalIncomes.filter((i) => i.id !== id)
-    }));
-  };
-
-  const updateIncomeItem = (id: number, field: string, value: any) => {
-    setCashflowState((prev) => ({
-      ...prev,
-      additionalIncomes: prev.additionalIncomes.map((i) => 
-        i.id === id ? { ...i, [field]: value } : i
-      )
-    }));
-  };
-
-  const addWithdrawal = () => {
-    const currentMonth = new Date().getMonth();
-    setCashflowState((prev) => ({
-      ...prev,
-      withdrawals: [
-        ...prev.withdrawals,
-        {
-          id: Date.now(),
-          name: '',
-          amount: '',
-          type: 'onetime',
-          frequency: 'monthly',
-          startAge: currentAge,
-          startMonth: currentMonth,
-          endAge: '', 
-          endMonth: 11 // Default December
-        }
-      ]
-    }));
-  };
-
-  const removeWithdrawal = (id: number) => {
-    setCashflowState((prev) => ({
-      ...prev,
-      withdrawals: prev.withdrawals.filter((w) => w.id !== id)
-    }));
-  };
-
-  const updateWithdrawalItem = (id: number, field: string, value: any) => {
-    setCashflowState((prev) => ({
-      ...prev,
-      withdrawals: prev.withdrawals.map((w) => 
-        w.id === id ? { ...w, [field]: value } : w
-      )
-    }));
-  };
-
-  // Calculate monthly projection
+  // --- CALCULATION ENGINE ---
   const monthlyProjection = useMemo(() => {
     if (!cashflowData) return [];
-
     const currentMonth = new Date().getMonth();
     const targetAge = parseInt(projectToAge) || 100;
     const totalMonths = Math.max(1, (targetAge - currentAge) * 12);
     const projection: any[] = [];
-
-    let balance = toNum(currentSavings, 0);
+    
+    let balance = toNum(cashflowState.currentSavings, 0);
     const monthlyInterestRate = toNum(bankInterestRate, 0) / 100 / 12;
-
-    const totalMonthlyExpenses =
-      Object.values(expenses).reduce((sum: number, v) => sum + toNum(v, 0), 0) +
-      customExpenses.reduce((sum: number, v) => sum + toNum(v.amount, 0), 0);
-
-    const baseRetirementExpense = getBaseRetirementExpense(
-      profile,
-      totalMonthlyExpenses,
-      cpfData,
-      cashflowData
-    );
-
+    
+    // Explicitly typing sum as number
+    const totalMonthlyExpenses = Object.values(expenses).reduce((sum: number, v) => sum + toNum(v), 0) + customExpenses.reduce((sum: number, v) => sum + toNum(v.amount), 0);
     const fiAge = toNum(profile.retirementAge, 65);
-
-    // Initial Base Income
-    const effectiveTakeHome =
-      toNum(profile.takeHome) ||
-      (cpfData ? toNum(cpfData.takeHome) : 0);
-
+    const effectiveTakeHome = toNum(profile.takeHome) || (cpfData ? toNum(cpfData.takeHome) : 0);
     const defaultActiveIncome = effectiveTakeHome - totalMonthlyExpenses;
-
-    const startBaseIncome =
-      customBaseIncome !== undefined && customBaseIncome !== ''
-        ? toNum(customBaseIncome)
-        : defaultActiveIncome;
-
-    // DYNAMIC VARIABLES for Career Simulation
+    const startBaseIncome = customBaseIncome !== undefined && customBaseIncome !== '' ? toNum(customBaseIncome) : defaultActiveIncome;
+    
     let currentActiveIncome = startBaseIncome;
     let isCareerPaused = false;
     let pauseMonthsRemaining = 0;
 
+    // Investment logic
+    let monthlyInvestment = 0;
+    if (profile.monthlyInvestmentAmount !== undefined && profile.monthlyInvestmentAmount !== '') {
+      monthlyInvestment = toNum(profile.monthlyInvestmentAmount);
+    } else {
+      const investmentPercent = toNum(retirement.investmentPercent, 50);
+      monthlyInvestment = currentActiveIncome * (investmentPercent / 100);
+    }
+
     for (let m = 0; m < totalMonths; m++) {
       const ageAtMonth = currentAge + m / 12;
       const monthIndex = (currentMonth + m) % 12;
-      const yearOffset = Math.floor((currentMonth + m) / 12);
-      const year = currentYear + yearOffset;
-
-      // 1. Process Career Events (Trigger once at the specific age and month)
-      const eventsThisMonth = careerEvents.filter(e => 
-         Math.floor(ageAtMonth) === toNum(e.age) && 
-         monthIndex === (e.month !== undefined ? toNum(e.month) : 0)
-      );
+      const year = currentYear + Math.floor((currentMonth + m) / 12);
       
-      eventsThisMonth.forEach(event => {
-         const amount = toNum(event.amount);
-         if (event.type === 'increment') {
-            currentActiveIncome += amount;
-         } else if (event.type === 'decrement') {
-            currentActiveIncome = Math.max(0, currentActiveIncome - amount);
-         } else if (event.type === 'pause') {
-            isCareerPaused = true;
-            pauseMonthsRemaining = toNum(event.durationMonths, 24);
-         } else if (event.type === 'resume') {
-            isCareerPaused = false;
-            pauseMonthsRemaining = 0;
-            // Optional: You could set new income on resume if amount is provided
-            if (amount > 0) currentActiveIncome = amount;
-         }
+      // Career Events logic
+      const events = careerEvents.filter(e => Math.floor(ageAtMonth) === toNum(e.age) && monthIndex === (e.month||0));
+      events.forEach(e => {
+         const amt = toNum(e.amount);
+         if (e.type === 'increment') currentActiveIncome += amt;
+         if (e.type === 'decrement') currentActiveIncome = Math.max(0, currentActiveIncome - amt);
+         if (e.type === 'pause') { isCareerPaused = true; pauseMonthsRemaining = toNum(e.durationMonths, 24); }
+         if (e.type === 'resume') { isCareerPaused = false; if (amt > 0) currentActiveIncome = amt; }
       });
+      if (isCareerPaused) { pauseMonthsRemaining--; if (pauseMonthsRemaining <= 0) isCareerPaused = false; }
 
-      // Handle Career Pause Duration
-      if (isCareerPaused) {
-         pauseMonthsRemaining--;
-         if (pauseMonthsRemaining <= 0) {
-            isCareerPaused = false;
-         }
-      }
-
-      // Apply interest
       const interestEarned = balance * monthlyInterestRate;
       balance += interestEarned;
-
       const isRetired = ageAtMonth >= fiAge;
-
-      // Base cashflow
-      let monthIncome = 0;
-      if (!isRetired) {
-         monthIncome = isCareerPaused ? 0 : currentActiveIncome;
-      }
-
-      let additionalIncome = 0;
+      
+      let monthIncome = (!isRetired && !isCareerPaused) ? currentActiveIncome : 0;
+      let additionalIncome = 0; 
       let withdrawalAmount = 0;
-      let educationExpense = 0;
-      let retirementExpense = 0;
-      let retirementIncomeVal = 0;
 
-      // Education
-      if (profile.children && profile.children.length > 0) {
-        const monthlyEduCost = toNum(profile.educationSettings?.monthlyEducationCost, 800);
-        const eduStart = toNum(profile.educationSettings?.educationStartAge, 7);
-        const eduDuration = toNum(profile.educationSettings?.educationDuration, 10);
-        const eduEnd = eduStart + eduDuration;
-        const uniCost = toNum(profile.educationSettings?.universityCost, 8750);
-        const uniDuration = toNum(profile.educationSettings?.universityDuration, 4);
-        const monthlyUniCost = uniCost / 12;
-
-        profile.children.forEach((child) => {
-          if (!child.dobISO) return;
-          const childDob = new Date(child.dobISO);
-          const childAgeAtMonth = ((year - childDob.getFullYear()) * 12 + (monthIndex - childDob.getMonth())) / 12;
-          const uniStartAge = child.gender === 'male' ? 21 : 19;
-
-          if (childAgeAtMonth >= eduStart && childAgeAtMonth < eduEnd) {
-            educationExpense += monthlyEduCost;
-          }
-          if (childAgeAtMonth >= uniStartAge && childAgeAtMonth < uniStartAge + uniDuration) {
-            educationExpense += monthlyUniCost;
-          }
-        });
-      }
-      withdrawalAmount += educationExpense;
-
-      // Retirement
-      if (isRetired) {
-        if (customRetirementIncome) {
-          retirementIncomeVal = toNum(customRetirementIncome);
-        }
-        if (baseRetirementExpense > 0) {
-          const yearsFromNow = ageAtMonth - currentAge;
-          retirementExpense = baseRetirementExpense * Math.pow(1.03, yearsFromNow);
-          withdrawalAmount += retirementExpense;
-        }
-      }
-
-      // Investment (Only if working AND not paused)
-      let monthlyInvestmentAmount = 0;
-      if (!isRetired && !isCareerPaused) {
-        if (profile.monthlyInvestmentAmount && toNum(profile.monthlyInvestmentAmount, 0) > 0) {
-          monthlyInvestmentAmount = toNum(profile.monthlyInvestmentAmount, 0);
-        } else {
-          const investmentPercent = toNum(retirement?.investmentPercent, 100);
-          monthlyInvestmentAmount = (currentActiveIncome * investmentPercent) / 100;
-        }
-        withdrawalAmount += monthlyInvestmentAmount;
-      }
-
-      // Additional Incomes
-      additionalIncomes.forEach((income) => {
-        const incomeStartMonth = (toNum(income.startAge) - currentAge) * 12 + (toNum(income.startMonth) - currentMonth);
-        
-        // Calculate End Month relative to start time
-        const endMonthVal = income.endMonth !== undefined ? toNum(income.endMonth) : 11;
-        const incomeEndMonth = income.endAge && toNum(income.endAge) > 0 
-            ? (toNum(income.endAge) - currentAge) * 12 + (endMonthVal - currentMonth) 
-            : Infinity;
-
-        if (m >= incomeStartMonth && m <= incomeEndMonth) {
-          if (income.type === 'onetime' && m === incomeStartMonth) {
-            additionalIncome += toNum(income.amount, 0);
-          } else if (income.type === 'recurring') {
-            let shouldAdd = false;
-            const monthsSinceStart = m - incomeStartMonth;
-            switch (income.frequency) {
-              case 'monthly': shouldAdd = true; break;
-              case 'quarterly': shouldAdd = monthsSinceStart % 3 === 0; break;
-              case 'semiannual': shouldAdd = monthsSinceStart % 6 === 0; break;
-              case 'yearly': shouldAdd = monthsSinceStart % 12 === 0; break;
+      // Add. Income
+      additionalIncomes.forEach(i => {
+         const startM = (toNum(i.startAge) - currentAge)*12 + (toNum(i.startMonth)-currentMonth);
+         const endM = i.endAge ? (toNum(i.endAge)-currentAge)*12 + ((i.endMonth||11)-currentMonth) : 9999;
+         if (m >= startM && m <= endM) {
+            if (i.type === 'onetime' && m === startM) additionalIncome += toNum(i.amount);
+            if (i.type === 'recurring') {
+               const diff = m - startM;
+               let add = false;
+               if (i.frequency === 'monthly') add = true;
+               if (i.frequency === 'yearly' && diff % 12 === 0) add = true;
+               if (add) additionalIncome += toNum(i.amount);
             }
-            if (shouldAdd) additionalIncome += toNum(income.amount, 0);
-          }
-        }
+         }
       });
 
-      // Withdrawals (Fixed: Now supports End Age AND End Month)
-      withdrawals.forEach((withdrawal) => {
-        const withdrawalStartMonth = (toNum(withdrawal.startAge) - currentAge) * 12 + (toNum(withdrawal.startMonth) - currentMonth);
-        
-        // Calculate End Month index relative to current time
-        const endMonthIndex = withdrawal.endMonth !== undefined ? toNum(withdrawal.endMonth) : 11; // Default to Dec
-        const withdrawalEndMonth = withdrawal.endAge && toNum(withdrawal.endAge) > 0 
-            ? (toNum(withdrawal.endAge) - currentAge) * 12 + (endMonthIndex - currentMonth) 
-            : Infinity;
-
-        if (withdrawal.type === 'onetime' && m === withdrawalStartMonth) {
-          withdrawalAmount += toNum(withdrawal.amount, 0);
-        } else if (withdrawal.type === 'recurring' && m >= withdrawalStartMonth && m <= withdrawalEndMonth) {
-          let shouldWithdraw = false;
-          const monthsSinceStart = m - withdrawalStartMonth;
-          switch (withdrawal.frequency) {
-            case 'monthly': shouldWithdraw = true; break;
-            case 'quarterly': shouldWithdraw = monthsSinceStart % 3 === 0; break;
-            case 'semiannual': shouldWithdraw = monthsSinceStart % 6 === 0; break;
-            case 'yearly': shouldWithdraw = monthsSinceStart % 12 === 0; break;
-          }
-          if (shouldWithdraw) withdrawalAmount += toNum(withdrawal.amount, 0);
-        }
+      // Withdrawals
+      withdrawals.forEach(w => {
+         const startM = (toNum(w.startAge) - currentAge)*12 + (toNum(w.startMonth)-currentMonth);
+         // For onetime, startM is the hit month. For recurring, it's the start.
+         const endM = w.endAge ? (toNum(w.endAge)-currentAge)*12 + ((w.endMonth||11)-currentMonth) : 9999;
+         
+         if (w.type === 'onetime') {
+             if (m === startM) withdrawalAmount += toNum(w.amount);
+         } else {
+             // Recurring
+             if (m >= startM && m <= endM) {
+                 const diff = m - startM;
+                 let sub = false;
+                 if (w.frequency === 'monthly') sub = true;
+                 if (w.frequency === 'yearly' && diff % 12 === 0) sub = true;
+                 if (sub) withdrawalAmount += toNum(w.amount);
+             }
+         }
       });
 
-      const totalIncome = monthIncome + additionalIncome + retirementIncomeVal;
-      const netCashflow = totalIncome - withdrawalAmount;
-      balance += netCashflow;
+      // Retirement Expense Logic
+      if (isRetired) {
+         const baseExp = toNum(profile.customRetirementExpense) || (cashflowData.totalExpenses * 0.7);
+         const yearsFromNow = ageAtMonth - currentAge;
+         withdrawalAmount += baseExp * Math.pow(1.03, yearsFromNow);
+      }
+
+      const totalIncome = monthIncome + additionalIncome;
+      const net = totalIncome - withdrawalAmount - (isRetired ? 0 : monthlyInvestment);
+      balance += net;
 
       projection.push({
-        month: m,
-        age: Math.floor(ageAtMonth),
-        ageDecimal: ageAtMonth,
-        year,
-        monthName: monthNames[monthIndex],
-        baseIncome: monthIncome,
-        currentActiveBase: currentActiveIncome, // for debugging
-        additionalIncome,
-        retirementIncome: retirementIncomeVal,
-        totalIncome,
-        withdrawal: withdrawalAmount,
-        educationExpense,
-        retirementExpense,
-        investmentAmount: monthlyInvestmentAmount,
-        interestEarned,
-        netCashflow,
-        balance,
-        isRetired,
-        isCareerPaused
+         age: Math.floor(ageAtMonth),
+         monthName: monthNames[monthIndex],
+         year,
+         totalIncome,
+         withdrawal: withdrawalAmount,
+         interestEarned,
+         netCashflow: net,
+         balance,
+         isCareerPaused
       });
     }
-
     return projection;
-  }, [cashflowData, currentSavings, projectToAge, additionalIncomes, withdrawals, careerEvents, bankInterestRate, profile, retirement, expenses, customExpenses, cpfData, currentAge, currentYear, customBaseIncome, customRetirementIncome]);
+  }, [cashflowData, cashflowState.currentSavings, projectToAge, additionalIncomes, withdrawals, careerEvents, bankInterestRate, profile, expenses, customExpenses, cpfData, currentAge, customBaseIncome, retirement.investmentPercent]);
 
-  const finalBalance = monthlyProjection.length > 0 ? monthlyProjection[monthlyProjection.length - 1].balance : 0;
-  const totalIncome = monthlyProjection.reduce<number>((sum, m) => sum + m.totalIncome, 0);
-  const totalWithdrawals = monthlyProjection.reduce((sum, m) => sum + m.withdrawal, 0);
-  const totalEducationExpense = monthlyProjection.reduce((sum, m) => sum + (m.educationExpense || 0), 0);
-  const totalRetirementExpense = monthlyProjection.reduce((sum, m) => sum + (m.retirementExpense || 0), 0);
-  const totalInvestmentAmount = monthlyProjection.reduce((sum, m) => sum + (m.investmentAmount || 0), 0);
-  const totalInterestEarned = monthlyProjection.reduce((sum, m) => sum + m.interestEarned, 0);
-  const fiAge = toNum(profile.retirementAge, 65);
+  if (!cashflowData) return <div className="p-10 text-center text-gray-400">Loading Cashflow Engine...</div>;
 
-  if (!cashflowData) {
-    return <div className="p-5"><Card title="⚠️ Profile Required" value="Please complete profile info first" tone="warn" /></div>;
-  }
-
-  const pieData: { name: string; value: number; color: string }[] = EXPENSE_CATEGORIES
-    .map((cat, idx) => ({ name: cat.label, value: toNum(expenses[cat.key]), color: ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#6b7280'][idx] }))
-    .filter((item) => item.value > 0);
-
-  if (customExpenses && customExpenses.length > 0) {
-    customExpenses.forEach((exp, idx) => {
-      if (toNum(exp.amount) > 0) pieData.push({ name: exp.name || `Custom ${idx + 1}`, value: toNum(exp.amount), color: `hsl(${(idx * 60 + 200) % 360}, 70%, 50%)` });
-    });
-  }
+  const headerAction = (
+    <button 
+      onClick={() => openAiWithPrompt("Analyze this cashflow data. Identify potential liquidity risks or surplus opportunities based on the income, expenses, and savings rate.")}
+      className="flex items-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-700 rounded-lg text-xs font-bold hover:bg-indigo-100 transition-colors"
+    >
+      <span>🧠</span> AI Analysis
+    </button>
+  );
 
   return (
-    <div className="p-5">
-      <div className="bg-gradient-to-br from-emerald-100 to-emerald-200 border-2 border-emerald-500 rounded-xl p-6 mb-5 shadow-sm">
-        <div className="flex items-center gap-3">
-          <div className="text-3xl">💸</div>
-          <div className="flex-1">
-            <h3 className="m-0 text-emerald-800 text-xl font-semibold">
-              {profile.name ? `${profile.name}'s Lifetime Cashflow` : 'Lifetime Cashflow'}
-            </h3>
-            <p className="m-1 text-emerald-800 text-sm opacity-80">
-              Planning from Age {currentAge} to {projectToAge}
-            </p>
-          </div>
-        </div>
-      </div>
+    <div className="p-6 max-w-7xl mx-auto space-y-8">
+      
+      <PageHeader 
+        title="Cashflow Architecture" 
+        icon="📊" 
+        subtitle="Manage liquidity, income streams, and major liabilities."
+        action={headerAction}
+      />
 
-      {/* Summary Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 mb-5">
-        <Card title="💵 Monthly Take-Home" value={fmtSGD(cashflowData.takeHome)} tone="info" icon="💰" />
-        <Card title="🛒 Monthly Expenses" value={fmtSGD(cashflowData.totalExpenses)} tone="danger" icon="📊" />
-        <Card title="💎 Monthly Savings" value={fmtSGD(cashflowData.monthlySavings)} tone={cashflowData.monthlySavings >= 0 ? 'success' : 'danger'} icon="💵" />
-        <Card title="📈 Savings Rate" value={`${cashflowData.savingsRate.toFixed(1)}%`} tone="info" icon="📊" />
-      </div>
-
-      {/* Projection Settings */}
-      <div className="bg-white border border-gray-200 rounded-xl p-6 mb-5 shadow-sm">
-        <h3 className="mt-0 mb-4 text-lg font-bold text-gray-800">⚙️ Projection Settings</h3>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <LabeledText label="💰 Current Savings (SGD)" value={currentSavings} onChange={(v) => updateState('currentSavings', v)} placeholder="50000" />
-          <LabeledText label="🎯 Project Until Age" type="number" value={projectToAge} onChange={(v) => updateState('projectToAge', v)} placeholder="100" />
-          <div className="flex flex-col gap-2">
-            <label className="text-xs font-bold text-gray-700">📊 View Mode</label>
-            <div className="flex gap-2">
-              <button onClick={() => setViewMode('summary')} className={`flex-1 py-2.5 rounded-lg text-xs font-bold ${viewMode === 'summary' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700'}`}>Summary</button>
-              <button onClick={() => setViewMode('monthly')} className={`flex-1 py-2.5 rounded-lg text-xs font-bold ${viewMode === 'monthly' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700'}`}>Monthly</button>
+      {/* 1. THE HYDRAULIC FLOW SYSTEM */}
+      <SectionCard className="border border-gray-200">
+         <div className="flex flex-col md:flex-row items-center gap-6 justify-between">
+            
+            {/* INFLOW */}
+            <div className="flex-1 w-full text-center">
+               <div className="inline-block p-3 bg-emerald-100 rounded-full text-2xl mb-2">📥</div>
+               <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Monthly Inflow</div>
+               <div className="text-2xl font-black text-emerald-600">{fmtSGD(cashflowData.takeHome)}</div>
+               <div className="text-xs text-gray-500 mt-1">Take-Home Pay</div>
             </div>
-          </div>
-        </div>
-        <div className="mt-4">
-          <LabeledText label="Custom Monthly Savings (Override)" value={customBaseIncome || ''} onChange={(v) => updateState('customBaseIncome', v)} placeholder={fmtSGD(cashflowData.monthlySavings)} />
-          <div className="text-[10px] text-gray-500">Calculated from Profile: {fmtSGD(cashflowData.monthlySavings)}. Enter value to override.</div>
-        </div>
-      </div>
 
-      {/* NEW: CAREER EVENTS SECTION */}
-      <div className="bg-white border border-indigo-200 rounded-xl p-6 mb-5 shadow-sm">
-         <div className="flex justify-between items-center mb-4">
-            <div>
-               <h3 className="m-0 text-lg font-bold text-indigo-900">🚀 Career & Income Events</h3>
-               <p className="text-xs text-indigo-500 mt-1">
-                  Add increments, job pauses, or career pivots to see the real impact.
-               </p>
+            {/* FLOW ARROW */}
+            <div className="hidden md:flex flex-col items-center">
+               <div className="w-full h-1 bg-gray-200 w-16 relative">
+                  <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2 h-2 bg-gray-400 rounded-full"></div>
+               </div>
             </div>
-            <button onClick={addCareerEvent} className="px-4 py-2 bg-indigo-100 text-indigo-700 rounded-lg text-xs font-bold hover:bg-indigo-200">
-               + Add Event
-            </button>
+
+            {/* THE TANK */}
+            <div className={`flex-1 w-full p-6 rounded-2xl border-2 text-center relative overflow-hidden ${cashflowData.monthlySavings >= 0 ? 'bg-emerald-50 border-emerald-200' : 'bg-red-50 border-red-200'}`}>
+               <div className="relative z-10">
+                  <div className="text-[10px] font-bold uppercase tracking-widest mb-1 opacity-60">Net Free Cash</div>
+                  <div className={`text-4xl font-black ${cashflowData.monthlySavings >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
+                     {cashflowData.monthlySavings >= 0 ? '+' : ''}{fmtSGD(cashflowData.monthlySavings)}
+                  </div>
+                  <div className="text-xs font-bold opacity-50 mt-2">
+                     {cashflowData.savingsRate.toFixed(1)}% Savings Rate
+                  </div>
+               </div>
+            </div>
+
+            {/* FLOW ARROW */}
+            <div className="hidden md:flex flex-col items-center">
+               <div className="w-full h-1 bg-gray-200 w-16 relative">
+                  <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2 h-2 bg-gray-400 rounded-full"></div>
+               </div>
+            </div>
+
+            {/* OUTFLOW */}
+            <div className="flex-1 w-full text-center">
+               <div className="inline-block p-3 bg-red-100 rounded-full text-2xl mb-2">💸</div>
+               <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Monthly Burn</div>
+               <div className="text-2xl font-black text-red-600">{fmtSGD(cashflowData.totalExpenses)}</div>
+               <div className="text-xs text-gray-500 mt-1">Fixed + Variable</div>
+            </div>
+
          </div>
+      </SectionCard>
 
-         {!careerEvents || careerEvents.length === 0 ? (
-            <div className="p-4 bg-gray-50 rounded-lg text-center text-xs text-gray-500 italic">
-               No events. Projection assumes constant income until retirement.
-            </div>
-         ) : (
-            <div className="grid gap-3">
-               {careerEvents.map((event) => (
-                  <div key={event.id} className="p-3 bg-indigo-50/50 border border-indigo-100 rounded-lg flex flex-col md:flex-row gap-3 items-end md:items-center">
-                     <div className="flex-1 grid grid-cols-2 md:grid-cols-4 gap-3 w-full">
-                        <div className="flex gap-2">
-                           <div className="flex-1">
-                              <label className="text-[10px] font-bold text-gray-500 uppercase">Age</label>
-                              <input type="number" className="w-full p-1 border rounded text-sm bg-white" value={event.age} onChange={(e) => updateCareerEvent(event.id, 'age', e.target.value)} />
-                           </div>
-                           <div className="w-20">
-                              <label className="text-[10px] font-bold text-gray-500 uppercase">Month</label>
-                              <select 
-                                className="w-full p-1 border rounded text-sm bg-white"
-                                value={event.month !== undefined ? event.month : 0} 
-                                onChange={(e) => updateCareerEvent(event.id, 'month', e.target.value)}
-                              >
-                                {monthNames.map((m, i) => (
-                                  <option key={i} value={i}>{m}</option>
-                                ))}
-                              </select>
-                           </div>
-                        </div>
-                        <div>
-                           <label className="text-[10px] font-bold text-gray-500 uppercase">Type</label>
-                           <select className="w-full p-1 border rounded text-sm bg-white" value={event.type} onChange={(e) => updateCareerEvent(event.id, 'type', e.target.value)}>
-                              <option value="increment">📈 Pay Raise (Add)</option>
-                              <option value="decrement">📉 Pay Cut (Reduce)</option>
-                              <option value="pause">⏸️ Career Break</option>
-                              <option value="resume">▶️ Resume Work</option>
+      {/* 2. CAREER EVENTS */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+         <SectionCard title="Career Events" className="lg:col-span-1" action={<button onClick={addCareerEvent} className="text-xs bg-indigo-200 text-indigo-800 px-2 py-1 rounded hover:bg-indigo-300">＋ Add</button>}>
+            <div className="space-y-3">
+               {careerEvents.map(e => (
+                  <div key={e.id} className="bg-white p-3 rounded-xl border border-indigo-50 shadow-sm text-xs">
+                     <div className="flex justify-between items-center gap-2 mb-2">
+                        <div className="flex items-center gap-1">
+                           <label className="text-[10px] font-bold text-indigo-400 uppercase">Age</label>
+                           <input 
+                              type="number" 
+                              value={e.age} 
+                              onChange={(ev) => updateCareerEvent(e.id, 'age', parseInt(ev.target.value))}
+                              className="w-10 bg-gray-50 border border-indigo-100 rounded px-1 text-center font-bold text-indigo-900 text-xs focus:ring-1 focus:ring-indigo-500 outline-none"
+                           />
+                           <select
+                              value={e.month || 0}
+                              onChange={(ev) => updateCareerEvent(e.id, 'month', parseInt(ev.target.value))}
+                              className="bg-gray-50 border border-indigo-100 rounded text-[10px] px-1"
+                           >
+                              {monthNames.map((m, i) => <option key={i} value={i}>{m}</option>)}
                            </select>
                         </div>
-                        {event.type === 'pause' ? (
-                           <div>
-                              <label className="text-[10px] font-bold text-gray-500 uppercase">Duration (Months)</label>
-                              <input type="number" className="w-full p-1 border rounded text-sm bg-white" value={event.durationMonths} onChange={(e) => updateCareerEvent(event.id, 'durationMonths', e.target.value)} placeholder="24" />
-                           </div>
-                        ) : (
-                           <div>
-                              <label className="text-[10px] font-bold text-gray-500 uppercase">Amount ($)</label>
-                              <input type="text" className="w-full p-1 border rounded text-sm bg-white" value={event.amount} onChange={(e) => updateCareerEvent(event.id, 'amount', e.target.value)} placeholder={event.type === 'resume' ? 'New Salary (Opt)' : 'Amount'} />
-                           </div>
-                        )}
-                        <div>
-                           <label className="text-[10px] font-bold text-gray-500 uppercase">Note</label>
-                           <input type="text" className="w-full p-1 border rounded text-sm bg-white" value={event.notes} onChange={(e) => updateCareerEvent(event.id, 'notes', e.target.value)} placeholder="Promotion / Sabbatical" />
-                        </div>
+                        <select 
+                           value={e.type} 
+                           onChange={(ev) => updateCareerEvent(e.id, 'type', ev.target.value)}
+                           className="bg-gray-50 border-none rounded text-xs outline-none text-gray-900 font-bold text-right"
+                        >
+                           <option value="increment">Pay Rise</option>
+                           <option value="decrement">Pay Cut</option>
+                           <option value="pause">Career Break</option>
+                        </select>
                      </div>
-                     <button onClick={() => removeCareerEvent(event.id)} className="text-red-500 hover:bg-red-50 p-2 rounded">×</button>
+                     <div className="flex gap-2">
+                        <input 
+                           type="text" 
+                           placeholder={e.type === 'pause' ? 'Months' : 'Amount $'}
+                           value={e.type === 'pause' ? e.durationMonths : e.amount}
+                           onChange={(ev) => updateCareerEvent(e.id, e.type === 'pause' ? 'durationMonths' : 'amount', ev.target.value)}
+                           className="w-full bg-gray-50 rounded p-1 text-gray-900"
+                        />
+                        <button onClick={() => removeCareerEvent(e.id)} className="text-red-400">×</button>
+                     </div>
                   </div>
                ))}
+               {careerEvents.length === 0 && <div className="text-center text-indigo-300 text-xs italic">No future career changes planned.</div>}
             </div>
-         )}
+         </SectionCard>
+
+         <SectionCard title="Liquid Cash Forecast" className="lg:col-span-2">
+            <p className="text-xs text-gray-500 mb-6">Projections exclude investment contributions to show actual bank liquidity.</p>
+            <LineChart 
+               xLabels={monthlyProjection.filter((_, i) => i % 12 === 0).map(p => `Age ${p.age}`)}
+               series={[{ name: 'Cash Balance', values: monthlyProjection.filter((_, i) => i % 12 === 0).map(p => p.balance), stroke: '#10b981' }]}
+               height={300}
+               onFormatY={(v) => v >= 1000000 ? `$${(v/1000000).toFixed(1)}M` : `$${(v/1000).toFixed(0)}k`}
+            />
+         </SectionCard>
       </div>
 
-      {/* Additional Income & Withdrawals */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-5">
+      {/* 3. ADDITIONAL STREAMS & WITHDRAWALS */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
          
          {/* INCOMES */}
-         <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm">
-            <div className="flex justify-between items-center mb-4">
-               <div>
-                  <h3 className="m-0 text-sm font-bold text-emerald-800">➕ Other Incomes</h3>
-                  <p className="text-[10px] text-gray-500 m-0">Rental, side-hustle, dividends</p>
-               </div>
-               <button onClick={addIncome} className="text-xs bg-emerald-100 text-emerald-700 px-3 py-1.5 rounded-lg font-bold hover:bg-emerald-200 transition-colors">+ Add Income</button>
-            </div>
-            
-            {additionalIncomes.length === 0 && (
-               <div className="text-center p-4 bg-gray-50 rounded-lg text-xs text-gray-400 italic">No additional incomes added.</div>
-            )}
-
+         <SectionCard title="Additional Incomes" action={<button onClick={addIncome} className="text-xs bg-emerald-100 text-emerald-700 px-2 py-1 rounded hover:bg-emerald-200 transition-colors">＋ Add Stream</button>}>
             <div className="space-y-3">
-               {additionalIncomes.map((income) => (
-                  <div key={income.id} className="p-3 bg-gray-50 rounded-lg border border-gray-200 text-xs">
-                     <div className="flex justify-between mb-2">
+               {additionalIncomes.map(i => (
+                  <div key={i.id} className="bg-emerald-50/50 p-3 rounded-lg border border-emerald-100 text-xs relative group">
+                     {/* Row 1: Name & Amount */}
+                     <div className="flex gap-2 mb-2">
                         <input 
                            type="text" 
-                           placeholder="Income Name" 
-                           className="font-bold bg-transparent outline-none w-full text-gray-800 placeholder-gray-400"
-                           value={income.name}
-                           onChange={(e) => updateIncomeItem(income.id, 'name', e.target.value)}
+                           value={i.name} 
+                           onChange={(e) => updateIncomeItem(i.id, 'name', e.target.value)} 
+                           placeholder="Income Name (e.g. Rental)" 
+                           className="flex-1 bg-white border border-emerald-200 rounded px-2 py-1 font-bold text-gray-800" 
                         />
-                        <button onClick={() => removeIncome(income.id)} className="text-red-400 hover:text-red-600 font-bold ml-2">×</button>
+                        <input 
+                           type="text" 
+                           value={i.amount} 
+                           onChange={(e) => updateIncomeItem(i.id, 'amount', e.target.value)} 
+                           placeholder="$" 
+                           className="w-20 bg-white border border-emerald-200 rounded px-2 py-1 text-right font-mono" 
+                        />
                      </div>
                      
-                     <div className="grid grid-cols-2 gap-2 mb-2">
-                        <div>
-                           <label className="block text-[9px] font-bold text-gray-400 uppercase">Amount</label>
-                           <input 
-                              type="text" 
-                              placeholder="0" 
-                              className="w-full p-1 border rounded bg-white"
-                              value={income.amount}
-                              onChange={(e) => updateIncomeItem(income.id, 'amount', e.target.value)}
-                           />
-                        </div>
-                        <div>
-                           <label className="block text-[9px] font-bold text-gray-400 uppercase">Type</label>
+                     {/* Row 2: Controls */}
+                     <div className="flex gap-2 items-center">
+                        <select 
+                           value={i.type} 
+                           onChange={(e) => updateIncomeItem(i.id, 'type', e.target.value)}
+                           className="bg-white border border-emerald-200 rounded px-1 py-0.5 text-[10px]"
+                        >
+                           <option value="recurring">Recurring</option>
+                           <option value="onetime">One-Time</option>
+                        </select>
+                        
+                        {i.type === 'recurring' && (
                            <select 
-                              className="w-full p-1 border rounded bg-white"
-                              value={income.type}
-                              onChange={(e) => updateIncomeItem(income.id, 'type', e.target.value)}
+                              value={i.frequency} 
+                              onChange={(e) => updateIncomeItem(i.id, 'frequency', e.target.value)}
+                              className="bg-white border border-emerald-200 rounded px-1 py-0.5 text-[10px]"
                            >
-                              <option value="recurring">Recurring</option>
-                              <option value="onetime">One-time</option>
+                              <option value="monthly">Mthly</option>
+                              <option value="yearly">Yrly</option>
                            </select>
-                        </div>
-                     </div>
+                        )}
 
-                     <div className="grid grid-cols-3 gap-2">
-                        <div className="col-span-1">
-                           <label className="block text-[9px] font-bold text-gray-400 uppercase">Start Age</label>
+                        <div className="flex items-center gap-1 ml-auto">
+                           <span className="text-[10px] text-gray-500">Age:</span>
                            <input 
                               type="number" 
-                              className="w-full p-1 border rounded bg-white"
-                              value={income.startAge}
-                              onChange={(e) => updateIncomeItem(income.id, 'startAge', e.target.value)}
+                              value={i.startAge} 
+                              onChange={(e) => updateIncomeItem(i.id, 'startAge', e.target.value)}
+                              className="w-10 bg-white border border-emerald-200 rounded px-1 py-0.5 text-center" 
                            />
-                        </div>
-                        <div className="col-span-1">
-                           <label className="block text-[9px] font-bold text-gray-400 uppercase">Month</label>
-                           <select 
-                              className="w-full p-1 border rounded bg-white"
-                              value={income.startMonth || 0}
-                              onChange={(e) => updateIncomeItem(income.id, 'startMonth', e.target.value)}
-                           >
-                              {monthNames.map((m, i) => <option key={i} value={i}>{m}</option>)}
-                           </select>
-                        </div>
-                        {income.type === 'recurring' && (
-                           <>
-                              <div className="col-span-1">
-                                 <label className="block text-[9px] font-bold text-gray-400 uppercase">Frequency</label>
-                                 <select 
-                                    className="w-full p-1 border rounded bg-white"
-                                    value={income.frequency}
-                                    onChange={(e) => updateIncomeItem(income.id, 'frequency', e.target.value)}
-                                 >
-                                    <option value="monthly">Monthly</option>
-                                    <option value="quarterly">Quarterly</option>
-                                    <option value="semiannual">Semi-Annual</option>
-                                    <option value="yearly">Yearly</option>
-                                 </select>
-                              </div>
-                              <div className="col-span-1">
-                                 <label className="block text-[9px] font-bold text-gray-400 uppercase">End Age</label>
+                           {i.type === 'recurring' && (
+                              <>
+                                 <span className="text-[10px] text-gray-500">-</span>
                                  <input 
                                     type="number" 
-                                    placeholder="Optional"
-                                    className="w-full p-1 border rounded bg-white"
-                                    value={income.endAge || ''}
-                                    onChange={(e) => updateIncomeItem(income.id, 'endAge', e.target.value)}
+                                    value={i.endAge || ''} 
+                                    onChange={(e) => updateIncomeItem(i.id, 'endAge', e.target.value)}
+                                    placeholder="∞"
+                                    className="w-10 bg-white border border-emerald-200 rounded px-1 py-0.5 text-center" 
                                  />
-                              </div>
-                              <div className="col-span-1">
-                                 <label className="block text-[9px] font-bold text-gray-400 uppercase">End Month</label>
-                                 <select 
-                                    className="w-full p-1 border rounded bg-white"
-                                    value={income.endMonth !== undefined ? income.endMonth : 11}
-                                    onChange={(e) => updateIncomeItem(income.id, 'endMonth', e.target.value)}
-                                 >
-                                    {monthNames.map((m, i) => <option key={i} value={i}>{m}</option>)}
-                                 </select>
-                              </div>
-                           </>
-                        )}
+                              </>
+                           )}
+                        </div>
                      </div>
+                     <button onClick={() => removeIncome(i.id)} className="absolute -top-1 -right-1 bg-white text-red-400 border border-gray-200 rounded-full w-5 h-5 flex items-center justify-center hover:bg-red-50 hover:text-red-600 shadow-sm opacity-0 group-hover:opacity-100 transition-opacity">×</button>
                   </div>
                ))}
+               {additionalIncomes.length === 0 && <div className="text-center text-gray-400 text-xs py-4">No additional income streams.</div>}
             </div>
-         </div>
+         </SectionCard>
 
-         {/* WITHDRAWALS */}
-         <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm">
-            <div className="flex justify-between items-center mb-4">
-               <div>
-                  <h3 className="m-0 text-sm font-bold text-red-800">💳 Big Expenses</h3>
-                  <p className="text-[10px] text-gray-500 m-0">Renovation, wedding, car, medical</p>
-               </div>
-               <button onClick={addWithdrawal} className="text-xs bg-red-100 text-red-700 px-3 py-1.5 rounded-lg font-bold hover:bg-red-200 transition-colors">+ Add Expense</button>
-            </div>
-
-            {withdrawals.length === 0 && (
-               <div className="text-center p-4 bg-gray-50 rounded-lg text-xs text-gray-400 italic">No major expenses added.</div>
-            )}
-
+         {/* EXPENSES */}
+         <SectionCard title="Major Expenses" action={<button onClick={addWithdrawal} className="text-xs bg-red-100 text-red-700 px-2 py-1 rounded hover:bg-red-200 transition-colors">＋ Add Expense</button>}>
             <div className="space-y-3">
-               {withdrawals.map((w) => (
-                  <div key={w.id} className="p-3 bg-gray-50 rounded-lg border border-gray-200 text-xs">
-                     <div className="flex justify-between mb-2">
+               {withdrawals.map(w => (
+                  <div key={w.id} className="bg-red-50/50 p-3 rounded-lg border border-red-100 text-xs relative group">
+                     {/* Row 1: Name & Amount */}
+                     <div className="flex gap-2 mb-2">
                         <input 
                            type="text" 
-                           placeholder="Expense Name" 
-                           className="font-bold bg-transparent outline-none w-full text-gray-800 placeholder-gray-400"
-                           value={w.name}
-                           onChange={(e) => updateWithdrawalItem(w.id, 'name', e.target.value)}
+                           value={w.name} 
+                           onChange={(e) => updateWithdrawalItem(w.id, 'name', e.target.value)} 
+                           placeholder="Expense Name (e.g. Uni Fees)" 
+                           className="flex-1 bg-white border border-red-200 rounded px-2 py-1 font-bold text-gray-800" 
                         />
-                        <button onClick={() => removeWithdrawal(w.id)} className="text-red-400 hover:text-red-600 font-bold ml-2">×</button>
+                        <input 
+                           type="text" 
+                           value={w.amount} 
+                           onChange={(e) => updateWithdrawalItem(w.id, 'amount', e.target.value)} 
+                           placeholder="$" 
+                           className="w-20 bg-white border border-red-200 rounded px-2 py-1 text-right font-mono text-red-600" 
+                        />
                      </div>
                      
-                     <div className="grid grid-cols-2 gap-2 mb-2">
-                        <div>
-                           <label className="block text-[9px] font-bold text-gray-400 uppercase">Amount</label>
-                           <input 
-                              type="text" 
-                              placeholder="0" 
-                              className="w-full p-1 border rounded bg-white"
-                              value={w.amount}
-                              onChange={(e) => updateWithdrawalItem(w.id, 'amount', e.target.value)}
-                           />
-                        </div>
-                        <div>
-                           <label className="block text-[9px] font-bold text-gray-400 uppercase">Type</label>
+                     {/* Row 2: Controls */}
+                     <div className="flex gap-2 items-center">
+                        <select 
+                           value={w.type} 
+                           onChange={(e) => updateWithdrawalItem(w.id, 'type', e.target.value)}
+                           className="bg-white border border-red-200 rounded px-1 py-0.5 text-[10px]"
+                        >
+                           <option value="onetime">One-Time</option>
+                           <option value="recurring">Recurring</option>
+                        </select>
+                        
+                        {w.type === 'recurring' && (
                            <select 
-                              className="w-full p-1 border rounded bg-white"
-                              value={w.type}
-                              onChange={(e) => updateWithdrawalItem(w.id, 'type', e.target.value)}
+                              value={w.frequency} 
+                              onChange={(e) => updateWithdrawalItem(w.id, 'frequency', e.target.value)}
+                              className="bg-white border border-red-200 rounded px-1 py-0.5 text-[10px]"
                            >
-                              <option value="onetime">One-time</option>
-                              <option value="recurring">Recurring</option>
+                              <option value="monthly">Mthly</option>
+                              <option value="yearly">Yrly</option>
                            </select>
-                        </div>
-                     </div>
+                        )}
 
-                     <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-                        <div className="col-span-1">
-                           <label className="block text-[9px] font-bold text-gray-400 uppercase">Start Age</label>
+                        <div className="flex items-center gap-1 ml-auto">
+                           <span className="text-[10px] text-gray-500">Age:</span>
                            <input 
                               type="number" 
-                              className="w-full p-1 border rounded bg-white"
-                              value={w.startAge}
+                              value={w.startAge} 
                               onChange={(e) => updateWithdrawalItem(w.id, 'startAge', e.target.value)}
+                              className="w-10 bg-white border border-red-200 rounded px-1 py-0.5 text-center" 
                            />
+                           {w.type === 'recurring' && (
+                              <>
+                                 <span className="text-[10px] text-gray-500">-</span>
+                                 <input 
+                                    type="number" 
+                                    value={w.endAge || ''} 
+                                    onChange={(e) => updateWithdrawalItem(w.id, 'endAge', e.target.value)}
+                                    placeholder="∞"
+                                    className="w-10 bg-white border border-red-200 rounded px-1 py-0.5 text-center" 
+                                 />
+                              </>
+                           )}
                         </div>
-                        <div className="col-span-1">
-                           <label className="block text-[9px] font-bold text-gray-400 uppercase">Start Month</label>
-                           <select 
-                              className="w-full p-1 border rounded bg-white"
-                              value={w.startMonth || 0}
-                              onChange={(e) => updateWithdrawalItem(w.id, 'startMonth', e.target.value)}
-                           >
-                              {monthNames.map((m, i) => <option key={i} value={i}>{m}</option>)}
-                           </select>
-                        </div>
-                        {w.type === 'recurring' && (
-                           <>
-                           <div className="col-span-1">
-                              <label className="block text-[9px] font-bold text-gray-400 uppercase">Freq</label>
-                              <select 
-                                 className="w-full p-1 border rounded bg-white"
-                                 value={w.frequency}
-                                 onChange={(e) => updateWithdrawalItem(w.id, 'frequency', e.target.value)}
-                              >
-                                 <option value="monthly">Monthly</option>
-                                 <option value="quarterly">Quarterly</option>
-                                 <option value="semiannual">Semi-Annual</option>
-                                 <option value="yearly">Yearly</option>
-                              </select>
-                           </div>
-                           <div className="col-span-1">
-                               <label className="block text-[9px] font-bold text-gray-400 uppercase">End Age</label>
-                               <input 
-                                  type="number" 
-                                  className="w-full p-1 border rounded bg-white"
-                                  value={w.endAge || ''}
-                                  onChange={(e) => updateWithdrawalItem(w.id, 'endAge', e.target.value)}
-                                  placeholder="Optional"
-                               />
-                           </div>
-                           <div className="col-span-1">
-                               <label className="block text-[9px] font-bold text-gray-400 uppercase">End Month</label>
-                               <select 
-                                  className="w-full p-1 border rounded bg-white"
-                                  value={w.endMonth !== undefined ? w.endMonth : 11}
-                                  onChange={(e) => updateWithdrawalItem(w.id, 'endMonth', e.target.value)}
-                               >
-                                  {monthNames.map((m, i) => <option key={i} value={i}>{m}</option>)}
-                               </select>
-                           </div>
-                           </>
-                        )}
                      </div>
+                     <button onClick={() => removeWithdrawal(w.id)} className="absolute -top-1 -right-1 bg-white text-red-400 border border-gray-200 rounded-full w-5 h-5 flex items-center justify-center hover:bg-red-50 hover:text-red-600 shadow-sm opacity-0 group-hover:opacity-100 transition-opacity">×</button>
                   </div>
                ))}
+               {withdrawals.length === 0 && <div className="text-center text-gray-400 text-xs py-4">No major future expenses added.</div>}
             </div>
-         </div>
+         </SectionCard>
       </div>
 
-      {/* Projection Summary Grid */}
-      {monthlyProjection.length > 0 && (
-          <div className="mt-5 p-4 bg-emerald-50 rounded-lg border-2 border-emerald-500 mb-5">
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
-              <div>
-                <div className="text-[10px] text-emerald-800 mb-1">Starting Balance</div>
-                <div className="text-lg font-bold text-emerald-800">{fmtSGD(currentSavings)}</div>
-              </div>
-              <div>
-                <div className="text-[10px] text-emerald-800 mb-1">Total Income</div>
-                <div className="text-lg font-bold text-emerald-800">{fmtSGD(totalIncome)}</div>
-              </div>
-              <div>
-                <div className="text-[10px] text-blue-700 mb-1">💰 Interest Earned</div>
-                <div className="text-lg font-bold text-blue-700">{fmtSGD(totalInterestEarned)}</div>
-                <div className="text-[9px] text-blue-600">@ {bankInterestRate}% p.a.</div>
-              </div>
-              <div>
-                <div className="text-[10px] text-emerald-800 mb-1">Final Balance @ Age {projectToAge}</div>
-                <div className={`text-lg font-bold ${finalBalance >= 0 ? 'text-emerald-800' : 'text-red-600'}`}>{fmtSGD(finalBalance)}</div>
-              </div>
+      {/* 4. CASHFLOW LEDGER */}
+      <SectionCard 
+         title="Cashflow Ledger" 
+         noPadding
+         action={
+            <div className="flex bg-gray-100 p-1 rounded-lg">
+               <button 
+                  onClick={() => setLedgerView('yearly')}
+                  className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${ledgerView === 'yearly' ? 'bg-white shadow text-indigo-600' : 'text-gray-500 hover:text-slate-700'}`}
+               >
+                  Yearly
+               </button>
+               <button 
+                  onClick={() => setLedgerView('monthly')}
+                  className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${ledgerView === 'monthly' ? 'bg-white shadow text-indigo-600' : 'text-gray-500 hover:text-slate-700'}`}
+               >
+                  Monthly
+               </button>
             </div>
-          </div>
-      )}
-
-      {/* Projection Chart */}
-      {monthlyProjection.length > 0 && (
-        <div className="bg-white rounded-xl p-6 mb-5 shadow-sm border border-gray-200">
-          <h3 className="mt-0 text-lg font-bold text-gray-800 mb-4">📈 Cash Balance Trajectory</h3>
-          <LineChart
-            xLabels={monthlyProjection.filter((_, i) => i % 12 === 0).map(m => `Age ${m.age}`)}
-            series={[{ name: 'Projected Balance', values: monthlyProjection.filter((_, i) => i % 12 === 0).map(m => m.balance), stroke: '#10b981' }]}
-            height={300}
-            onFormatY={(v) => v >= 1000000 ? `$${(v/1000000).toFixed(1)}M` : `$${(v/1000).toFixed(0)}k`}
-          />
-        </div>
-      )}
-
-      {/* Monthly Table */}
-      {viewMode === 'monthly' && monthlyProjection.length > 0 && (
-        <div className="bg-white border border-gray-200 rounded-xl overflow-hidden mb-5 shadow-sm">
-          <div className="overflow-x-auto max-h-[600px]">
-            <table className="w-full border-collapse text-xs min-w-[900px]">
-              <thead className="sticky top-0 z-10 shadow-sm">
-                <tr className="bg-gray-100 border-b-2 border-gray-300 text-gray-700">
-                  <th className="p-3 text-left font-bold bg-gray-100">Date/Age</th>
-                  <th className="p-3 text-right font-bold text-emerald-700 bg-gray-100">Income</th>
-                  <th className="p-3 text-right font-bold text-blue-600 bg-gray-100">Interest</th>
-                  <th className="p-3 text-right font-bold text-amber-600 bg-gray-100">Invest</th>
-                  <th className="p-3 text-right font-bold text-red-600 bg-gray-100">Expense</th>
-                  <th className="p-3 text-right font-bold bg-gray-100">Net Flow</th>
-                  <th className="p-3 text-right font-bold bg-gray-100">Balance</th>
-                </tr>
-              </thead>
-              <tbody>
-                {monthlyProjection.slice(0, monthsToShow).map((row, idx) => (
-                  <tr key={idx} className={`border-b border-gray-100 hover:bg-gray-50 ${row.isCareerPaused ? 'bg-orange-50' : ''}`}>
-                    <td className="p-3 font-medium">
-                       {row.monthName} {row.year} <span className="text-gray-400">({row.age})</span>
-                       {row.isCareerPaused && <span className="ml-2 text-[10px] bg-orange-200 text-orange-800 px-1 rounded">PAUSED</span>}
-                    </td>
-                    <td className="p-3 text-right text-emerald-600">{fmtSGD(row.totalIncome)}</td>
-                    <td className="p-3 text-right text-blue-600">{fmtSGD(row.interestEarned)}</td>
-                    <td className="p-3 text-right text-amber-600">{fmtSGD(row.investmentAmount)}</td>
-                    <td className="p-3 text-right text-red-500">{fmtSGD(row.withdrawal)}</td>
-                    <td className={`p-3 text-right font-bold ${row.netCashflow >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{fmtSGD(row.netCashflow)}</td>
-                    <td className={`p-3 text-right font-extrabold ${row.balance >= 0 ? 'text-emerald-800' : 'text-red-800'}`}>{fmtSGD(row.balance)}</td>
+         }
+      >
+         <div className="overflow-x-auto max-h-[500px]">
+            <table className="w-full text-sm text-left">
+               <thead className="bg-gray-50 text-xs font-bold text-gray-500 uppercase sticky top-0 z-10">
+                  <tr>
+                     <th className="p-4 w-32">Timeframe</th>
+                     <th className="p-4 text-right">Free Cash Flow</th>
+                     <th className="p-4 text-right">Withdrawals</th>
+                     <th className="p-4 text-right text-indigo-600">Net Growth</th>
+                     <th className="p-4 text-right">Bank Balance</th>
                   </tr>
-                ))}
-              </tbody>
+               </thead>
+               <tbody className="divide-y divide-gray-100">
+                  {monthlyProjection
+                     .filter((_, i) => ledgerView === 'monthly' ? true : i % 12 === 0)
+                     .map((row, idx) => (
+                     <tr key={idx} className={`hover:bg-gray-50 transition-colors ${row.monthName === 'Jan' && ledgerView === 'monthly' ? 'bg-indigo-50/30' : ''}`}>
+                        <td className="p-4 font-bold text-gray-700 bg-gray-50/30">
+                           {ledgerView === 'yearly' ? `Age ${row.age}` : `Age ${row.age} - ${row.monthName}`}
+                        </td>
+                        <td className="p-4 text-right text-emerald-600">{fmtSGD(row.totalIncome)}</td>
+                        <td className="p-4 text-right text-red-500">{fmtSGD(Math.abs(row.withdrawal))}</td>
+                        <td className="p-4 text-right font-bold text-indigo-600">{fmtSGD(row.netCashflow)}</td>
+                        <td className="p-4 text-right font-mono font-bold text-slate-700">{fmtSGD(row.balance)}</td>
+                     </tr>
+                  ))}
+               </tbody>
             </table>
-          </div>
-          {monthlyProjection.length > monthsToShow && (
-             <div className="p-3 text-center bg-gray-50">
-                <button onClick={() => setMonthsToShow(prev => prev + 120)} className="text-blue-600 font-bold hover:underline">Show Next 10 Years</button>
-             </div>
-          )}
-        </div>
-      )}
+         </div>
+      </SectionCard>
+
     </div>
   );
 };

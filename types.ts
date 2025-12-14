@@ -4,6 +4,9 @@ export interface Child {
   name: string;
   dobISO: string;
   gender: 'male' | 'female';
+  // New Funding Fields
+  existingFunds?: string; // Current savings allocated to this child
+  monthlyContribution?: string; // Ongoing savings for this child
 }
 
 export interface EducationSettings {
@@ -104,6 +107,7 @@ export interface CpfWithdrawal {
   date: string;
   type: string;
   frequency?: string;
+  endDate?: string; // Added for cutoff capability
 }
 
 export interface CpfState {
@@ -166,12 +170,19 @@ export interface PropertyState {
   interestRate: string;
   useCpfOa: boolean;
   cpfOaAmount: string;
+  renovationCost?: string; // New
+  rentalIncome?: string; // New for investment calculation
 }
 
 export interface WealthState {
   annualPremium: string;
   projectionYears: string;
   growthRate: string;
+  
+  // Advanced ILP Settings
+  premiumHolidayStartYear?: string; // Year relative to policy start (e.g., Year 15)
+  targetRetirementIncome?: string; // Annual withdrawal amount
+  withdrawalStartAge?: string;
 }
 
 export interface InvestorState {
@@ -189,6 +200,7 @@ export interface InsurancePolicy {
   tpdCoverage: string;
   earlyCiCoverage: string;
   lateCiCoverage: string;
+  expiryAge?: string; // NEW: When does coverage end?
 }
 
 export interface InsuranceState {

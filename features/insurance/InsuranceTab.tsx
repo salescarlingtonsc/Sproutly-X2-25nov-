@@ -1,402 +1,250 @@
 
 import React, { useMemo, useState } from 'react';
-import { toNum, fmtSGD } from '../../lib/helpers';
+import { useClient } from '../../contexts/ClientContext';
+import { toNum, fmtSGD, getAge } from '../../lib/helpers';
 import LabeledText from '../../components/common/LabeledText';
 import LabeledSelect from '../../components/common/LabeledSelect';
-import Card from '../../components/common/Card';
-import { InsuranceState, Profile, InsurancePolicy, PolicyType } from '../../types';
+import PageHeader from '../../components/layout/PageHeader';
+import SectionCard from '../../components/layout/SectionCard';
+import LineChart from '../../components/common/LineChart'; // Reusing LineChart for Timeline
+import { InsurancePolicy, PolicyType } from '../../types';
 
-interface InsuranceTabProps {
-  insuranceState: InsuranceState;
-  setInsuranceState: (s: InsuranceState) => void;
-  profile: Profile;
-}
-
-const InsuranceTab: React.FC<InsuranceTabProps> = ({ insuranceState, setInsuranceState, profile }) => {
-  // Form State
+const InsuranceTab: React.FC = () => {
+  const { insuranceState, setInsuranceState, profile, propertyState } = useClient();
+  const currentAge = getAge(profile.dob);
+  
   const [newPolicy, setNewPolicy] = useState<Omit<InsurancePolicy, 'id'>>({
-    name: '',
-    type: 'term',
-    deathCoverage: '',
-    tpdCoverage: '',
-    earlyCiCoverage: '',
-    lateCiCoverage: ''
+    name: '', type: 'term', deathCoverage: '', tpdCoverage: '', earlyCiCoverage: '', lateCiCoverage: '', expiryAge: '99'
   });
-
-  // Edit State
   const [editingId, setEditingId] = useState<number | null>(null);
 
   const policies = insuranceState.policies || [];
+  const monthlyTakeHome = toNum(profile.takeHome) > 0 ? toNum(profile.takeHome) : toNum(profile.grossSalary) * 0.8;
 
-  // Use Take Home if available, else derive from gross, else 0
-  const monthlyTakeHome = toNum(profile.takeHome) > 0 
-    ? toNum(profile.takeHome) 
-    : toNum(profile.grossSalary) * 0.8; // Rough estimate if take home not set
-
-  // --- CALCULATE TOTALS FROM POLICIES ---
-  const totals = useMemo(() => {
-    return policies.reduce((acc, p) => ({
-      death: acc.death + toNum(p.deathCoverage),
-      tpd: acc.tpd + toNum(p.tpdCoverage),
-      earlyCi: acc.earlyCi + toNum(p.earlyCiCoverage),
-      lateCi: acc.lateCi + toNum(p.lateCiCoverage)
-    }), { death: 0, tpd: 0, earlyCi: 0, lateCi: 0 });
-  }, [policies]);
+  // --- 1. AGGREGATION (SNAPSHOT) ---
+  const totals = useMemo(() => policies.reduce((acc, p) => ({
+    death: acc.death + toNum(p.deathCoverage),
+    tpd: acc.tpd + toNum(p.tpdCoverage),
+    earlyCi: acc.earlyCi + toNum(p.earlyCiCoverage),
+    lateCi: acc.lateCi + toNum(p.lateCiCoverage)
+  }), { death: 0, tpd: 0, earlyCi: 0, lateCi: 0 }), [policies]);
 
   const totalCiCombined = totals.earlyCi + totals.lateCi;
 
-  // --- REQUIREMENTS ---
-  // Death & TPD: 10 Years (120 months)
-  // CI: 5 Years (60 months)
-  const reqDeath = monthlyTakeHome * 12 * 10;
+  // --- 2. REQUIREMENTS (SNAPSHOT) ---
+  const reqDeath = monthlyTakeHome * 12 * 10; // 10 Years Income
   const reqTPD = monthlyTakeHome * 12 * 10;
-  const reqCI = monthlyTakeHome * 12 * 5;
+  const reqCI = monthlyTakeHome * 12 * 5; // 5 Years Income
 
-  const shortfallDeath = reqDeath - totals.death;
-  const shortfallTPD = reqTPD - totals.tpd;
-  const shortfallCI = reqCI - totalCiCombined;
+  // --- 3. TIMELINE SIMULATION (MASTER LEVEL FEATURE) ---
+  const timelineData = useMemo(() => {
+    const data = [];
+    const maxAge = 85;
+    const retirementAge = toNum(profile.retirementAge, 65);
+    
+    // Mortgage
+    const mortgageAmount = toNum(propertyState?.propertyPrice) - (toNum(propertyState?.propertyPrice) * toNum(propertyState?.downPaymentPercent)/100);
+    const loanTenure = toNum(propertyState?.loanTenure, 25);
+    const mortgageEndAge = currentAge + loanTenure;
 
-  // --- HELPERS ---
-  const formatInput = (val: string | number) => {
-    if (val === '' || val === undefined || val === null) return '';
-    const num = parseFloat(String(val).replace(/[^0-9.]/g, ''));
-    if (isNaN(num)) return '';
-    return num.toLocaleString('en-US');
-  };
+    for (let age = currentAge; age <= maxAge; age++) {
+       const yearsFromNow = age - currentAge;
+       
+       // A. Liability Calculation
+       // 1. Income Replacement (Reduces to 0 at retirement)
+       const incomeLiability = age < retirementAge 
+          ? (monthlyTakeHome * 12 * Math.max(0, retirementAge - age)) 
+          : 0;
+       
+       // 2. Mortgage (Linear Paydown approximation for visuals)
+       const mortgageLiability = age < mortgageEndAge 
+          ? Math.max(0, mortgageAmount * (1 - (yearsFromNow / loanTenure))) 
+          : 0;
+       
+       const totalLiability = incomeLiability + mortgageLiability;
 
-  // --- ACTIONS ---
-  const savePolicy = () => {
-    if (editingId) {
-      // Update existing
-      setInsuranceState({
-        ...insuranceState,
-        policies: policies.map(p => p.id === editingId ? { ...newPolicy, id: editingId } : p)
-      });
-    } else {
-      // Create new
-      const policy: InsurancePolicy = {
-        ...newPolicy,
-        id: Date.now()
-      };
-      setInsuranceState({
-        ...insuranceState,
-        policies: [...policies, policy]
-      });
+       // B. Coverage Calculation
+       let coverageDeath = 0;
+       let coverageCI = 0;
+       
+       policies.forEach(p => {
+          const expiry = toNum(p.expiryAge, 99);
+          if (age <= expiry) {
+             coverageDeath += toNum(p.deathCoverage);
+             coverageCI += (toNum(p.earlyCiCoverage) + toNum(p.lateCiCoverage));
+          }
+       });
+
+       data.push({
+          age,
+          liability: Math.round(totalLiability),
+          coverDeath: Math.round(coverageDeath),
+          coverCI: Math.round(coverageCI),
+          // Gap analysis
+          gap: Math.round(coverageDeath - totalLiability)
+       });
     }
+    return data;
+  }, [policies, currentAge, profile.retirementAge, monthlyTakeHome, propertyState]);
+
+  // --- HANDLERS ---
+  const savePolicy = () => {
+    const policy = { ...newPolicy, id: editingId || Date.now() };
+    if (editingId) setInsuranceState({ ...insuranceState, policies: policies.map(p => p.id === editingId ? policy : p) });
+    else setInsuranceState({ ...insuranceState, policies: [...policies, policy] });
     resetForm();
   };
 
   const resetForm = () => {
-    setNewPolicy({
-      name: '',
-      type: 'term',
-      deathCoverage: '',
-      tpdCoverage: '',
-      earlyCiCoverage: '',
-      lateCiCoverage: ''
-    });
+    setNewPolicy({ name: '', type: 'term', deathCoverage: '', tpdCoverage: '', earlyCiCoverage: '', lateCiCoverage: '', expiryAge: '99' });
     setEditingId(null);
   };
 
-  const editPolicy = (policy: InsurancePolicy) => {
-    setNewPolicy({
-      name: policy.name,
-      type: policy.type,
-      deathCoverage: formatInput(policy.deathCoverage),
-      tpdCoverage: formatInput(policy.tpdCoverage),
-      earlyCiCoverage: formatInput(policy.earlyCiCoverage),
-      lateCiCoverage: formatInput(policy.lateCiCoverage)
-    });
-    setEditingId(policy.id);
-    // Optional: Scroll to form could be added here
-  };
-
-  const duplicatePolicy = (policy: InsurancePolicy) => {
-    const dup: InsurancePolicy = {
-      ...policy,
-      id: Date.now(),
-      name: `${policy.name} (Copy)`
-    };
-    setInsuranceState({
-      ...insuranceState,
-      policies: [...policies, dup]
-    });
-  };
-
   const removePolicy = (id: number) => {
+    setInsuranceState({ ...insuranceState, policies: policies.filter(p => p.id !== id) });
     if (editingId === id) resetForm();
-    setInsuranceState({
-      ...insuranceState,
-      policies: policies.filter(p => p.id !== id)
-    });
   };
 
-  const updateNewPolicy = (field: keyof typeof newPolicy, value: string) => {
-    setNewPolicy({ ...newPolicy, [field]: value });
+  const editPolicy = (p: InsurancePolicy) => {
+    setNewPolicy({ ...p });
+    setEditingId(p.id);
   };
 
-  const handleBlur = (field: keyof typeof newPolicy) => {
-    const val = newPolicy[field];
-    setNewPolicy(prev => ({
-      ...prev,
-      [field]: formatInput(val)
-    }));
-  };
-
-  if (!profile.name || monthlyTakeHome <= 0) {
+  // --- COMPONENT: SHIELD VISUALIZER ---
+  const DefenseShield = ({ title, current, required, icon, color }: { title: string, current: number, required: number, icon: string, color: string }) => {
+    const percentage = Math.min(100, Math.max(0, (current / required) * 100));
+    const shortfall = Math.max(0, required - current);
+    const isSafe = percentage >= 100;
+    
     return (
-      <div className="p-5">
-        <Card title="⚠️ Profile Required" value="Please enter salary details in the Profile tab first." tone="warn" />
-      </div>
-    );
-  }
-
-  const renderAnalysis = (title: string, required: number, current: number, shortfall: number, desc: string) => {
-    const isCovered = shortfall <= 0;
-    return (
-      <div className={`p-5 rounded-xl border-2 mb-4 transition-all ${isCovered ? 'bg-emerald-50 border-emerald-500' : 'bg-red-50 border-red-500'}`}>
-        <div className="flex flex-col md:flex-row justify-between md:items-center gap-4">
-          <div className="flex-1">
-            <h3 className={`text-lg font-bold m-0 mb-1 ${isCovered ? 'text-emerald-800' : 'text-red-800'}`}>
-              {title} Coverage
-            </h3>
-            <p className="text-sm text-gray-600 mb-2">{desc}</p>
-            <div className="flex flex-wrap gap-2 text-xs">
-              <div className="bg-white/60 px-2 py-1 rounded border border-gray-200">
-                Required: <strong>{fmtSGD(required)}</strong>
-              </div>
-              <div className="bg-white/60 px-2 py-1 rounded border border-gray-200">
-                Current Total: <strong>{fmtSGD(current)}</strong>
-              </div>
+      <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5 relative overflow-hidden group hover:shadow-md transition-all">
+        <div className={`absolute bottom-0 left-0 h-1 transition-all duration-1000 ${isSafe ? 'bg-emerald-500 w-full' : 'bg-red-500'}`} style={{ width: isSafe ? '100%' : `${percentage}%` }}></div>
+        <div className="flex justify-between items-start mb-4">
+          <div className="flex items-center gap-3">
+            <div className={`w-10 h-10 rounded-full flex items-center justify-center text-xl ${color}`}>{icon}</div>
+            <div>
+              <h4 className="text-sm font-bold text-gray-900">{title}</h4>
+              <div className="text-[10px] text-gray-500 uppercase tracking-wide">Target: {fmtSGD(required)}</div>
             </div>
           </div>
-          
           <div className="text-right">
-             <div className="text-xs font-bold uppercase mb-1 opacity-70">
-                {isCovered ? 'Surplus' : 'Shortfall'}
-             </div>
-             <div className="text-3xl font-extrabold tracking-tight">
-               {isCovered ? (
-                 <span className="text-emerald-600">+{fmtSGD(Math.abs(shortfall))}</span>
-               ) : (
-                 <span className="text-red-600">-{fmtSGD(Math.abs(shortfall))}</span>
-               )}
-             </div>
-             {isCovered && <div className="text-xs font-bold text-emerald-700 mt-1">✅ Fully Covered</div>}
-             {!isCovered && <div className="text-xs font-bold text-red-700 mt-1">⚠️ Protection Gap</div>}
+            <div className={`text-xl font-black ${isSafe ? 'text-emerald-600' : 'text-gray-900'}`}>{percentage.toFixed(0)}%</div>
+            <div className="text-[10px] text-gray-400 font-bold uppercase">Secured</div>
           </div>
+        </div>
+        <div className="h-3 w-full bg-gray-100 rounded-full overflow-hidden mb-3 inner-shadow">
+          <div className={`h-full rounded-full transition-all duration-1000 ${isSafe ? 'bg-gradient-to-r from-emerald-400 to-emerald-600' : 'bg-gradient-to-r from-red-400 to-red-600'}`} style={{ width: `${percentage}%` }}></div>
+        </div>
+        <div className="flex justify-between items-end">
+          <div><div className="text-[10px] text-gray-400 uppercase font-bold">Current Cover</div><div className="text-sm font-bold text-gray-700">{fmtSGD(current)}</div></div>
+          {shortfall > 0 ? (
+             <div className="text-right"><div className="text-[10px] text-red-400 uppercase font-bold">Risk Exposure</div><div className="text-sm font-bold text-red-600">-{fmtSGD(shortfall)}</div></div>
+          ) : (
+             <div className="text-right px-2 py-1 bg-emerald-100 text-emerald-700 rounded text-[10px] font-bold uppercase">🛡️ Fully Protected</div>
+          )}
         </div>
       </div>
     );
   };
 
-  const getPolicyTypeLabel = (type: PolicyType) => {
-    switch(type) {
-      case 'term': return 'Term Life';
-      case 'whole_life': return 'Whole Life';
-      case 'ilp': return 'Invest + Insure (ILP)';
-      case 'pure_ci': return 'Pure CI Plan';
-      case 'investment_only': return 'Investment';
-      default: return type;
-    }
-  };
-
-  const getPolicyColor = (type: PolicyType) => {
-    switch(type) {
-      case 'term': return 'bg-blue-100 text-blue-800 border-blue-200';
-      case 'whole_life': return 'bg-purple-100 text-purple-800 border-purple-200';
-      case 'ilp': return 'bg-amber-100 text-amber-800 border-amber-200';
-      case 'pure_ci': return 'bg-pink-100 text-pink-800 border-pink-200';
-      case 'investment_only': return 'bg-emerald-100 text-emerald-800 border-emerald-200';
-      default: return 'bg-gray-100 text-gray-800';
-    }
-  };
+  if (!profile.name || monthlyTakeHome <= 0) return <div className="p-10 text-center text-gray-500">Please complete income details in Profile first.</div>;
 
   return (
-    <div className="p-5">
-      {/* Header */}
-      <div className="bg-gradient-to-br from-indigo-50 to-indigo-100 border-2 border-indigo-500 rounded-xl p-6 mb-6 shadow-sm">
-        <div className="flex items-center gap-3">
-          <div className="text-4xl">🛡️</div>
-          <div>
-            <h3 className="m-0 text-indigo-900 text-xl font-bold">Comprehensive Insurance Planning</h3>
-            <p className="m-1 text-indigo-800 text-sm opacity-80">
-              Analysis based on take-home income of <strong>{fmtSGD(monthlyTakeHome)}/month</strong>
-            </p>
-          </div>
-        </div>
-      </div>
+    <div className="p-6 max-w-7xl mx-auto space-y-8">
+      
+      <PageHeader 
+        title="Insurance Portfolio"
+        icon="🛡️"
+        subtitle="Visualize coverage gaps and manage policies."
+      />
 
-      {/* 1. GAP ANALYSIS (Smart Tools) */}
-      <div className="mb-8">
-        <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
-          <span>📊</span> Protection Gap Analysis
-        </h3>
-        
-        {renderAnalysis(
-          'Death / Terminal Illness', 
-          reqDeath, 
-          totals.death, 
-          shortfallDeath, 
-          `Target: 10 Years Annual Income`
-        )}
-
-        {renderAnalysis(
-          'Total Permanent Disability (TPD)', 
-          reqTPD, 
-          totals.tpd, 
-          shortfallTPD, 
-          `Target: 10 Years Annual Income`
-        )}
-
-        {renderAnalysis(
-          'Critical Illness (Early + Late)', 
-          reqCI, 
-          totalCiCombined, 
-          shortfallCI, 
-          `Target: 5 Years Annual Income (Sum of Early & Late Coverage)`
-        )}
-      </div>
-
-      {/* 2. EXISTING POLICIES LIST */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
-        <h3 className="text-lg font-bold text-gray-800 mb-4">📜 Your Policy Portfolio</h3>
-        
-        {policies.length === 0 ? (
-          <div className="text-center p-8 bg-gray-50 rounded-lg border border-dashed border-gray-300 text-gray-500">
-            No policies added yet. Add your current insurance policies below to see your gap analysis.
-          </div>
-        ) : (
-          <div className="grid gap-3">
-            {policies.map((p) => (
-              <div key={p.id} className={`flex flex-col md:flex-row justify-between items-start md:items-center p-4 rounded-lg border gap-4 transition-colors ${editingId === p.id ? 'bg-indigo-50 border-indigo-300 ring-2 ring-indigo-200' : 'bg-gray-50 border-gray-200'}`}>
-                <div className="flex-1">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold border uppercase ${getPolicyColor(p.type)}`}>
-                      {getPolicyTypeLabel(p.type)}
-                    </span>
-                    <span className="font-bold text-gray-900">
-                      {p.name || 'Unnamed Policy'}
-                      {editingId === p.id && <span className="ml-2 text-xs text-indigo-600">(Editing...)</span>}
-                    </span>
-                  </div>
-                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-600 mt-2">
-                    {toNum(p.deathCoverage) > 0 && <span>💀 Death: <strong>{fmtSGD(p.deathCoverage)}</strong></span>}
-                    {toNum(p.tpdCoverage) > 0 && <span>♿ TPD: <strong>{fmtSGD(p.tpdCoverage)}</strong></span>}
-                    {toNum(p.earlyCiCoverage) > 0 && <span>🏥 Early CI: <strong>{fmtSGD(p.earlyCiCoverage)}</strong></span>}
-                    {toNum(p.lateCiCoverage) > 0 && <span>🏥 Late CI: <strong>{fmtSGD(p.lateCiCoverage)}</strong></span>}
-                  </div>
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => editPolicy(p)}
-                    className="px-3 py-1.5 bg-white border border-gray-300 text-gray-700 hover:bg-gray-100 rounded text-xs font-bold transition-colors"
-                    disabled={editingId === p.id}
-                  >
-                    Edit
-                  </button>
-                  <button
-                    onClick={() => duplicatePolicy(p)}
-                    className="px-3 py-1.5 bg-white border border-gray-300 text-gray-700 hover:bg-gray-100 rounded text-xs font-bold transition-colors"
-                  >
-                    Duplicate
-                  </button>
-                  <button 
-                    onClick={() => removePolicy(p.id)}
-                    className="px-3 py-1.5 bg-red-100 text-red-700 hover:bg-red-200 rounded text-xs font-bold transition-colors"
-                  >
-                    Remove
-                  </button>
-                </div>
-              </div>
-            ))}
-            
-            {/* Total Summary Footer */}
-            <div className="mt-2 p-3 bg-gray-100 rounded-lg flex flex-wrap gap-4 text-xs font-bold text-gray-700 justify-end">
-              <span>Total Death: {fmtSGD(totals.death)}</span>
-              <span>Total TPD: {fmtSGD(totals.tpd)}</span>
-              <span>Total CI (Early+Late): {fmtSGD(totalCiCombined)}</span>
+      {/* 1. TIMELINE OF RISK (NEW) */}
+      <SectionCard title="Coverage vs Liability Timeline">
+         <div className="flex justify-between items-end mb-4 px-2">
+            <div className="text-xs text-gray-500 max-w-lg">
+               This chart compares your <strong>Total Liabilities</strong> (Mortgage + Income Replacement) against your <strong>Death Coverage</strong> over time. 
+               <br/><span className="text-red-500 font-bold">Red Zones</span> indicate periods where coverage drops below liability (e.g. Term expiry).
             </div>
-          </div>
-        )}
+            <div className="flex gap-4 text-[10px] font-bold uppercase">
+               <div className="flex items-center gap-1"><div className="w-3 h-1 bg-red-400"></div> Liability Curve</div>
+               <div className="flex items-center gap-1"><div className="w-3 h-1 bg-indigo-600"></div> Coverage</div>
+            </div>
+         </div>
+         <div className="h-[300px]">
+            <LineChart 
+               xLabels={timelineData.filter((_, i) => i % 5 === 0).map(d => `Age ${d.age}`)}
+               series={[
+                  { name: 'Liability', values: timelineData.filter((_, i) => i % 5 === 0).map(d => d.liability), stroke: '#f87171' },
+                  { name: 'Coverage', values: timelineData.filter((_, i) => i % 5 === 0).map(d => d.coverDeath), stroke: '#4f46e5' }
+               ]}
+               height={300}
+               onFormatY={(v) => v >= 1000000 ? `$${(v/1000000).toFixed(1)}M` : `$${(v/1000).toFixed(0)}k`}
+            />
+         </div>
+      </SectionCard>
+
+      {/* 2. DEFENSE GRID */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+         <DefenseShield title="Legacy Protection" current={totals.death} required={reqDeath} icon="☠️" color="bg-slate-100 text-slate-600" />
+         <DefenseShield title="Income Security (TPD)" current={totals.tpd} required={reqTPD} icon="♿" color="bg-blue-50 text-blue-600" />
+         <DefenseShield title="Crisis Recovery (CI)" current={totalCiCombined} required={reqCI} icon="❤️‍🩹" color="bg-red-50 text-red-600" />
       </div>
 
-      {/* 3. ADD / EDIT POLICY FORM */}
-      <div className={`border-2 border-dashed rounded-xl p-6 transition-colors ${editingId ? 'bg-indigo-50 border-indigo-300' : 'bg-gray-50 border-gray-300'}`}>
-        <div className="flex justify-between items-center mb-4">
-           <h3 className={`text-base font-bold ${editingId ? 'text-indigo-800' : 'text-gray-800'}`}>
-             {editingId ? '✏️ Edit Policy' : '➕ Add Policy'}
-           </h3>
-           {editingId && (
-             <button onClick={resetForm} className="text-xs text-red-600 font-bold hover:underline">
-               Cancel Edit
-             </button>
-           )}
-        </div>
+      {/* 3. PORTFOLIO MANAGER */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+         <div className="lg:col-span-2">
+            <SectionCard title="Active Policies" noPadding action={<span className="text-xs font-bold bg-gray-200 text-gray-600 px-2 py-1 rounded-full">{policies.length} Plans</span>}>
+               {policies.length === 0 ? (
+                  <div className="p-8 text-center text-gray-400 text-sm">No policies recorded. Add one to see the analysis.</div>
+               ) : (
+                  <div className="divide-y divide-gray-100">
+                     {policies.map(p => (
+                        <div key={p.id} className="p-4 hover:bg-gray-50 transition-colors flex justify-between items-center group">
+                           <div>
+                              <div className="font-bold text-gray-900 text-sm">{p.name}</div>
+                              <div className="flex gap-2 mt-1 items-center">
+                                 <span className="text-[10px] uppercase font-bold text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">{p.type}</span>
+                                 <span className="text-[10px] text-gray-400">Ends Age: {p.expiryAge || '99'}</span>
+                                 <span className="text-[10px] text-indigo-600 font-bold ml-2">Death: {fmtSGD(p.deathCoverage)}</span>
+                              </div>
+                           </div>
+                           <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                              <button onClick={() => editPolicy(p)} className="text-xs font-bold text-indigo-600 hover:underline">Edit</button>
+                              <button onClick={() => removePolicy(p.id)} className="text-xs font-bold text-red-600 hover:underline">Remove</button>
+                           </div>
+                        </div>
+                     ))}
+                  </div>
+               )}
+            </SectionCard>
+         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-4">
-          <LabeledText 
-            label="Policy Name / Provider" 
-            value={newPolicy.name} 
-            onChange={(v) => updateNewPolicy('name', v)} 
-            placeholder="e.g. Prudential PruActive" 
-          />
-          <LabeledSelect 
-            label="Policy Type" 
-            value={newPolicy.type} 
-            onChange={(v) => updateNewPolicy('type', v)} 
-            options={[
-              { label: 'Term Life', value: 'term' },
-              { label: 'Whole Life Plan', value: 'whole_life' },
-              { label: 'Invest + Insure (ILP)', value: 'ilp' },
-              { label: 'Pure CI Plan', value: 'pure_ci' },
-              { label: 'Investment Only', value: 'investment_only' }
-            ]}
-          />
-        </div>
-        
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
-          <LabeledText 
-            label="Death Coverage ($)" 
-            value={newPolicy.deathCoverage} 
-            onChange={(v) => updateNewPolicy('deathCoverage', v)} 
-            onBlur={() => handleBlur('deathCoverage')}
-            placeholder="0" 
-            type="text" // Changed to text to support commas
-          />
-          <LabeledText 
-            label="TPD Coverage ($)" 
-            value={newPolicy.tpdCoverage} 
-            onChange={(v) => updateNewPolicy('tpdCoverage', v)} 
-            onBlur={() => handleBlur('tpdCoverage')}
-            placeholder="0" 
-            type="text"
-          />
-          <LabeledText 
-            label="Early Stage CI ($)" 
-            value={newPolicy.earlyCiCoverage} 
-            onChange={(v) => updateNewPolicy('earlyCiCoverage', v)} 
-            onBlur={() => handleBlur('earlyCiCoverage')}
-            placeholder="0" 
-            type="text"
-          />
-          <LabeledText 
-            label="Late Stage CI ($)" 
-            value={newPolicy.lateCiCoverage} 
-            onChange={(v) => updateNewPolicy('lateCiCoverage', v)} 
-            onBlur={() => handleBlur('lateCiCoverage')}
-            placeholder="0" 
-            type="text"
-          />
-        </div>
-
-        <button 
-          onClick={savePolicy}
-          disabled={!newPolicy.name}
-          className={`px-5 py-2.5 rounded-lg font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-sm ${editingId ? 'bg-indigo-600 text-white hover:bg-indigo-700' : 'bg-gray-800 text-white hover:bg-gray-900'}`}
-        >
-          {editingId ? 'Update Policy' : 'Add Policy to Portfolio'}
-        </button>
+         <SectionCard title={editingId ? 'Edit Policy' : 'Add New Protection'} className="h-fit">
+            <div className="space-y-4">
+               <LabeledText label="Plan Name" value={newPolicy.name} onChange={(v) => setNewPolicy({...newPolicy, name: v})} placeholder="e.g. AIA Secure Life" />
+               <div className="grid grid-cols-2 gap-4">
+                  <LabeledSelect 
+                     label="Category" 
+                     value={newPolicy.type} 
+                     onChange={(v) => setNewPolicy({...newPolicy, type: v as PolicyType})} 
+                     options={[{label: 'Term Life', value: 'term'}, {label: 'Whole Life', value: 'whole_life'}, {label: 'ILP', value: 'ilp'}, {label: 'Pure CI', value: 'pure_ci'}]} 
+                  />
+                  <LabeledText label="Expires At Age" value={newPolicy.expiryAge || '99'} onChange={(v) => setNewPolicy({...newPolicy, expiryAge: v})} placeholder="99" />
+               </div>
+               <div className="grid grid-cols-2 gap-4">
+                  <LabeledText label="Death ($)" value={newPolicy.deathCoverage} onChange={(v) => setNewPolicy({...newPolicy, deathCoverage: v})} placeholder="0" />
+                  <LabeledText label="TPD ($)" value={newPolicy.tpdCoverage} onChange={(v) => setNewPolicy({...newPolicy, tpdCoverage: v})} placeholder="0" />
+                  <LabeledText label="Early CI ($)" value={newPolicy.earlyCiCoverage} onChange={(v) => setNewPolicy({...newPolicy, earlyCiCoverage: v})} placeholder="0" />
+                  <LabeledText label="Late CI ($)" value={newPolicy.lateCiCoverage} onChange={(v) => setNewPolicy({...newPolicy, lateCiCoverage: v})} placeholder="0" />
+               </div>
+               <div className="flex gap-2 pt-2">
+                  {editingId && <button onClick={resetForm} className="flex-1 py-2 border border-gray-300 rounded-lg text-xs font-bold text-gray-600 hover:bg-gray-100">Cancel</button>}
+                  <button onClick={savePolicy} disabled={!newPolicy.name} className="flex-1 py-3 bg-slate-900 text-white rounded-lg text-xs font-bold hover:bg-slate-800 transition-colors shadow-lg disabled:opacity-50">
+                     {editingId ? 'Save Changes' : 'Add to Portfolio'}
+                  </button>
+               </div>
+            </div>
+         </SectionCard>
       </div>
     </div>
   );
