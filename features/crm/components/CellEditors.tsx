@@ -1,5 +1,4 @@
-
-import React, { useState, useEffect, useRef, useLayoutEffect } from 'react';
+import React, { useState, useEffect, useRef, useLayoutEffect, PropsWithChildren } from 'react';
 import { createPortal } from 'react-dom';
 
 // --- STYLES ---
@@ -28,7 +27,7 @@ export const getOptionStyle = (val: string) => {
 };
 
 // --- PORTAL ---
-const EditorPortal = ({ children }: { children: React.ReactNode }) => {
+const EditorPortal = ({ children }: PropsWithChildren<{}>) => {
   return createPortal(
     <div className="fixed inset-0 z-[9999] isolate" onMouseDown={e => e.stopPropagation()}>
       {children}
@@ -51,7 +50,7 @@ interface SelectEditorProps extends BaseEditorProps {
   options: string[];
 }
 
-export const SelectEditor: React.FC<SelectEditorProps> = ({ value, onChange, onClose, rect, options, onAddOption }) => {
+export const SelectEditor = ({ value, onChange, onClose, rect, options, onAddOption }: SelectEditorProps) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -169,7 +168,7 @@ export const SelectEditor: React.FC<SelectEditorProps> = ({ value, onChange, onC
 };
 
 // --- 2. TEXT EDITOR (Floating Textarea) ---
-export const TextEditor: React.FC<BaseEditorProps> = ({ value, onChange, onClose, rect }) => {
+export const TextEditor = ({ value, onChange, onClose, rect }: BaseEditorProps) => {
   const [localVal, setLocalVal] = useState(value || '');
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -236,7 +235,7 @@ export const TextEditor: React.FC<BaseEditorProps> = ({ value, onChange, onClose
 };
 
 // --- 3. DATE EDITOR ---
-export const DateEditor: React.FC<BaseEditorProps> = ({ value, onChange, onClose, rect }) => {
+export const DateEditor = ({ value, onChange, onClose, rect }: BaseEditorProps) => {
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {

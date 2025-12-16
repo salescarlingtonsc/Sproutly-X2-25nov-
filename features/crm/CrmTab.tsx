@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Client } from '../../types';
 import { db } from '../../lib/db';
@@ -242,24 +241,26 @@ const CrmTab: React.FC<CrmTabProps> = ({
      const client = localClientsRef.current.find(c => c.id === id);
      if (!client) return;
      
+     const fieldKey = field as string;
+
      let currentValue;
-     if (section === 'profile') currentValue = (client.profile as any)[field];
-     else if (section === 'followUp') currentValue = (client.followUp as any)[field];
-     else if (section === 'appointments') currentValue = (client.appointments as any)[field];
-     else if (section === 'investorState') currentValue = (client.investorState as any)[field];
-     else currentValue = (client as any)[field];
+     if (section === 'profile') currentValue = (client.profile as any)[fieldKey];
+     else if (section === 'followUp') currentValue = (client.followUp as any)[fieldKey];
+     else if (section === 'appointments') currentValue = (client.appointments as any)[fieldKey];
+     else if (section === 'investorState') currentValue = (client.investorState as any)[fieldKey];
+     else currentValue = (client as any)[fieldKey];
 
      if (currentValue === value) return;
 
      let updates: any = {};
-     if (section === 'profile') updates = { profile: { [field]: value } };
-     else if (section === 'followUp') updates = { followUp: { [field]: value } };
-     else if (section === 'appointments') updates = { appointments: { [field]: value } };
+     if (section === 'profile') updates = { profile: { [fieldKey]: value } };
+     else if (section === 'followUp') updates = { followUp: { [fieldKey]: value } };
+     else if (section === 'appointments') updates = { appointments: { [fieldKey]: value } };
      else if (section === 'investorState') {
         const currentInvestorState = client.investorState || {};
-        updates = { investorState: { ...currentInvestorState, [field]: value } };
+        updates = { investorState: { ...currentInvestorState, [fieldKey]: value } };
      } else {
-        updates = { [field]: value };
+        updates = { [fieldKey]: value };
      }
      handleUpdateClient(id, updates);
   }, []);

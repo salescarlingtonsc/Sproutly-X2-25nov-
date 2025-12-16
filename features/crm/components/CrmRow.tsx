@@ -29,10 +29,10 @@ const CrmRow: React.FC<CrmRowProps> = memo(({
 
   // Helper to extract value safely
   const getClientValue = (client: Client, col: any) => {
-     if (col.section === 'profile') return (client.profile as any)[col.field];
-     if (col.section === 'followUp') return (client.followUp as any)[col.field];
-     if (col.section === 'appointments') return (client.appointments as any)[col.field];
-     if (col.section === 'investorState') return (client.investorState as any)[col.field];
+     if (col.section === 'profile') return (client.profile as any)?.[col.field];
+     if (col.section === 'followUp') return (client.followUp as any)?.[col.field];
+     if (col.section === 'appointments') return (client.appointments as any)?.[col.field];
+     if (col.section === 'investorState') return (client.investorState as any)?.[col.field];
      return '';
   };
 
@@ -102,7 +102,7 @@ const CrmRow: React.FC<CrmRowProps> = memo(({
                      rowContext={{ 
                         name: client.profile.name, 
                         location: client.appointments?.location || 'Zoom', 
-                        notes: client.appointments?.notes || client.followUp.notes 
+                        notes: client.appointments?.notes || client.followUp?.notes 
                      }}
                   />
                )}
@@ -123,4 +123,3 @@ const CrmRow: React.FC<CrmRowProps> = memo(({
 });
 
 export default CrmRow;
-    
