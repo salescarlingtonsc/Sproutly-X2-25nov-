@@ -4,20 +4,17 @@ export interface Child {
   name: string;
   dobISO: string;
   gender: 'male' | 'female';
-  // New Funding Fields
-  existingFunds?: string; // Current savings allocated to this child
-  monthlyContribution?: string; // Ongoing savings for this child
+  existingFunds?: string; 
+  monthlyContribution?: string; 
 }
 
 export interface EducationSettings {
-  inflationRate: string;       // Default 3%
-  monthlyEducationCost: string; // Default 800 (was 9600/yr)
-  educationStartAge: string;    // Default 7 (P1)
-  educationDuration: string;    // Default 10 (P1 to O-Level)
-  universityCost: string;      // Default 8750/yr
-  universityDuration: string;  // Default 4 years
-  
-  // Legacy support optional
+  inflationRate: string;       
+  monthlyEducationCost: string; 
+  educationStartAge: string;    
+  educationDuration: string;    
+  universityCost: string;      
+  universityDuration: string;  
   primarySecondaryCost?: string; 
 }
 
@@ -34,13 +31,13 @@ export interface Profile {
   dob: string;
   gender: 'male' | 'female';
   employmentStatus?: 'employed' | 'self-employed';
-  jobTitle?: string; // New: Specific Job Title
+  jobTitle?: string; // Matches 'job_title'
   email: string;
   phone: string;
   monthlyIncome?: string;
   grossSalary?: string;
   takeHome?: string;
-  retirementAge?: string;
+  retirementAge?: string; // Matches 'Retirement Age'
   customRetirementExpense?: string;
   monthlyInvestmentAmount?: string;
   investmentRates?: InvestmentRates;
@@ -52,8 +49,8 @@ export interface Profile {
   tags?: string[];
   
   // Sales Specific
-  source?: LeadSource; // IG/FB
-  motivation?: string; // "Why do you want to win this?"
+  source?: LeadSource; // Matches 'platform'
+  motivation?: string; // Matches 'Why do you want to win this?'
 }
 
 export interface Expenses {
@@ -95,7 +92,7 @@ export interface CashflowData {
 export interface RetirementSettings {
   initialSavings: string;
   scenario: 'conservative' | 'moderate' | 'aggressive' | 'custom';
-  customReturnRate?: string; // User defined return rate for stocks/investments
+  customReturnRate?: string; 
   investmentPercent: string;
 }
 
@@ -107,7 +104,7 @@ export interface CpfWithdrawal {
   date: string;
   type: string;
   frequency?: string;
-  endDate?: string; // Added for cutoff capability
+  endDate?: string; 
 }
 
 export interface CpfState {
@@ -124,7 +121,7 @@ export interface AdditionalIncome {
   startAge: number;
   startMonth: number;
   endAge?: string | number;
-  endMonth?: number; // Added endMonth
+  endMonth?: number; 
 }
 
 export interface CashflowWithdrawal {
@@ -136,17 +133,16 @@ export interface CashflowWithdrawal {
   startAge: number;
   startMonth: number;
   endAge?: string | number; 
-  endMonth?: number; // Added endMonth
+  endMonth?: number; 
 }
 
-// NEW: Career Event Definition
 export interface CareerEvent {
   id: number;
   type: 'increment' | 'decrement' | 'pause' | 'resume';
   age: number;
-  month?: number; // 0-11 for specific month trigger
-  amount?: string; // For increment/decrement (monthly amount change)
-  durationMonths?: string; // For pause
+  month?: number; 
+  amount?: string; 
+  durationMonths?: string; 
   notes?: string;
 }
 
@@ -156,7 +152,7 @@ export interface CashflowState {
   bankInterestRate: string;
   additionalIncomes: AdditionalIncome[];
   withdrawals: CashflowWithdrawal[];
-  careerEvents?: CareerEvent[]; // NEW: List of career events
+  careerEvents?: CareerEvent[]; 
   customBaseIncome?: string;
   customRetirementIncome?: string;
 }
@@ -170,18 +166,16 @@ export interface PropertyState {
   interestRate: string;
   useCpfOa: boolean;
   cpfOaAmount: string;
-  renovationCost?: string; // New
-  rentalIncome?: string; // New for investment calculation
+  renovationCost?: string; 
+  rentalIncome?: string; 
 }
 
 export interface WealthState {
   annualPremium: string;
   projectionYears: string;
   growthRate: string;
-  
-  // Advanced ILP Settings
-  premiumHolidayStartYear?: string; // Year relative to policy start (e.g., Year 15)
-  targetRetirementIncome?: string; // Annual withdrawal amount
+  premiumHolidayStartYear?: string; 
+  targetRetirementIncome?: string; 
   withdrawalStartAge?: string;
 }
 
@@ -200,7 +194,7 @@ export interface InsurancePolicy {
   tpdCoverage: string;
   earlyCiCoverage: string;
   lateCiCoverage: string;
-  expiryAge?: string; // NEW: When does coverage end?
+  expiryAge?: string; 
 }
 
 export interface InsuranceState {
@@ -222,7 +216,7 @@ export interface UserProfile {
   modules?: string[];
 }
 
-// Updated Status Types for Financial Advisory
+// Updated Status Types matching Airtable
 export type ContactStatus = 
   | 'new' 
   | 'picked_up' 
@@ -230,26 +224,40 @@ export type ContactStatus =
   | 'call_back' 
   | 'not_keen' 
   | 'appt_set' 
+  | 'proposal'
   | 'client';
+
+export type OutcomeStatus = 
+  | 'Zoom (not Keen)'
+  | 'Zoom (Keen)'
+  | 'Attended zoom'
+  | 'No Show'
+  | 'Pending';
 
 export interface ClientDocument {
   id: string;
   name: string;
   type: 'image' | 'pdf' | 'other';
   dateAdded: string;
-  url?: string; // In real app, this is the storage URL
+  url?: string; 
 }
 
 export interface AppointmentData {
   firstApptDate: string | null;
-  nextFollowUpDate: string | null;
+  status?: OutcomeStatus; // e.g. "Zoom (not Keen)"
+  nextApptDate?: string | null; // NEW: For follow ups
+  location?: string; // NEW: For calendar sync
+  notes?: string; // NEW: Agenda items
+  googleEventId?: string; // NEW: Future sync
 }
 
 export interface FollowUp {
   status: ContactStatus;
-  notes?: string;
-  // Legacy support
-  nextDate?: string | null; 
+  notes?: string; // 'Remarks'
+  priority?: 'High' | 'Medium' | 'Low';
+  closure?: string;
+  closingRemarks?: string;
+  fycCaseSize?: string;
 }
 
 export type LifecycleStage = 'lead' | 'contacted' | 'meeting' | 'proposal' | 'client' | 'cold';

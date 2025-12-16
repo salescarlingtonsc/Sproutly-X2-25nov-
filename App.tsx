@@ -100,6 +100,7 @@ const AppInner: React.FC = () => {
         return;
      }
      if (!profile.name) {
+        // Silent fail for autosave if no name
         if (!isAutoSave) toast.error("Please enter a client name first.");
         return;
      }
@@ -107,29 +108,47 @@ const AppInner: React.FC = () => {
      if (isSavingRef.current) return;
 
      const clientData = generateClientObject();
-     const currentJson = JSON.stringify(clientData);
-     if (isAutoSave && currentJson === lastSavedJson.current) {
+     
+     // SMART DIFF: Ignore lastUpdated timestamp when comparing changes
+     const { lastUpdated: _newTs, ...currentContent } = clientData;
+     let lastSavedContent = {};
+     try {
+        const parsed = JSON.parse(lastSavedJson.current || '{}');
+        const { lastUpdated: _oldTs, ...rest } = parsed;
+        lastSavedContent = rest;
+     } catch (e) {}
+
+     if (isAutoSave && JSON.stringify(currentContent) === JSON.stringify(lastSavedContent)) {
         return;
      }
 
      isSavingRef.current = true;
-     if (!isAutoSave) setSaveStatus('saving');
+     setSaveStatus('saving');
 
      try {
         const saved = await db.saveClient(clientData, user.id);
         lastSavedJson.current = JSON.stringify(saved);
         setLastSaved(new Date());
+        
+        // If this was a new client (no ID), update context with the ID from DB
         if (!clientId) loadClient(saved);
         
+        setSaveStatus('saved');
+        
         if (!isAutoSave) {
-           setSaveStatus('saved');
            loadClientsList(); 
            toast.success("Client saved successfully");
         }
+        
+        // Auto-clear saved status
+        setTimeout(() => {
+            setSaveStatus(prev => prev === 'saved' ? 'idle' : prev);
+        }, 2000);
+
      } catch (e: any) {
         console.error(e);
+        setSaveStatus('error');
         if (!isAutoSave) {
-           setSaveStatus('error');
            toast.error("Save failed: " + e.message);
         }
      } finally {
@@ -142,9 +161,10 @@ const AppInner: React.FC = () => {
   useEffect(() => { saveRef.current = handleSaveClient; });
 
   useEffect(() => {
+    // Reduced interval to 3s for better responsiveness, relying on smart diff to prevent spam
     const timer = setInterval(() => {
        saveRef.current(true);
-    }, 5000); 
+    }, 3000); 
     return () => clearInterval(timer);
   }, []);
 

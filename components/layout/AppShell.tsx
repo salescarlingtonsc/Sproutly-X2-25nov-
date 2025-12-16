@@ -32,6 +32,7 @@ const AppShell: React.FC<AppShellProps> = ({
   clientRef,
   clientName,
   saveStatus = 'idle',
+  lastSavedTime,
   clients = [],
   onLoadClient
 }) => {
@@ -96,10 +97,10 @@ const AppShell: React.FC<AppShellProps> = ({
          </div>
 
          {/* Header Bar */}
-         <header className="h-16 px-6 border-b border-gray-200 bg-white/80 backdrop-blur-md flex items-center justify-between z-20 shrink-0">
+         <header className="h-16 px-4 md:px-6 border-b border-gray-200 bg-white/80 backdrop-blur-md flex items-center justify-between z-20 shrink-0">
             
             {/* Mobile Toggle & Context */}
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-3 md:gap-4">
                <button 
                   onClick={() => setIsMobileMenuOpen(true)}
                   className="lg:hidden p-2 text-gray-500 hover:bg-gray-100 rounded-lg"
@@ -113,8 +114,8 @@ const AppShell: React.FC<AppShellProps> = ({
                   <div className="flex items-center gap-2">
                      {clientRef ? (
                         <>
-                           <h2 className="text-sm font-bold text-slate-900">{clientName || 'Unnamed Client'}</h2>
-                           <span className="text-[10px] font-mono text-slate-400 px-1.5 py-0.5 bg-slate-100 rounded">{clientRef}</span>
+                           <h2 className="text-sm font-bold text-slate-900 truncate max-w-[150px] md:max-w-none">{clientName || 'Unnamed Client'}</h2>
+                           <span className="text-[10px] font-mono text-slate-400 px-1.5 py-0.5 bg-slate-100 rounded hidden sm:inline-block">{clientRef}</span>
                         </>
                      ) : (
                         <h2 className="text-sm font-bold text-slate-900">Dashboard</h2>
@@ -127,43 +128,49 @@ const AppShell: React.FC<AppShellProps> = ({
             </div>
 
             {/* Right Actions */}
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 md:gap-3">
                
-               {/* Save Status */}
-               <div className="hidden md:flex flex-col items-end mr-2">
+               {/* Save Status - Always visible now */}
+               <div className="flex flex-col items-end mr-1 md:mr-2">
                   {saveStatus === 'saving' && (
                      <span className="text-[10px] text-indigo-600 font-bold flex items-center gap-1 bg-indigo-50 px-2 py-1 rounded-full">
-                        <span className="animate-spin">↻</span> Syncing...
+                        <span className="animate-spin">↻</span> <span className="hidden sm:inline">Syncing...</span>
                      </span>
                   )}
                   {saveStatus === 'saved' && (
-                     <span className="text-[10px] text-emerald-600 font-bold flex items-center gap-1 opacity-70">
-                        ✓ Synced
+                     <span className="text-[10px] text-emerald-600 font-bold flex items-center gap-1 bg-emerald-50 px-2 py-1 rounded-full">
+                        ✓ <span className="hidden sm:inline">Saved</span>
                      </span>
                   )}
                   {saveStatus === 'error' && (
-                     <span className="text-[10px] text-red-600 font-bold flex items-center gap-1">
-                        ⚠️ Failed
+                     <span className="text-[10px] text-red-600 font-bold flex items-center gap-1 bg-red-50 px-2 py-1 rounded-full">
+                        ⚠️ <span className="hidden sm:inline">Failed</span>
                      </span>
+                  )}
+                  {saveStatus === 'idle' && lastSavedTime && (
+                      <span className="text-[10px] text-slate-400 font-medium flex items-center gap-1">
+                        <span className="hidden sm:inline">Saved</span> {lastSavedTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                      </span>
                   )}
                </div>
 
                <button
                   onClick={onSaveClick}
                   disabled={saveStatus === 'saving'}
-                  className="hidden sm:flex items-center gap-2 px-3 py-2 bg-slate-900 text-white rounded-lg text-xs font-bold hover:bg-slate-800 transition-all shadow-sm active:scale-95"
+                  className="flex items-center gap-2 px-3 py-2 bg-slate-900 text-white rounded-lg text-xs font-bold hover:bg-slate-800 transition-all shadow-sm active:scale-95"
+                  title="Save Changes"
                >
-                  <span>💾</span> Save
+                  <span>💾</span> <span className="hidden sm:inline">Save</span>
                </button>
 
-               <div className="h-6 w-px bg-gray-200 mx-1"></div>
+               <div className="h-6 w-px bg-gray-200 mx-1 hidden sm:block"></div>
 
                {/* User Profile */}
                {user && (
                   <div className="relative" ref={profileRef}>
                      <button 
                         onClick={() => setIsProfileMenuOpen(!isProfileMenuOpen)}
-                        className="flex items-center gap-2 hover:bg-gray-100 p-1 rounded-full pr-3 transition-colors"
+                        className="flex items-center gap-2 hover:bg-gray-100 p-1 rounded-full pr-0 md:pr-3 transition-colors"
                      >
                         <div className="w-8 h-8 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white text-xs font-bold border-2 border-white shadow-sm">
                            {user.email?.charAt(0).toUpperCase()}

@@ -1,15 +1,32 @@
 
-import React, { useMemo, useState } from 'react';
-import { Client, ContactStatus } from '../../types';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { Client } from '../../types';
+import { db } from '../../lib/db';
+import { useAuth } from '../../contexts/AuthContext';
 import { generateWhatsAppDraft } from '../../lib/gemini';
-import { db } from '../../lib/db'; 
-import { toNum } from '../../lib/helpers';
-import Sparkline from '../../components/common/Sparkline';
-import PageHeader from '../../components/layout/PageHeader';
-import SectionCard from '../../components/layout/SectionCard';
-import StatusDropdown, { STATUS_CONFIG } from './components/StatusDropdown';
+import ColumnHeader from './components/ColumnHeader';
 import ClientDrawer from './components/ClientDrawer';
 import BlastModal from './components/BlastModal';
+import CrmRow from './components/CrmRow';
+import { toNum } from '../../lib/helpers';
+
+// --- CONSTANTS ---
+const VIEW_SETTINGS_KEY = 'crm_view_settings_v1';
+const STATUS_OPTIONS = ['new', 'picked_up', 'appt_set', 'proposal', 'client', 'not_keen'];
+const ROW_HEIGHT = 44; 
+const OVERSCAN = 15; // Increased overscan for smoother scrolling
+
+// Column Definitions
+const COLUMNS = [
+  { id: 'name', label: 'Name', type: 'text', minWidth: 200, field: 'name', section: 'profile' },
+  { id: 'status', label: 'Status', type: 'select', minWidth: 140, field: 'status', section: 'followUp' },
+  { id: 'phone', label: 'Phone', type: 'phone', minWidth: 120, field: 'phone', section: 'profile' },
+  { id: 'nextAppt', label: 'Next Appt', type: 'date', minWidth: 150, field: 'nextApptDate', section: 'appointments' },
+  { id: 'location', label: 'Location', type: 'text', minWidth: 150, field: 'location', section: 'appointments' },
+  { id: 'notes', label: 'Notes', type: 'text', minWidth: 250, field: 'notes', section: 'followUp' },
+  { id: 'income', label: 'Income', type: 'currency', minWidth: 120, field: 'monthlyIncome', section: 'profile' },
+  { id: 'aum', label: 'AUM', type: 'currency', minWidth: 120, field: 'portfolioValue', section: 'investorState' }
+];
 
 interface CrmTabProps {
   clients: Client[];
@@ -17,423 +34,542 @@ interface CrmTabProps {
   selectedClientId: string | null;
   newClient: () => void;
   saveClient: () => void;
-  loadClient: (c: Client, redirect?: boolean) => void;
+  loadClient: (client: Client, redirect?: boolean) => void;
   deleteClient: (id: string) => void;
-  setFollowUp: (id: string, days: number) => void; 
+  setFollowUp: (val: any) => void;
   completeFollowUp: (id: string) => void;
   maxClients: number;
   userRole?: string;
-  onRefresh?: () => void;
-  isLoading?: boolean;
+  onRefresh: () => void;
 }
 
-const PIPELINE_STAGES = ['new', 'picked_up', 'appt_set', 'proposal', 'client'];
+const CrmTab: React.FC<CrmTabProps> = ({ 
+  clients, 
+  loadClient, 
+  deleteClient, 
+  onRefresh
+}) => {
+  const { user } = useAuth();
+  
+  // --- 1. LOCAL STATE & REFS ---
+  const [localClients, setLocalClients] = useState<Client[]>(clients);
+  const localClientsRef = useRef<Client[]>(clients);
+  
+  useEffect(() => {
+    if (!isSavingRef.current && dirtyRowsRef.current.size === 0) {
+        setLocalClients(clients);
+        localClientsRef.current = clients;
+    }
+  }, [clients]);
 
-const CrmTab: React.FC<CrmTabProps> = (props) => {
-  const { clients, loadClient, deleteClient, newClient, onRefresh } = props;
+  // Dirty Tracking
+  const [dirtyRows, setDirtyRows] = useState<Set<string>>(new Set());
+  const dirtyRowsRef = useRef<Set<string>>(new Set());
+  const [rowSaveStatus, setRowSaveStatus] = useState<Record<string, string>>({});
+  const rowSaveStatusRef = useRef<Record<string, string>>({});
+
+  useEffect(() => {
+    rowSaveStatusRef.current = rowSaveStatus;
+  }, [rowSaveStatus]);
+  
+  const isSavingRef = useRef(false);
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const rowEditVersionRef = useRef<Record<string, number>>({});
+  const rowSavingVersionRef = useRef<Record<string, number>>({});
 
   // View State
-  const [viewMode, setViewMode] = useState<'list' | 'kanban'>('list');
-  const [searchTerm, setSearchTerm] = useState('');
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  
-  // Drawer State
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const [focusedClient, setFocusedClient] = useState<Client | null>(null);
-  
-  // Actions State
+  const [colWidths, setColWidths] = useState<Record<string, number>>({});
+  const [sortCol, setSortCol] = useState<string | null>(null);
+  const [sortDir, setSortDir] = useState<'asc'|'desc'|null>(null);
+
+  // Virtualization State
+  const [scrollTop, setScrollTop] = useState(0);
+  const [containerHeight, setContainerHeight] = useState(800);
+  const gridContainerRef = useRef<HTMLDivElement>(null);
+
+  // Keyboard Nav State
+  const [activeCell, setActiveCell] = useState<{rowId: string, colId: string} | null>(null);
+  const [editingCell, setEditingCell] = useState<{rowId: string, colId: string} | null>(null);
+
+  // UI State
+  const [selectedRowIds, setSelectedRowIds] = useState<Set<string>>(new Set());
+  const [drawerClient, setDrawerClient] = useState<Client | null>(null);
   const [blastModalOpen, setBlastModalOpen] = useState(false);
+  
+  // Blast State
   const [blastTopic, setBlastTopic] = useState('');
   const [blastMessage, setBlastMessage] = useState('');
   const [isGeneratingBlast, setIsGeneratingBlast] = useState(false);
   const [generatedLinks, setGeneratedLinks] = useState<{name: string, url: string}[]>([]);
 
-  // --- FILTERS & SORTING ---
-  const filteredClients = useMemo(() => {
-    return clients.filter(c => {
-      const search = searchTerm.toLowerCase();
-      return c.profile.name.toLowerCase().includes(search) || 
-             c.profile.phone.includes(search) || 
-             (c.profile.jobTitle || '').toLowerCase().includes(search);
-    }).sort((a, b) => new Date(b.lastUpdated).getTime() - new Date(a.lastUpdated).getTime());
-  }, [clients, searchTerm]);
-
-  // --- HANDLERS ---
-
-  const handleRowClick = (client: Client) => {
-    loadClient(client, false); 
-    setFocusedClient(client);
-    setDrawerOpen(true);
-  };
-
-  const handleSaveDrawer = async (updatedClient: Client) => {
-      try {
-          setFocusedClient(updatedClient);
-          await db.saveClient(updatedClient);
-          if (onRefresh) onRefresh();
-      } catch (e) {
-          console.error("Auto-save failed", e);
+  // --- 2. INITIALIZATION ---
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(VIEW_SETTINGS_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.colWidths) setColWidths(parsed.colWidths);
+        if (parsed.sortCol) setSortCol(parsed.sortCol);
+        if (parsed.sortDir) setSortDir(parsed.sortDir);
+      } else {
+        const defaults: any = {};
+        COLUMNS.forEach(c => defaults[c.id] = c.minWidth);
+        setColWidths(defaults);
       }
-  };
+    } catch(e) { console.error("Failed to load view settings", e); }
+  }, []);
 
-  const updateFocusedField = (field: string, value: any, section: 'profile' | 'followUp' | 'root' = 'profile') => {
-    if (!focusedClient) return;
-    const updated = { ...focusedClient };
-    if (section === 'profile') {
-        updated.profile = { ...updated.profile, [field]: value };
-    } else if (section === 'followUp') {
-        updated.followUp = { ...updated.followUp, [field]: value };
-    } else {
-        (updated as any)[field] = value;
-    }
-    handleSaveDrawer(updated);
-  };
-
-  const openFullWorkspace = () => {
-      if (focusedClient) {
-          loadClient(focusedClient, true); 
+  useEffect(() => {
+    const updateHeight = () => {
+      if (gridContainerRef.current) {
+        setContainerHeight(gridContainerRef.current.clientHeight);
       }
-  };
+    };
+    window.addEventListener('resize', updateHeight);
+    updateHeight();
+    // Allow slight delay for layout calc
+    setTimeout(updateHeight, 100);
+    return () => window.removeEventListener('resize', updateHeight);
+  }, []);
 
-  const toggleSelection = (id: string) => {
-    const next = new Set(selectedIds);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    setSelectedIds(next);
-  };
+  useEffect(() => {
+    if (Object.keys(colWidths).length === 0) return;
+    const settings = { colWidths, sortCol, sortDir };
+    localStorage.setItem(VIEW_SETTINGS_KEY, JSON.stringify(settings));
+  }, [colWidths, sortCol, sortDir]);
 
-  const selectAll = () => {
-    const allVisibleIds = filteredClients.map(c => c.id);
-    const allSelected = allVisibleIds.every(id => selectedIds.has(id));
-    if (allSelected) {
-      const next = new Set(selectedIds);
-      allVisibleIds.forEach(id => next.delete(id));
-      setSelectedIds(next);
-    } else {
-      const next = new Set(selectedIds);
-      allVisibleIds.forEach(id => next.add(id));
-      setSelectedIds(next);
+  // --- 3. SORTING LOGIC ---
+  const getSortValue = (client: Client, colId: string) => {
+    switch (colId) {
+      case 'name': return (client.profile.name || '').toLowerCase();
+      case 'status': return (client.followUp.status || '').toLowerCase();
+      case 'phone': return (client.profile.phone || '').replace(/\D/g, ''); 
+      case 'nextAppt': 
+        // Use string comparison for YYYY-MM-DD to avoid timezone issues
+        return (client.appointments?.nextApptDate || ''); 
+      case 'location': return (client.appointments?.location || '').toLowerCase();
+      case 'notes': return (client.followUp.notes || '').toLowerCase();
+      case 'income': return toNum(client.profile.monthlyIncome) || toNum(client.profile.grossSalary);
+      case 'aum': return toNum(client.investorState?.portfolioValue);
+      default: return '';
     }
   };
 
-  const handlePrepareBlast = () => {
-    setBlastMessage('');
-    setBlastTopic('');
-    setGeneratedLinks([]);
-    setBlastModalOpen(true);
+  const processedClients = useMemo(() => {
+    const sorted = [...localClients].sort((a, b) => {
+       if (!sortCol || !sortDir) {
+         // Default: Last Updated Descending (Stable)
+         return new Date(b.lastUpdated).getTime() - new Date(a.lastUpdated).getTime();
+       }
+       
+       const valA = getSortValue(a, sortCol);
+       const valB = getSortValue(b, sortCol);
+
+       if (valA < valB) return sortDir === 'asc' ? -1 : 1;
+       if (valA > valB) return sortDir === 'asc' ? 1 : -1;
+       
+       return 0;
+    });
+    return sorted;
+  }, [localClients, sortCol, sortDir]);
+
+  // --- 4. VIRTUALIZATION LOGIC ---
+  const totalRows = processedClients.length;
+  const visibleRows = Math.ceil(containerHeight / ROW_HEIGHT);
+  const startIndex = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
+  const endIndex = Math.min(totalRows, startIndex + visibleRows + (OVERSCAN * 2));
+  
+  const virtualRows = processedClients.slice(startIndex, endIndex);
+  const paddingTop = startIndex * ROW_HEIGHT;
+  const paddingBottom = (totalRows - endIndex) * ROW_HEIGHT;
+
+  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    setScrollTop(e.currentTarget.scrollTop);
   };
 
-  const handleGenerateAIBlast = async () => {
+  // --- 5. SELECTION LOGIC ---
+  const toggleSelection = useCallback((id: string) => {
+     setSelectedRowIds(prev => {
+       const next = new Set(prev);
+       if (next.has(id)) next.delete(id);
+       else next.add(id);
+       return next;
+     });
+  }, []);
+
+  const toggleAll = () => {
+     // Select all FILTERED clients, not just visible ones
+     const allIds = processedClients.map(c => c.id);
+     const allSelected = allIds.length > 0 && allIds.every(id => selectedRowIds.has(id));
+     
+     if (allSelected) {
+       setSelectedRowIds(new Set());
+     } else {
+       setSelectedRowIds(new Set(allIds));
+     }
+  };
+
+  // --- 6. UPDATE & AUTOSAVE ---
+  const handleUpdateClient = (id: string, updates: Partial<Client> | any) => {
+     setLocalClients(prev => {
+        const next = prev.map(c => {
+           if (c.id === id) {
+              const updatedClient = { ...c };
+              if (updates.profile) updatedClient.profile = { ...c.profile, ...updates.profile };
+              if (updates.followUp) updatedClient.followUp = { ...c.followUp, ...updates.followUp };
+              if (updates.appointments) updatedClient.appointments = { ...c.appointments, ...updates.appointments };
+              if (updates.investorState) updatedClient.investorState = { ...c.investorState, ...updates.investorState };
+              
+              const { profile, followUp, appointments, investorState, ...rootUpdates } = updates;
+              Object.assign(updatedClient, rootUpdates);
+              return updatedClient;
+           }
+           return c;
+        });
+        localClientsRef.current = next;
+        return next;
+     });
+     
+     dirtyRowsRef.current.add(id);
+     setDirtyRows(prev => new Set(prev).add(id));
+     setRowSaveStatus(prev => ({ ...prev, [id]: 'idle' }));
+     
+     rowEditVersionRef.current[id] = (rowEditVersionRef.current[id] || 0) + 1;
+  };
+
+  const handleFieldUpdate = useCallback((id: string, field: string, value: any, section?: string) => {
+     // Optimization: Only trigger update if value actually changed
+     const client = localClientsRef.current.find(c => c.id === id);
+     if (!client) return;
+     
+     let currentValue;
+     if (section === 'profile') currentValue = (client.profile as any)[field];
+     else if (section === 'followUp') currentValue = (client.followUp as any)[field];
+     else if (section === 'appointments') currentValue = (client.appointments as any)[field];
+     else if (section === 'investorState') currentValue = (client.investorState as any)[field];
+     else currentValue = (client as any)[field];
+
+     if (currentValue === value) return;
+
+     let updates: any = {};
+     if (section === 'profile') updates = { profile: { [field]: value } };
+     else if (section === 'followUp') updates = { followUp: { [field]: value } };
+     else if (section === 'appointments') updates = { appointments: { [field]: value } };
+     else if (section === 'investorState') {
+        const currentInvestorState = client.investorState || {};
+        updates = { investorState: { ...currentInvestorState, [field]: value } };
+     } else {
+        updates = { [field]: value };
+     }
+     handleUpdateClient(id, updates);
+  }, []);
+
+  const onRefreshRef = useRef(onRefresh);
+  useEffect(() => { onRefreshRef.current = onRefresh; }, [onRefresh]);
+
+  const triggerAutosave = useCallback(async (retryId?: string) => {
+    if (isSavingRef.current && !retryId) return;
+    isSavingRef.current = true;
+
+    try {
+        const currentStatus = rowSaveStatusRef.current;
+        const idsToSave = retryId 
+          ? [retryId] 
+          : Array.from(dirtyRowsRef.current).filter(id => currentStatus[id] !== 'error');
+
+        if (idsToSave.length === 0) return;
+
+        idsToSave.forEach(id => {
+           rowSavingVersionRef.current[id] = rowEditVersionRef.current[id] || 0;
+        });
+
+        setRowSaveStatus(prev => {
+          const next = { ...prev };
+          idsToSave.forEach(id => next[id] = 'saving');
+          return next;
+        });
+
+        await Promise.all(idsToSave.map(async (id) => {
+          const clientToSave = localClientsRef.current.find(x => x.id === id);
+          if (!clientToSave) return;
+
+          try {
+            const payload = JSON.parse(JSON.stringify(clientToSave));
+            await db.saveClient(payload, user?.id);
+            
+            const latestVer = rowEditVersionRef.current[id] || 0;
+            const savedVer = rowSavingVersionRef.current[id] || 0;
+            
+            if (latestVer === savedVer) {
+                dirtyRowsRef.current.delete(id);
+                setDirtyRows(prev => {
+                   const next = new Set(prev);
+                   next.delete(id);
+                   return next;
+                });
+                setRowSaveStatus(prev => ({ ...prev, [id]: 'saved' }));
+                setTimeout(() => {
+                   setRowSaveStatus(prev => {
+                      const next = { ...prev };
+                      if (next[id] === 'saved') delete next[id];
+                      return next;
+                   });
+                }, 2000);
+            } else {
+                dirtyRowsRef.current.add(id);
+                setRowSaveStatus(prev => ({ ...prev, [id]: 'idle' }));
+            }
+
+          } catch (e) {
+            console.error("Save failed for row", id, e);
+            setRowSaveStatus(prev => ({ ...prev, [id]: 'error' }));
+          }
+        }));
+
+        if (onRefreshRef.current) onRefreshRef.current();
+
+    } finally {
+        isSavingRef.current = false;
+        // Schedule next check
+        const currentStatus = rowSaveStatusRef.current;
+        const pending = Array.from(dirtyRowsRef.current).filter(id => currentStatus[id] !== 'error');
+        if (pending.length > 0) {
+             if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+             saveTimeoutRef.current = setTimeout(() => triggerAutosave(), 1000);
+        }
+    }
+  }, [user]);
+
+  useEffect(() => {
+    if (dirtyRows.size === 0) return;
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    saveTimeoutRef.current = setTimeout(() => triggerAutosave(), 1000);
+    return () => { if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current); };
+  }, [dirtyRows, triggerAutosave]);
+
+  // --- 7. KEYBOARD NAVIGATION & SCROLL SYNC ---
+  const scrollToRow = (rowIndex: number) => {
+    if (!gridContainerRef.current) return;
+    const rowTop = rowIndex * ROW_HEIGHT;
+    const rowBottom = rowTop + ROW_HEIGHT;
+    const viewTop = gridContainerRef.current.scrollTop;
+    const viewBottom = viewTop + gridContainerRef.current.clientHeight;
+
+    const stickyOffset = 40; // Header height
+
+    if (rowTop < viewTop + stickyOffset) {
+      gridContainerRef.current.scrollTop = rowTop - stickyOffset;
+    } else if (rowBottom > viewBottom) {
+      gridContainerRef.current.scrollTop = rowBottom - gridContainerRef.current.clientHeight + stickyOffset; // Adjust for bottom bar
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (editingCell) return; 
+    
+    if (!activeCell) {
+       if ((e.key.startsWith('Arrow')) && processedClients.length > 0) {
+          e.preventDefault();
+          setActiveCell({ rowId: processedClients[0].id, colId: COLUMNS[0].id });
+       }
+       return;
+    }
+
+    const rowIndex = processedClients.findIndex(c => c.id === activeCell.rowId);
+    const colIndex = COLUMNS.findIndex(c => c.id === activeCell.colId);
+    
+    if (rowIndex === -1 || colIndex === -1) return;
+
+    let nextRow = rowIndex;
+    let nextCol = colIndex;
+
+    if (e.key === 'ArrowDown') {
+       e.preventDefault();
+       if (rowIndex < processedClients.length - 1) nextRow++;
+    } else if (e.key === 'ArrowUp') {
+       e.preventDefault();
+       if (rowIndex > 0) nextRow--;
+    } else if (e.key === 'Tab') {
+       e.preventDefault();
+       if (e.shiftKey) {
+          if (colIndex > 0) nextCol--;
+          else if (rowIndex > 0) { nextRow--; nextCol = COLUMNS.length - 1; }
+       } else {
+          if (colIndex < COLUMNS.length - 1) nextCol++;
+          else if (rowIndex < processedClients.length - 1) { nextRow++; nextCol = 0; }
+       }
+    } else if (e.key === 'ArrowRight') {
+       e.preventDefault();
+       if (colIndex < COLUMNS.length - 1) nextCol++;
+    } else if (e.key === 'ArrowLeft') {
+       e.preventDefault();
+       if (colIndex > 0) nextCol--;
+    } else if (e.key === 'Enter') {
+       e.preventDefault();
+       setEditingCell(activeCell);
+       return;
+    }
+
+    if (nextRow !== rowIndex || nextCol !== colIndex) {
+       setActiveCell({ rowId: processedClients[nextRow].id, colId: COLUMNS[nextCol].id });
+       scrollToRow(nextRow);
+    }
+  };
+
+  // --- 8. HELPER RENDERERS ---
+  const renderStatus = useCallback((id: string) => {
+     const s = rowSaveStatus[id];
+     if (s === 'saving') return <span className="text-xs animate-spin">↻</span>;
+     if (s === 'saved') return <span className="text-xs text-emerald-500 font-bold">✓</span>;
+     if (s === 'error') return <span className="text-[10px] text-red-600 font-bold cursor-pointer" onClick={() => triggerAutosave(id)}>⚠️</span>;
+     if (dirtyRows.has(id)) return <span className="text-xs text-amber-500">✎</span>;
+     return null;
+  }, [rowSaveStatus, dirtyRows, triggerAutosave]);
+
+  // Handlers for Row
+  const handleSetActive = useCallback((r: string, c: string) => setActiveCell({ rowId: r, colId: c }), []);
+  const handleSetEditing = useCallback((r: string, c: string) => setEditingCell({ rowId: r, colId: c }), []);
+  const handleStopEditing = useCallback(() => setEditingCell(null), []);
+
+  const handleGenerateBlast = async () => {
     if (!blastTopic) return;
     setIsGeneratingBlast(true);
     try {
-      const draft = await generateWhatsAppDraft(blastTopic, { count: selectedIds.size, role: 'Financial Advisor' });
+      const draft = await generateWhatsAppDraft(blastTopic);
       setBlastMessage(draft);
     } catch (e) {
-      setBlastMessage("Hi {name}, checking in!");
+      console.error("Blast generation failed", e);
     } finally {
       setIsGeneratingBlast(false);
     }
   };
 
-  const generateBlastLinks = () => {
-    const links = Array.from(selectedIds).map(id => {
-      const client = clients.find(c => c.id === id);
-      if (!client) return null;
-      const personalizedMsg = blastMessage.replace('{name}', client.profile.name.split(' ')[0]);
-      const encodedMsg = encodeURIComponent(personalizedMsg);
-      const phone = client.profile.phone.replace(/\D/g, '');
-      return {
-        name: client.profile.name,
-        url: `https://wa.me/${phone}?text=${encodedMsg}`
-      };
-    }).filter(Boolean) as {name: string, url: string}[];
+  const handleCreateLinks = () => {
+    const links: {name: string, url: string}[] = [];
+    const selectedClients = processedClients.filter(c => selectedRowIds.has(c.id));
+    
+    selectedClients.forEach(client => {
+      const phone = client.profile.phone?.replace(/\D/g, '');
+      if (phone) {
+        const name = client.profile.name || 'Client';
+        const msg = blastMessage.replace('{name}', name.split(' ')[0]);
+        const encodedMsg = encodeURIComponent(msg);
+        links.push({
+          name: client.profile.name,
+          url: `https://wa.me/${phone}?text=${encodedMsg}`
+        });
+      }
+    });
     setGeneratedLinks(links);
   };
 
-  const handleInlineStatusUpdate = async (client: Client, newStatus: string) => {
-     try {
-       const updatedClient = {
-         ...client,
-         followUp: { ...client.followUp, status: newStatus as ContactStatus },
-         lastUpdated: new Date().toISOString()
-       };
-       await db.saveClient(updatedClient); 
-       if (onRefresh) onRefresh();
-       if (focusedClient && focusedClient.id === client.id) {
-           setFocusedClient(updatedClient);
-       }
-     } catch (e) {
-       console.error("Failed to update status", e);
-     }
-  };
-
-  const getDaysSinceUpdate = (dateString: string) => {
-    const date = new Date(dateString);
-    const now = new Date();
-    const diffTime = Math.abs(now.getTime() - date.getTime());
-    return Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
-  };
-
-  const generateSparklineData = (client: Client) => {
-     const startValue = toNum(client.cashflowState?.currentSavings) + toNum(client.investorState?.portfolioValue);
-     const monthlySave = (toNum(client.profile.monthlyIncome) - toNum(client.profile.takeHome)*0.5) || 1000;
-     const annualGrowth = 0.05;
-     
-     const data = [];
-     let val = startValue || 1000;
-     for (let i = 0; i < 10; i++) {
-        val = (val + (monthlySave * 12)) * (1 + annualGrowth);
-        data.push(val);
-     }
-     return data;
-  };
-
-  // HEADER ACTIONS
-  const headerActions = (
-    <div className="flex items-center gap-3">
-      <div className="relative group flex-1 md:flex-none">
-         <input 
-            type="text" 
-            placeholder="Search clients..." 
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full md:w-64 bg-gray-50 border border-gray-200 rounded-xl py-2.5 pl-10 pr-4 text-xs font-bold focus:bg-white focus:ring-2 focus:ring-indigo-500 transition-all outline-none"
-         />
-         <span className="absolute left-3.5 top-2.5 text-gray-400 group-focus-within:text-indigo-500">🔍</span>
-      </div>
-      
-      <div className="flex bg-gray-100 p-1 rounded-lg">
-         <button 
-            onClick={() => setViewMode('list')}
-            className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all ${viewMode === 'list' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}
-         >
-            List
-         </button>
-         <button 
-            onClick={() => setViewMode('kanban')}
-            className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all ${viewMode === 'kanban' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}
-         >
-            Pipeline
-         </button>
-      </div>
-
-      <button onClick={newClient} className="bg-slate-900 text-white hover:bg-slate-800 px-4 py-2.5 rounded-xl text-xs font-bold shadow-lg shadow-slate-200 active:scale-95 transition-all">
-         New Deal
-      </button>
-    </div>
-  );
+  const isAllSelected = processedClients.length > 0 && processedClients.every(c => selectedRowIds.has(c.id));
 
   return (
-    <div className="p-6 max-w-7xl mx-auto min-h-screen">
-      
-      <PageHeader 
-        title="Velocity CRM"
-        icon="⚡"
-        subtitle="Manage relationships and track deal flow."
-        action={headerActions}
-        className="mb-6"
-      />
+    <div className="flex flex-col h-[calc(100vh-4rem)] outline-none" 
+         tabIndex={0} 
+         ref={gridContainerRef}
+         onKeyDown={handleKeyDown}
+         onScroll={handleScroll}
+         style={{ overflowY: 'auto' }}
+    >
+       {/* Toolbar */}
+       <div className="bg-white border-b border-gray-200 px-6 py-3 flex justify-between items-center shrink-0 sticky top-0 z-40 shadow-sm">
+          <div className="flex items-center gap-4">
+             <h2 className="text-lg font-bold text-gray-800">Pipeline</h2>
+             <span className="bg-gray-100 text-gray-600 px-2 py-0.5 rounded text-xs font-bold">{processedClients.length} Records</span>
+             {selectedRowIds.size > 0 && (
+                <button 
+                   onClick={() => { setBlastModalOpen(true); setGeneratedLinks([]); }}
+                   className="bg-emerald-50 text-emerald-700 px-3 py-1.5 rounded text-xs font-bold hover:bg-emerald-100 flex items-center gap-1"
+                >
+                   💬 Message ({selectedRowIds.size})
+                </button>
+             )}
+          </div>
+          <div className="flex items-center gap-4 text-[10px] text-gray-400 font-medium">
+             <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-amber-500"></span> Unsaved</span>
+             <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-500"></span> Synced</span>
+          </div>
+       </div>
 
-      {/* FLOATING ACTION ISLAND */}
-      {selectedIds.size > 0 && (
-         <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-50 animate-bounce-in">
-            <div className="bg-slate-900 text-white pl-6 pr-2 py-2 rounded-full shadow-2xl flex items-center gap-4 border border-slate-700">
-               <span className="font-bold text-xs">{selectedIds.size} Selected</span>
-               <div className="h-4 w-px bg-slate-700"></div>
-               
-               <button onClick={handlePrepareBlast} className="hover:bg-white/10 px-3 py-1.5 rounded-full flex items-center gap-2 text-xs font-bold transition-colors text-emerald-400">
-                  <span>💬</span> WhatsApp Blast
-               </button>
-               
-               <button onClick={() => { if(confirm("Delete selected?")) selectedIds.forEach(id => deleteClient(id)); }} className="hover:bg-white/10 px-3 py-1.5 rounded-full flex items-center gap-2 text-xs font-bold transition-colors text-red-400">
-                  <span>🗑</span> Delete
-               </button>
-               
-               <button onClick={() => setSelectedIds(new Set())} className="ml-2 w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/20 transition-colors">
-                  ✕
-               </button>
-            </div>
-         </div>
-      )}
+       {/* Grid */}
+       <div className="relative bg-slate-50 min-h-full">
+          <table className="w-full border-collapse bg-white table-fixed" style={{ height: totalRows * ROW_HEIGHT }}>
+             <thead className="sticky top-0 z-30 bg-gray-50 shadow-sm text-left h-[44px]">
+                <tr>
+                   <th className="w-10 p-0 border-r border-b border-gray-200 bg-gray-50 sticky left-0 z-30">
+                      <div className="flex items-center justify-center h-full">
+                         <input 
+                            type="checkbox" 
+                            onChange={toggleAll} 
+                            checked={isAllSelected}
+                            className="rounded border-gray-300 cursor-pointer" 
+                         />
+                      </div>
+                   </th>
+                   {COLUMNS.map((col, idx) => (
+                      <th 
+                        key={col.id} 
+                        className={`p-0 border-b border-gray-200 bg-gray-50 ${idx === 0 ? 'sticky left-10 z-30' : ''}`}
+                        style={{ width: colWidths[col.id] || col.minWidth }}
+                      >
+                         <ColumnHeader 
+                            label={col.label} type={col.type} width={colWidths[col.id] || col.minWidth} 
+                            isSorted={sortCol === col.id ? sortDir : null} 
+                            onSort={(d) => { setSortCol(col.id); setSortDir(d); }} 
+                            onHide={() => {}} 
+                            onResize={(w) => setColWidths({...colWidths, [col.id]: w})} 
+                            fixed={idx === 0} 
+                         />
+                      </th>
+                   ))}
+                </tr>
+             </thead>
+             <tbody>
+                {paddingTop > 0 && <tr style={{ height: paddingTop }}><td colSpan={COLUMNS.length + 1} /></tr>}
+                
+                {virtualRows.map((client) => (
+                   <CrmRow 
+                      key={client.id}
+                      client={client}
+                      columns={COLUMNS}
+                      colWidths={colWidths}
+                      selectedRowIds={selectedRowIds}
+                      activeCell={activeCell}
+                      editingCell={editingCell}
+                      statusOptions={STATUS_OPTIONS}
+                      onToggleSelection={toggleSelection}
+                      onSetActive={handleSetActive}
+                      onSetEditing={handleSetEditing}
+                      onStopEditing={handleStopEditing}
+                      onUpdate={handleFieldUpdate}
+                      onLoadClient={loadClient}
+                      onQuickView={setDrawerClient}
+                      renderStatus={renderStatus}
+                   />
+                ))}
+                
+                {paddingBottom > 0 && <tr style={{ height: paddingBottom }}><td colSpan={COLUMNS.length + 1} /></tr>}
+             </tbody>
+          </table>
+       </div>
 
-      {/* MAIN CONTENT AREA */}
-      <SectionCard noPadding className="min-h-[600px] relative">
-         
-         {/* LIST VIEW (Enhanced) */}
-         {viewMode === 'list' && (
-            <div className="space-y-0">
-               {/* Header Row */}
-               <div className="grid grid-cols-12 gap-4 px-6 py-4 bg-gray-50 border-b border-gray-100 text-[10px] font-bold text-gray-500 uppercase tracking-widest">
-                  <div className="col-span-1 text-center flex items-center justify-center">
-                     <input 
-                        type="checkbox" 
-                        onChange={selectAll} 
-                        checked={filteredClients.length > 0 && filteredClients.every(c => selectedIds.has(c.id))} 
-                        className="accent-indigo-600 cursor-pointer w-4 h-4 rounded" 
-                     />
-                  </div>
-                  <div className="col-span-3">Client Name</div>
-                  <div className="col-span-2">Wealth Track</div>
-                  <div className="col-span-2">Status</div>
-                  <div className="col-span-2">Phone</div>
-                  <div className="col-span-2">Activity</div>
-               </div>
+       <ClientDrawer 
+          client={drawerClient} isOpen={!!drawerClient} onClose={() => setDrawerClient(null)}
+          onUpdateField={(field, val, section) => drawerClient && handleFieldUpdate(drawerClient.id, field, val, section)}
+          onStatusUpdate={(c, s) => handleFieldUpdate(c.id, 'status', s, 'followUp')}
+          onOpenFullProfile={() => { if(drawerClient) loadClient(drawerClient, true); }}
+          onDelete={() => { if(drawerClient) { deleteClient(drawerClient.id); setDrawerClient(null); } }}
+       />
 
-               {/* Rows */}
-               <div className="divide-y divide-gray-100">
-               {filteredClients.map(client => {
-                  const daysIdle = getDaysSinceUpdate(client.lastUpdated);
-                  const sparkData = generateSparklineData(client);
-                  
-                  return (
-                     <div 
-                        key={client.id} 
-                        onClick={() => handleRowClick(client)}
-                        className={`grid grid-cols-12 gap-4 px-6 py-4 items-center transition-all hover:bg-gray-50/80 cursor-pointer group ${selectedIds.has(client.id) ? 'bg-indigo-50/30' : ''}`}
-                     >
-                        <div className="col-span-1 flex justify-center" onClick={(e) => e.stopPropagation()}>
-                           <input 
-                              type="checkbox" 
-                              checked={selectedIds.has(client.id)}
-                              onChange={() => toggleSelection(client.id)}
-                              className="accent-indigo-600 w-4 h-4 cursor-pointer rounded"
-                           />
-                        </div>
-                        <div className="col-span-3 flex items-center gap-3">
-                           <div className="w-10 h-10 rounded-full bg-gradient-to-br from-indigo-50 to-indigo-100 text-indigo-600 flex items-center justify-center text-sm font-black border border-indigo-200">
-                              {client.profile.name.charAt(0).toUpperCase()}
-                           </div>
-                           <div>
-                              <div className="font-bold text-sm text-slate-800 group-hover:text-indigo-600 transition-colors">{client.profile.name}</div>
-                              <div className="text-[10px] text-slate-400 font-medium">{client.profile.jobTitle || 'Unknown Role'}</div>
-                           </div>
-                        </div>
-                        {/* MICRO CHART */}
-                        <div className="col-span-2">
-                           <div className="h-8 w-24">
-                              <Sparkline data={sparkData} width={100} height={30} fill={true} />
-                           </div>
-                        </div>
-                        <div className="col-span-2" onClick={(e) => e.stopPropagation()}>
-                           <StatusDropdown client={client} onUpdate={handleInlineStatusUpdate} />
-                        </div>
-                        <div className="col-span-2 text-xs font-mono text-slate-500">
-                           {client.profile.phone || '-'}
-                        </div>
-                        <div className="col-span-2">
-                           <div className={`text-xs font-bold flex items-center gap-2 ${daysIdle > 30 ? 'text-red-500' : 'text-slate-400'}`}>
-                              {daysIdle > 30 && <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse"></span>}
-                              {daysIdle === 0 ? 'Today' : `${daysIdle}d ago`}
-                           </div>
-                        </div>
-                     </div>
-                  );
-               })}
-               </div>
-               
-               {filteredClients.length === 0 && (
-                  <div className="p-12 text-center text-gray-400 text-sm italic">
-                     No clients found. Click "New Deal" to start.
-                  </div>
-               )}
-            </div>
-         )}
-
-         {/* KANBAN VIEW */}
-         {viewMode === 'kanban' && (
-            <div className="flex gap-6 overflow-x-auto p-6 h-full min-h-[600px] bg-gray-50/50">
-               {PIPELINE_STAGES.map(stageKey => {
-                  const stageConfig = STATUS_CONFIG[stageKey];
-                  const stageClients = filteredClients.filter(c => (c.followUp.status || 'new') === stageKey);
-                  const totalValue = stageClients.reduce((acc, c) => acc + (c.wealthState ? Number(c.wealthState.annualPremium || 0) : 0), 0);
-
-                  return (
-                     <div key={stageKey} className="min-w-[280px] w-[280px] flex flex-col h-full">
-                        <div className="flex justify-between items-center mb-3 px-1">
-                           <div className="flex items-center gap-2">
-                              <span className={`w-2 h-2 rounded-full ${stageConfig.ring.replace('ring-', 'bg-').replace('-200', '-400')}`}></span>
-                              <h3 className="text-xs font-black text-slate-700 uppercase tracking-wide">{stageConfig.label}</h3>
-                              <span className="bg-white border border-gray-200 text-gray-600 text-[10px] px-1.5 rounded font-bold">{stageClients.length}</span>
-                           </div>
-                        </div>
-                        
-                        <div className="flex-1 space-y-2">
-                           {stageClients.map(client => (
-                              <div 
-                                 key={client.id}
-                                 onClick={() => handleRowClick(client)}
-                                 className="bg-white p-3 rounded-lg border border-gray-200 shadow-sm hover:shadow-md hover:border-indigo-200 transition-all cursor-pointer group relative"
-                              >
-                                 <div className="flex justify-between items-start mb-2">
-                                    <div className="font-bold text-xs text-slate-800">{client.profile.name}</div>
-                                    <div className="w-5 h-5 rounded-full bg-gray-50 flex items-center justify-center text-[9px] text-gray-400 font-bold border border-gray-100">
-                                       {client.profile.name.charAt(0)}
-                                    </div>
-                                 </div>
-                                 <div className="text-[10px] text-slate-500 line-clamp-2 mb-2">
-                                    {client.followUp.notes || "No notes added yet."}
-                                 </div>
-                                 <div className="flex justify-between items-center pt-2 border-t border-gray-50">
-                                    <span className={`text-[9px] font-mono ${getDaysSinceUpdate(client.lastUpdated) > 30 ? 'text-red-500 font-bold' : 'text-gray-400'}`}>
-                                       {getDaysSinceUpdate(client.lastUpdated)}d ago
-                                    </span>
-                                    {/* Quick Actions (Move Next) */}
-                                    <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity" onClick={(e) => e.stopPropagation()}>
-                                       <button 
-                                          onClick={() => handleInlineStatusUpdate(client, PIPELINE_STAGES[Math.min(PIPELINE_STAGES.length-1, PIPELINE_STAGES.indexOf(stageKey)+1)])}
-                                          className="w-5 h-5 flex items-center justify-center bg-indigo-50 text-indigo-600 rounded hover:bg-indigo-100 text-[10px]" title="Move Next"
-                                       >→</button>
-                                    </div>
-                                 </div>
-                              </div>
-                           ))}
-                           {stageClients.length === 0 && (
-                              <div className="h-24 flex items-center justify-center border-2 border-dashed border-gray-200 rounded-lg">
-                                 <span className="text-gray-300 text-xs font-bold opacity-50">Empty</span>
-                              </div>
-                           )}
-                        </div>
-                        
-                        {/* Stage Summary */}
-                        {totalValue > 0 && (
-                           <div className="mt-2 text-center">
-                              <span className="text-[10px] font-bold text-gray-400 uppercase">Potential Value</span>
-                              <div className="text-xs font-bold text-slate-700">${totalValue.toLocaleString()}</div>
-                           </div>
-                        )}
-                     </div>
-                  );
-               })}
-            </div>
-         )}
-
-      </SectionCard>
-
-      <ClientDrawer 
-        client={focusedClient} 
-        isOpen={drawerOpen} 
-        onClose={() => setDrawerOpen(false)}
-        onUpdateField={updateFocusedField}
-        onStatusUpdate={handleInlineStatusUpdate}
-        onOpenFullProfile={openFullWorkspace}
-        onDelete={() => { if(confirm("Delete this client permanently?")) { deleteClient(focusedClient!.id); setDrawerOpen(false); } }}
-      />
-
-      <BlastModal 
-        isOpen={blastModalOpen}
-        onClose={() => setBlastModalOpen(false)}
-        selectedCount={selectedIds.size}
-        blastTopic={blastTopic}
-        setBlastTopic={setBlastTopic}
-        blastMessage={blastMessage}
-        setBlastMessage={setBlastMessage}
-        isGeneratingBlast={isGeneratingBlast}
-        onGenerateAI={handleGenerateAIBlast}
-        generatedLinks={generatedLinks}
-        onGenerateLinks={generateBlastLinks}
-      />
-
+       <BlastModal 
+          isOpen={blastModalOpen} onClose={() => setBlastModalOpen(false)}
+          selectedCount={selectedRowIds.size} blastTopic={blastTopic} setBlastTopic={setBlastTopic}
+          blastMessage={blastMessage} setBlastMessage={setBlastMessage}
+          isGeneratingBlast={isGeneratingBlast} onGenerateAI={handleGenerateBlast}
+          generatedLinks={generatedLinks} onGenerateLinks={handleCreateLinks}
+       />
     </div>
   );
 };

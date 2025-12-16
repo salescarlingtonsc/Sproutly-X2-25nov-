@@ -24,9 +24,9 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLogin }) => {
         
         {/* LEFT: The Pitch - REVISED PSYCHOLOGY */}
         <div className="flex-1 text-center md:text-left space-y-8">
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-xs font-bold uppercase tracking-widest backdrop-blur-md">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-            System Operational • v2.4
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs font-bold uppercase tracking-widest backdrop-blur-md shadow-[0_0_15px_rgba(245,158,11,0.2)]">
+            <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
+            Version 3.0 • Gold Release
           </div>
           
           <h1 className="text-5xl md:text-7xl font-extrabold tracking-tight leading-tight">
@@ -40,9 +40,9 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLogin }) => {
           </h1>
           
           <p className="text-slate-400 text-lg md:text-xl leading-relaxed max-w-lg mx-auto md:mx-0">
-            Advanced modeling for complex lives. Sproutly Quantum uses 
-            <span className="text-indigo-400 font-bold"> Generative AI</span> and 
-            <span className="text-emerald-400 font-bold"> Deep Math</span> to visualize your future with uncompromising accuracy.
+            The world's most advanced financial modeling engine. Powered by 
+            <span className="text-indigo-400 font-bold"> Gemini 3.0 Pro </span> and 
+            <span className="text-emerald-400 font-bold"> Deep Thinking</span> protocols to visualize wealth with 99.9% logical consistency.
           </p>
 
           <div className="flex flex-col sm:flex-row items-center gap-4 pt-4">
@@ -51,7 +51,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLogin }) => {
               className="w-full sm:w-auto px-8 py-4 bg-white text-slate-900 hover:bg-slate-50 rounded-xl font-bold text-sm transition-all shadow-[0_0_40px_-10px_rgba(255,255,255,0.3)] flex items-center justify-center gap-2 group"
             >
               <span>🔐</span> 
-              <span>Access Secure Portal</span>
+              <span>Enter Quantum Portal</span>
               <span className="group-hover:translate-x-1 transition-transform">→</span>
             </button>
             <div className="flex items-center gap-[-10px]">

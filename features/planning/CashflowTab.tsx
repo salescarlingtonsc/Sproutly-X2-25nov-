@@ -10,7 +10,7 @@ import { CashflowState } from '../../types';
 
 const CashflowTab: React.FC = () => {
   const { 
-    cashflowData, currentSavings, 
+    cashflowData, 
     expenses, setExpenses,
     customExpenses, setCustomExpenses,
     profile, retirement,
@@ -161,6 +161,31 @@ const CashflowTab: React.FC = () => {
     return projection;
   }, [cashflowData, cashflowState.currentSavings, projectToAge, additionalIncomes, withdrawals, careerEvents, bankInterestRate, profile, expenses, customExpenses, cpfData, currentAge, customBaseIncome, retirement.investmentPercent]);
 
+  // --- CHART DATA PREP ---
+  const chartData = useMemo(() => {
+    if (!monthlyProjection.length) return [];
+    
+    // Initial Point (Now)
+    const startBalance = toNum(cashflowState.currentSavings, 0);
+    const startPoint = { label: `Age ${currentAge}`, value: startBalance };
+    
+    // Yearly Points (End of every 12th month, representing end of that year)
+    // i=11 is End of Year 1 (approx Age+1)
+    const yearlyPoints = monthlyProjection
+        .filter((_, i) => (i + 1) % 12 === 0)
+        .map(p => ({
+            label: `Age ${p.age + 1}`,
+            value: p.balance
+        }));
+    
+    // If projection is short, show monthly
+    if (monthlyProjection.length < 24) {
+       return monthlyProjection.map(p => ({ label: `${p.monthName} ${p.year}`, value: p.balance }));
+    }
+        
+    return [startPoint, ...yearlyPoints];
+  }, [monthlyProjection, cashflowState.currentSavings, currentAge]);
+
   if (!cashflowData) return <div className="p-10 text-center text-gray-400">Loading Cashflow Engine...</div>;
 
   const headerAction = (
@@ -284,8 +309,8 @@ const CashflowTab: React.FC = () => {
          <SectionCard title="Liquid Cash Forecast" className="lg:col-span-2">
             <p className="text-xs text-gray-500 mb-6">Projections exclude investment contributions to show actual bank liquidity.</p>
             <LineChart 
-               xLabels={monthlyProjection.filter((_, i) => i % 12 === 0).map(p => `Age ${p.age}`)}
-               series={[{ name: 'Cash Balance', values: monthlyProjection.filter((_, i) => i % 12 === 0).map(p => p.balance), stroke: '#10b981' }]}
+               xLabels={chartData.map(p => p.label)}
+               series={[{ name: 'Cash Balance', values: chartData.map(p => p.value), stroke: '#10b981' }]}
                height={300}
                onFormatY={(v) => v >= 1000000 ? `$${(v/1000000).toFixed(1)}M` : `$${(v/1000).toFixed(0)}k`}
             />
@@ -319,7 +344,7 @@ const CashflowTab: React.FC = () => {
                      </div>
                      
                      {/* Row 2: Controls */}
-                     <div className="flex gap-2 items-center">
+                     <div className="flex gap-2 items-center flex-wrap">
                         <select 
                            value={i.type} 
                            onChange={(e) => updateIncomeItem(i.id, 'type', e.target.value)}
@@ -341,23 +366,42 @@ const CashflowTab: React.FC = () => {
                         )}
 
                         <div className="flex items-center gap-1 ml-auto">
-                           <span className="text-[10px] text-gray-500">Age:</span>
+                           <span className="text-[10px] text-gray-500">Start:</span>
                            <input 
                               type="number" 
                               value={i.startAge} 
                               onChange={(e) => updateIncomeItem(i.id, 'startAge', e.target.value)}
-                              className="w-10 bg-white border border-emerald-200 rounded px-1 py-0.5 text-center" 
+                              className="w-8 bg-white border border-emerald-200 rounded px-1 py-0.5 text-center text-xs" 
+                              title="Start Age"
                            />
+                           <select
+                              value={i.startMonth || 0}
+                              onChange={(e) => updateIncomeItem(i.id, 'startMonth', parseInt(e.target.value))}
+                              className="bg-white border border-emerald-200 rounded px-0 py-0.5 text-[10px]"
+                              title="Start Month"
+                           >
+                              {monthNames.map((m, idx) => <option key={idx} value={idx}>{m}</option>)}
+                           </select>
+
                            {i.type === 'recurring' && (
                               <>
-                                 <span className="text-[10px] text-gray-500">-</span>
+                                 <span className="text-[10px] text-gray-500 ml-1">End:</span>
                                  <input 
                                     type="number" 
                                     value={i.endAge || ''} 
                                     onChange={(e) => updateIncomeItem(i.id, 'endAge', e.target.value)}
                                     placeholder="∞"
-                                    className="w-10 bg-white border border-emerald-200 rounded px-1 py-0.5 text-center" 
+                                    className="w-8 bg-white border border-emerald-200 rounded px-1 py-0.5 text-center text-xs" 
+                                    title="End Age"
                                  />
+                                 <select
+                                    value={i.endMonth === undefined ? 11 : i.endMonth}
+                                    onChange={(e) => updateIncomeItem(i.id, 'endMonth', parseInt(e.target.value))}
+                                    className="bg-white border border-emerald-200 rounded px-0 py-0.5 text-[10px]"
+                                    title="End Month"
+                                 >
+                                    {monthNames.map((m, idx) => <option key={idx} value={idx}>{m}</option>)}
+                                 </select>
                               </>
                            )}
                         </div>
@@ -393,7 +437,7 @@ const CashflowTab: React.FC = () => {
                      </div>
                      
                      {/* Row 2: Controls */}
-                     <div className="flex gap-2 items-center">
+                     <div className="flex gap-2 items-center flex-wrap">
                         <select 
                            value={w.type} 
                            onChange={(e) => updateWithdrawalItem(w.id, 'type', e.target.value)}
@@ -415,23 +459,42 @@ const CashflowTab: React.FC = () => {
                         )}
 
                         <div className="flex items-center gap-1 ml-auto">
-                           <span className="text-[10px] text-gray-500">Age:</span>
+                           <span className="text-[10px] text-gray-500">Start:</span>
                            <input 
                               type="number" 
                               value={w.startAge} 
                               onChange={(e) => updateWithdrawalItem(w.id, 'startAge', e.target.value)}
-                              className="w-10 bg-white border border-red-200 rounded px-1 py-0.5 text-center" 
+                              className="w-8 bg-white border border-red-200 rounded px-1 py-0.5 text-center text-xs" 
+                              title="Start Age"
                            />
+                           <select
+                              value={w.startMonth || 0}
+                              onChange={(e) => updateWithdrawalItem(w.id, 'startMonth', parseInt(e.target.value))}
+                              className="bg-white border border-red-200 rounded px-0 py-0.5 text-[10px]"
+                              title="Start Month"
+                           >
+                              {monthNames.map((m, idx) => <option key={idx} value={idx}>{m}</option>)}
+                           </select>
+
                            {w.type === 'recurring' && (
                               <>
-                                 <span className="text-[10px] text-gray-500">-</span>
+                                 <span className="text-[10px] text-gray-500 ml-1">End:</span>
                                  <input 
                                     type="number" 
                                     value={w.endAge || ''} 
                                     onChange={(e) => updateWithdrawalItem(w.id, 'endAge', e.target.value)}
                                     placeholder="∞"
-                                    className="w-10 bg-white border border-red-200 rounded px-1 py-0.5 text-center" 
+                                    className="w-8 bg-white border border-red-200 rounded px-1 py-0.5 text-center text-xs" 
+                                    title="End Age"
                                  />
+                                 <select
+                                    value={w.endMonth === undefined ? 11 : w.endMonth}
+                                    onChange={(e) => updateWithdrawalItem(w.id, 'endMonth', parseInt(e.target.value))}
+                                    className="bg-white border border-red-200 rounded px-0 py-0.5 text-[10px]"
+                                    title="End Month"
+                                 >
+                                    {monthNames.map((m, idx) => <option key={idx} value={idx}>{m}</option>)}
+                                 </select>
                               </>
                            )}
                         </div>
@@ -478,7 +541,7 @@ const CashflowTab: React.FC = () => {
                </thead>
                <tbody className="divide-y divide-gray-100">
                   {monthlyProjection
-                     .filter((_, i) => ledgerView === 'monthly' ? true : i % 12 === 0)
+                     .filter((_, i) => ledgerView === 'monthly' ? true : (i + 1) % 12 === 0)
                      .map((row, idx) => (
                      <tr key={idx} className={`hover:bg-gray-50 transition-colors ${row.monthName === 'Jan' && ledgerView === 'monthly' ? 'bg-indigo-50/30' : ''}`}>
                         <td className="p-4 font-bold text-gray-700 bg-gray-50/30">

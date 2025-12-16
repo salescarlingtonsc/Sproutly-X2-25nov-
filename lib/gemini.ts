@@ -356,7 +356,7 @@ export const generateInvestmentThesis = async (clientProfile: any, investorState
       model: "gemini-3-pro-preview",
       contents: prompt,
       config: {
-        thinkingConfig: { thinkingBudget: 16000 }, 
+        thinkingConfig: { thinkingBudget: 32768 }, // UPDATED TO MAX BUDGET
       }
     });
 
@@ -395,7 +395,7 @@ export const evaluatePropertyPurchase = async (clientProfile: any, propertyState
       model: "gemini-3-pro-preview",
       contents: prompt,
       config: {
-        thinkingConfig: { thinkingBudget: 16000 },
+        thinkingConfig: { thinkingBudget: 32768 }, // UPDATED TO MAX BUDGET
       }
     });
 
