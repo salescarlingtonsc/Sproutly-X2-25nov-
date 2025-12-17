@@ -83,7 +83,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           subscription_tier: isHardcodedAdmin ? 'diamond' : 'free',
           status: isHardcodedAdmin ? 'approved' : 'pending',
           extra_slots: 0,
-          created_at: new Date().toISOString()
+          created_at: new Date().toISOString(),
+          modules: []
         };
         await supabase.from('profiles').insert(newProfile);
         data = newProfile;

@@ -33,6 +33,7 @@ const CrmRow: React.FC<CrmRowProps> = memo(({
      if (col.section === 'followUp') return (client.followUp as any)?.[col.field];
      if (col.section === 'appointments') return (client.appointments as any)?.[col.field];
      if (col.section === 'investorState') return (client.investorState as any)?.[col.field];
+     if (col.section === 'dynamic') return (client.fieldValues as any)?.[col.field];
      return '';
   };
 
@@ -93,7 +94,7 @@ const CrmRow: React.FC<CrmRowProps> = memo(({
                   <EditableCell 
                      value={cellValue} 
                      type={col.type as any}
-                     options={col.id === 'status' ? statusOptions : undefined}
+                     options={col.id === 'status' ? statusOptions : col.options}
                      isActive={isActive} 
                      isEditing={isEditing}
                      onEditStart={() => onSetEditing(client.id, col.id)}
@@ -112,13 +113,12 @@ const CrmRow: React.FC<CrmRowProps> = memo(({
     </tr>
   );
 }, (prev, next) => {
-  // Custom comparator for performance
   return (
     prev.client === next.client &&
-    prev.selectedRowIds === next.selectedRowIds && // Ref equality check is fast
+    prev.selectedRowIds === next.selectedRowIds && 
     prev.activeCell === next.activeCell &&
     prev.editingCell === next.editingCell &&
-    prev.colWidths === next.colWidths // Ref equality
+    prev.colWidths === next.colWidths
   );
 });
 

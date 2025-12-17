@@ -6,47 +6,43 @@ const LOCAL_STORAGE_KEY = 'fa_clients';
 
 export const db = {
   getClients: async (userId?: string): Promise<Client[]> => {
-    if (userId && isSupabaseConfigured() && supabase) {
-      const { data, error } = await supabase
-        .from('clients')
-        .select('*')
-        .order('updated_at', { ascending: false });
+    // 1. Supabase Mode
+    if (isSupabaseConfigured() && supabase) {
+      try {
+        // We rely entirely on RLS policies (defined in SQL) to filter data.
+        // Do NOT add .eq('user_id', userId) here, as it can cause conflicts if userId is undefined.
+        const { data, error } = await supabase
+          .from('clients')
+          .select('*')
+          .order('updated_at', { ascending: false });
+          
+        if (error) {
+          // Fix: Stringify error to see the actual message instead of [object Object]
+          console.error('Supabase fetch error:', JSON.stringify(error, null, 2));
+          return [];
+        }
         
-      if (error) {
-        console.error('Supabase fetch error:', error);
+        if (!data) return [];
+
+        // Parse the JSONB data column + root ID
+        const clients = data.map((row: any) => {
+          // Safety check if row.data is null
+          const clientData = row.data || {};
+          return {
+            ...clientData, 
+            id: row.id, // Ensure the top-level ID matches the DB ID
+            _ownerId: row.user_id 
+          };
+        });
+
+        return clients;
+      } catch (e: any) {
+        console.error('Unexpected error in getClients:', e);
         return [];
       }
-      
-      // Robust Owner Email Fetching (simulating a join)
-      const clients = data.map((row: any) => ({
-        ...row.data, 
-        id: row.id,
-        _ownerId: row.user_id // Temporary internal use
-      }));
-
-      try {
-        const userIds = [...new Set(clients.map((c: any) => c._ownerId))];
-        if (userIds.length > 0) {
-          const { data: profiles } = await supabase
-            .from('profiles')
-            .select('id, email')
-            .in('id', userIds);
-          
-          if (profiles) {
-            const emailMap = new Map(profiles.map((p: any) => [p.id, p.email]));
-            clients.forEach((c: any) => {
-              c.ownerEmail = emailMap.get(c._ownerId);
-              delete c._ownerId;
-            });
-          }
-        }
-      } catch (e) {
-        console.warn("Failed to fetch owner emails for analytics", e);
-      }
-      
-      return clients;
     }
 
+    // 2. Local Storage Fallback
     try {
       const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
       return saved ? JSON.parse(saved) : [];
@@ -62,25 +58,24 @@ export const db = {
     };
 
     if (isSupabaseConfigured() && supabase) {
-      // FIX: Ensure we are using the actual authenticated session ID for RLS
-      // This prevents "new row violates row-level security policy" if state drifts
+      // Ensure we have a valid user ID for the Row Level Security
       const { data: { session } } = await supabase.auth.getSession();
       const activeUserId = session?.user?.id || userId;
 
       if (!activeUserId) {
-        throw new Error("User not authenticated");
+        throw new Error("Cannot save: User is not authenticated.");
       }
 
-      // Upsert logic
-      const payload = {
+      // Payload maps exactly to the DB schema
+      const payload: any = {
         user_id: activeUserId,
         data: clientToSave,
         updated_at: new Date().toISOString()
       };
       
-      // Only include ID if it's a valid existing UUID, otherwise let DB gen one
+      // If client.id is a valid UUID, include it to trigger an UPDATE (upsert)
       if (client.id && client.id.length > 20) {
-        Object.assign(payload, { id: client.id });
+        payload.id = client.id;
       }
 
       const { data, error } = await supabase
@@ -90,14 +85,13 @@ export const db = {
         .single();
 
       if (error) {
-        console.error("DB Save Error:", error);
-        // Wrap the Supabase error object in a real Error so .message is available downstream
-        throw new Error(error.message || 'Database save failed with unknown error');
+        console.error("DB Save Error:", JSON.stringify(error, null, 2));
+        throw new Error(error.message || 'Database save failed');
       }
       
-      // Return merged object with the authoritative ID from DB
+      // Return the merged object with the official DB ID
       return {
-        ...data.data,
+        ...(data.data || {}),
         id: data.id
       };
     }
@@ -118,14 +112,17 @@ export const db = {
   },
 
   deleteClient: async (clientId: string, userId?: string): Promise<void> => {
-    if (userId && isSupabaseConfigured() && supabase) {
+    if (isSupabaseConfigured() && supabase) {
+      // RLS ensures users can only delete their own rows
       const { error } = await supabase.from('clients').delete().eq('id', clientId);
       if (error) {
+        console.error("DB Delete Error:", JSON.stringify(error, null, 2));
         throw new Error(error.message || 'Delete failed');
       }
       return;
     }
 
+    // Local Storage Fallback
     const currentClientsStr = localStorage.getItem(LOCAL_STORAGE_KEY);
     if (currentClientsStr) {
       const currentClients: Client[] = JSON.parse(currentClientsStr);

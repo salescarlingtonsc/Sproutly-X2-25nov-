@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef, useLayoutEffect, PropsWithChildren } from 'react';
 import { createPortal } from 'react-dom';
 
@@ -101,9 +102,6 @@ export const SelectEditor = ({ value, onChange, onClose, rect, options, onAddOpt
       e.preventDefault();
       onClose();
     } else if (e.key === 'Tab') {
-        // Tab behavior handled by parent grid, so we just close and let event bubble? 
-        // Actually, we want to prevent default if we want to select first, 
-        // but Airtable usually selects focused item on Tab.
         if (filteredOptions[activeIndex]) {
            onChange(filteredOptions[activeIndex]);
         }
@@ -133,7 +131,7 @@ export const SelectEditor = ({ value, onChange, onClose, rect, options, onAddOpt
             onChange={e => { setSearchTerm(e.target.value); setActiveIndex(0); }}
             onKeyDown={handleKeyDown}
             placeholder="Find or add option"
-            className="w-full text-xs p-1.5 bg-gray-50 rounded border-none outline-none focus:ring-1 focus:ring-indigo-500 font-medium"
+            className="w-full text-xs p-1.5 bg-gray-50 rounded border-none outline-none focus:ring-1 focus:ring-indigo-500 font-medium text-gray-900"
           />
         </div>
         <div className="overflow-y-auto p-1 custom-scrollbar" style={{ maxHeight: '200px' }}>
@@ -196,13 +194,6 @@ export const TextEditor = ({ value, onChange, onClose, rect }: BaseEditorProps) 
     } else if (e.key === 'Tab') {
       onChange(localVal);
       onClose(); 
-      // Note: We intentionally let Tab bubble in CrmTab logic if needed, 
-      // but here we close first. The Grid's keydown listener usually handles the nav 
-      // if we don't stopProp here. But we stopped prop at top.
-      // To allow Tab to navigate, we actually shouldn't stop prop for Tab.
-      // Re-dispatching or handling logic in parent is cleaner. 
-      // For now: Close -> Parent detects edit end -> Parent handles nav? 
-      // Simpler: Just rely on onBlur or manual close.
     }
   };
 
@@ -224,7 +215,7 @@ export const TextEditor = ({ value, onChange, onClose, rect }: BaseEditorProps) 
           value={localVal}
           onChange={e => setLocalVal(e.target.value)}
           onKeyDown={handleKeyDown}
-          className="w-full h-full p-2 text-sm bg-transparent outline-none resize-none font-medium text-gray-800"
+          className="w-full h-full p-2 text-sm bg-white text-gray-900 outline-none resize-none font-medium"
         />
         <div className="text-[9px] text-gray-400 px-2 pb-1 text-right bg-gray-50 border-t border-gray-100">
            Enter to save • Shift+Enter for newline
@@ -239,10 +230,10 @@ export const DateEditor = ({ value, onChange, onClose, rect }: BaseEditorProps) 
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    // Small timeout to allow render before focusing native picker
-    setTimeout(() => {
-        try { inputRef.current?.showPicker(); } catch(e) { inputRef.current?.focus(); }
-    }, 50);
+    // Only focus, do NOT showPicker() automatically as it can cause artifacts
+    if (inputRef.current) {
+       inputRef.current.focus();
+    }
   }, []);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -267,7 +258,8 @@ export const DateEditor = ({ value, onChange, onClose, rect }: BaseEditorProps) 
           value={value || ''}
           onChange={(e) => { onChange(e.target.value); onClose(); }}
           onKeyDown={handleKeyDown}
-          className="p-1 border border-gray-300 rounded text-sm outline-none focus:border-indigo-500"
+          className="p-1 border border-gray-300 rounded text-sm outline-none focus:border-indigo-500 bg-white text-gray-900 block w-full"
+          style={{ colorScheme: 'light' }}
         />
       </div>
     </EditorPortal>

@@ -1,8 +1,11 @@
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Client } from '../../../types';
+import { Client, ClientDocument } from '../../../types';
 import StatusDropdown from './StatusDropdown';
 import { SelectEditor, TextEditor, DateEditor, getOptionStyle } from './CellEditors';
+import FileUploader from '../../../components/common/FileUploader';
+import { getClientFiles, uploadClientFile, deleteClientFile } from '../../../lib/db/clientFiles';
+import { getClientActivities, logActivity, ActivityItem } from '../../../lib/db/activities';
 
 interface ClientDrawerProps {
   client: Client | null;
@@ -21,8 +24,6 @@ const DrawerField = ({
 }) => {
   const [isEditing, setIsEditing] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-  
-  // Need to ensure rect is available even after state update
   const [rect, setRect] = useState<DOMRect | null>(null);
 
   useEffect(() => {
@@ -77,6 +78,62 @@ const DrawerField = ({
 const ClientDrawer: React.FC<ClientDrawerProps> = ({ 
   client, isOpen, onClose, onUpdateField, onStatusUpdate, onOpenFullProfile, onDelete 
 }) => {
+  const [activeTab, setActiveTab] = useState<'details' | 'documents' | 'activity'>('details');
+  const [files, setFiles] = useState<ClientDocument[]>([]);
+  const [activities, setActivities] = useState<ActivityItem[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (client && isOpen) {
+      loadExtras();
+    }
+  }, [client?.id, isOpen, activeTab]);
+
+  const loadExtras = async () => {
+    if (!client) return;
+    setLoading(true);
+    try {
+      if (activeTab === 'documents') {
+         const docs = await getClientFiles(client.id);
+         setFiles(docs);
+      }
+      if (activeTab === 'activity') {
+         const acts = await getClientActivities(client.id);
+         setActivities(acts);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+    setLoading(false);
+  };
+
+  const handleFileUpload = async (uploadedFiles: File[]) => {
+    if (!client) return;
+    try {
+      for (const f of uploadedFiles) {
+         await uploadClientFile(client.id, f);
+      }
+      loadExtras(); // Refresh list
+    } catch (e) {
+      alert("Failed to upload file");
+    }
+  };
+
+  const handleDeleteFile = async (id: string, path: string) => {
+    if (!client) return;
+    if(!confirm("Delete file permanently?")) return;
+    await deleteClientFile(id, path, client.id);
+    loadExtras();
+  };
+
+  const handleStatusChange = async (c: Client, s: string) => {
+    onStatusUpdate(c, s);
+    // Explicitly log the status change activity
+    await logActivity(c.id, 'status_change', `Status updated to ${s}`);
+    // If activity tab is open, refresh it
+    if (activeTab === 'activity') loadExtras();
+  };
+
   if (!isOpen || !client) return null;
 
   return (
@@ -91,141 +148,121 @@ const ClientDrawer: React.FC<ClientDrawerProps> = ({
         {/* Header */}
         <div className="px-6 py-3 border-b border-gray-200 flex justify-between items-center bg-white shrink-0">
           <div className="flex items-center gap-2 text-sm text-gray-500">
-             <button onClick={onClose} className="hover:bg-gray-100 p-1 rounded transition-colors">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
-             </button>
-             <span className="font-medium text-gray-400">/ Record View / {client.profile.name}</span>
+             <button onClick={onClose} className="hover:bg-gray-100 p-1 rounded transition-colors">✕</button>
+             <span className="font-medium text-gray-400">/ {client.profile.name}</span>
           </div>
           <div className="flex items-center gap-2">
              <button onClick={onDelete} className="text-xs font-bold text-red-600 bg-red-50 px-3 py-1.5 rounded hover:bg-red-100 transition-colors">
                 Delete
              </button>
              <button onClick={onOpenFullProfile} className="text-xs font-bold text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded hover:bg-indigo-100 transition-colors">
-                Open Full Profile ↗
+                Full Profile ↗
              </button>
           </div>
         </div>
 
+        {/* Tabs */}
+        <div className="px-6 border-b border-gray-100 flex gap-6 bg-gray-50/50">
+           {['details', 'documents', 'activity'].map((t) => (
+              <button 
+                key={t}
+                onClick={() => setActiveTab(t as any)}
+                className={`py-3 text-sm font-bold border-b-2 transition-colors capitalize ${activeTab === t ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
+              >
+                 {t}
+              </button>
+           ))}
+        </div>
+
         {/* Body */}
-        <div className="flex-1 flex overflow-hidden">
+        <div className="flex-1 overflow-y-auto p-8 custom-scrollbar bg-white">
            
-           {/* LEFT: Fields */}
-           <div className="flex-1 overflow-y-auto p-8 custom-scrollbar border-r border-gray-200 bg-white">
+           {activeTab === 'details' && (
               <div className="max-w-2xl mx-auto space-y-8">
-                 
-                 {/* Title Field (Name) */}
-                 <div>
-                    <input 
-                       type="text" 
-                       value={client.profile.name}
-                       onChange={(e) => onUpdateField('name', e.target.value)}
-                       className="text-3xl font-bold text-gray-900 w-full outline-none placeholder-gray-300 bg-transparent"
-                       placeholder="Unnamed Record"
-                    />
-                 </div>
-
+                 <input 
+                    type="text" 
+                    value={client.profile.name}
+                    onChange={(e) => onUpdateField('name', e.target.value)}
+                    className="text-3xl font-bold text-gray-900 w-full outline-none placeholder-gray-300 bg-transparent"
+                    placeholder="Unnamed Record"
+                 />
                  <div className="space-y-6">
-                    {/* Status */}
                     <div className="flex gap-4 items-start">
-                       <div className="w-32 pt-2 text-xs font-bold text-gray-500 uppercase flex items-center gap-2"><span className="text-lg">▼</span> Status</div>
-                       <div className="flex-1">
-                          <StatusDropdown client={client} onUpdate={onStatusUpdate} />
-                       </div>
+                       <div className="w-32 pt-2 text-xs font-bold text-gray-500 uppercase flex items-center gap-2">Status</div>
+                       <div className="flex-1"><StatusDropdown client={client} onUpdate={handleStatusChange} /></div>
                     </div>
-
-                    {/* Phone */}
+                    {/* Standard Fields */}
                     <div className="flex gap-4 items-center group">
-                       <div className="w-32 text-xs font-bold text-gray-500 uppercase flex items-center gap-2"><span className="text-lg">#</span> Phone</div>
-                       <DrawerField 
-                          type="text" 
-                          value={client.profile.phone} 
-                          onChange={(v) => onUpdateField('phone', v)} 
-                          placeholder="+65..." 
-                       />
+                       <div className="w-32 text-xs font-bold text-gray-500 uppercase">Phone</div>
+                       <DrawerField type="text" value={client.profile.phone} onChange={(v) => onUpdateField('phone', v)} placeholder="+65..." />
                     </div>
-
-                    {/* Platform */}
                     <div className="flex gap-4 items-center group">
-                       <div className="w-32 text-xs font-bold text-gray-500 uppercase flex items-center gap-2"><span className="text-lg">≡</span> Platform</div>
-                       <DrawerField 
-                          type="select" 
-                          options={['IG', 'FB', 'LinkedIn', 'Referral', 'Roadshow', 'Other']}
-                          value={client.profile.source} 
-                          onChange={(v) => onUpdateField('source', v)} 
-                          placeholder="Select..." 
-                       />
+                       <div className="w-32 text-xs font-bold text-gray-500 uppercase">Retirement Age</div>
+                       <DrawerField type="text" value={client.profile.retirementAge} onChange={(v) => onUpdateField('retirementAge', v)} placeholder="65" />
                     </div>
-
-                    {/* Retirement Age */}
-                    <div className="flex gap-4 items-center group">
-                       <div className="w-32 text-xs font-bold text-gray-500 uppercase flex items-center gap-2"><span className="text-lg">🕒</span> Retire Age</div>
-                       <DrawerField 
-                          type="text" 
-                          value={client.profile.retirementAge} 
-                          onChange={(v) => onUpdateField('retirementAge', v)} 
-                          placeholder="65" 
-                       />
-                    </div>
-
-                    {/* Remarks */}
                     <div className="flex gap-4 items-start group">
-                       <div className="w-32 pt-2 text-xs font-bold text-gray-500 uppercase flex items-center gap-2"><span className="text-lg">¶</span> Remarks</div>
-                       <DrawerField 
-                          type="text" 
-                          value={client.followUp?.notes} 
-                          onChange={(v) => onUpdateField('notes', v, 'followUp')} 
-                          placeholder="Add notes..." 
-                       />
+                       <div className="w-32 pt-2 text-xs font-bold text-gray-500 uppercase">Remarks</div>
+                       <DrawerField type="text" value={client.followUp?.notes} onChange={(v) => onUpdateField('notes', v, 'followUp')} placeholder="Add notes..." />
                     </div>
-
-                    {/* Motivation */}
-                    <div className="flex gap-4 items-start group">
-                       <div className="w-32 pt-2 text-xs font-bold text-gray-500 uppercase flex items-center gap-2"><span className="text-lg">¶</span> Motivation</div>
-                       <DrawerField 
-                          type="text" 
-                          value={client.profile.motivation} 
-                          onChange={(v) => onUpdateField('motivation', v)} 
-                          placeholder="Client goal..." 
-                       />
-                    </div>
-
-                    <div className="h-px bg-gray-100 my-4"></div>
-
-                    {/* Appointment Data */}
-                    <div className="flex gap-4 items-center group">
-                       <div className="w-32 text-xs font-bold text-gray-500 uppercase flex items-center gap-2"><span className="text-lg">📅</span> 1st Appt</div>
-                       <DrawerField 
-                          type="date" 
-                          value={client.appointments?.firstApptDate} 
-                          onChange={(v) => onUpdateField('firstApptDate', v, 'appointments')} 
-                          placeholder="Set date..." 
-                       />
-                    </div>
-
-                    {/* Outcome Status */}
-                    <div className="flex gap-4 items-center group">
-                       <div className="w-32 text-xs font-bold text-gray-500 uppercase flex items-center gap-2"><span className="text-lg">▼</span> Outcome</div>
-                       <DrawerField 
-                          type="select" 
-                          options={['Pending', 'Zoom (not Keen)', 'Zoom (Keen)', 'Attended zoom', 'No Show']}
-                          value={client.appointments?.status || 'Pending'} 
-                          onChange={(v) => onUpdateField('status', v, 'appointments')} 
-                       />
-                    </div>
-
                  </div>
               </div>
-           </div>
+           )}
 
-           {/* RIGHT: Activity History */}
-           <div className="w-[350px] bg-gray-50 flex flex-col border-l border-gray-200">
-              <div className="p-4 border-b border-gray-200 bg-white">
-                 <h3 className="text-xs font-bold text-gray-500 uppercase tracking-widest">Activity</h3>
+           {activeTab === 'documents' && (
+              <div className="max-w-3xl mx-auto">
+                 <div className="mb-8">
+                    <FileUploader onUpload={handleFileUpload} />
+                 </div>
+                 
+                 {loading && <div className="text-center py-4 text-gray-400">Loading files...</div>}
+                 
+                 <div className="space-y-2">
+                    {files.map(f => (
+                       <div key={f.id} className="flex items-center justify-between p-4 border border-gray-200 rounded-xl hover:bg-gray-50 transition-colors group">
+                          <div className="flex items-center gap-3">
+                             <div className="w-10 h-10 bg-indigo-50 text-indigo-600 rounded-lg flex items-center justify-center text-xl">📄</div>
+                             <div>
+                                <div className="text-sm font-bold text-gray-900">{f.name}</div>
+                                <div className="text-xs text-gray-500">{(f.size / 1024 / 1024).toFixed(2)} MB • {new Date(f.created_at).toLocaleDateString()}</div>
+                             </div>
+                          </div>
+                          <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                             <a href={f.url} target="_blank" rel="noreferrer" className="px-3 py-1.5 bg-white border border-gray-300 rounded text-xs font-bold text-gray-700 hover:bg-gray-100">View</a>
+                             <button onClick={() => handleDeleteFile(f.id, f.path)} className="px-3 py-1.5 bg-red-50 text-red-600 rounded text-xs font-bold hover:bg-red-100">Delete</button>
+                          </div>
+                       </div>
+                    ))}
+                    {!loading && files.length === 0 && (
+                       <div className="text-center text-gray-400 py-10">No documents uploaded yet.</div>
+                    )}
+                 </div>
               </div>
-              <div className="flex-1 p-8 flex items-center justify-center text-gray-400 text-xs italic">
-                 History log coming soon...
+           )}
+
+           {activeTab === 'activity' && (
+              <div className="max-w-3xl mx-auto">
+                 {loading && <div className="text-center py-4 text-gray-400">Loading timeline...</div>}
+                 
+                 <div className="space-y-6 relative border-l-2 border-gray-100 ml-4 py-4">
+                    {activities.map((act) => (
+                       <div key={act.id} className="relative pl-8">
+                          <div className="absolute -left-[9px] top-0 w-4 h-4 rounded-full bg-indigo-100 border-2 border-indigo-500"></div>
+                          <div className="text-xs text-gray-400 mb-1">{new Date(act.created_at).toLocaleString()}</div>
+                          <div className="text-sm font-bold text-gray-800">{act.title}</div>
+                          <div className="text-xs text-gray-500 mt-1 uppercase tracking-wider">{act.type.replace('_', ' ')}</div>
+                          {act.details && (
+                             <div className="text-xs text-gray-600 bg-gray-50 p-2 rounded mt-2 border border-gray-100">
+                                {typeof act.details === 'string' ? act.details : JSON.stringify(act.details)}
+                             </div>
+                          )}
+                       </div>
+                    ))}
+                    {!loading && activities.length === 0 && (
+                       <div className="text-center text-gray-400 py-10 italic">No recorded activity. Change status or upload files to see logs.</div>
+                    )}
+                 </div>
               </div>
-           </div>
+           )}
 
         </div>
       </div>

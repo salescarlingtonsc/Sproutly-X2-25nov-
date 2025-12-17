@@ -31,13 +31,13 @@ export interface Profile {
   dob: string;
   gender: 'male' | 'female';
   employmentStatus?: 'employed' | 'self-employed';
-  jobTitle?: string; // Matches 'job_title'
+  jobTitle?: string;
   email: string;
   phone: string;
   monthlyIncome?: string;
   grossSalary?: string;
   takeHome?: string;
-  retirementAge?: string; // Matches 'Retirement Age'
+  retirementAge?: string;
   customRetirementExpense?: string;
   monthlyInvestmentAmount?: string;
   investmentRates?: InvestmentRates;
@@ -47,10 +47,8 @@ export interface Profile {
   referenceMonth: number;
   children?: Child[];
   tags?: string[];
-  
-  // Sales Specific
-  source?: LeadSource; // Matches 'platform'
-  motivation?: string; // Matches 'Why do you want to win this?'
+  source?: LeadSource;
+  motivation?: string;
 }
 
 export interface Expenses {
@@ -216,7 +214,6 @@ export interface UserProfile {
   modules?: string[];
 }
 
-// Updated Status Types matching Airtable
 export type ContactStatus = 
   | 'new' 
   | 'picked_up' 
@@ -237,23 +234,25 @@ export type OutcomeStatus =
 export interface ClientDocument {
   id: string;
   name: string;
-  type: 'image' | 'pdf' | 'other';
-  dateAdded: string;
-  url?: string; 
+  type: string;
+  size: number;
+  path: string;
+  url?: string;
+  created_at: string;
 }
 
 export interface AppointmentData {
   firstApptDate: string | null;
-  status?: OutcomeStatus; // e.g. "Zoom (not Keen)"
-  nextApptDate?: string | null; // NEW: For follow ups
-  location?: string; // NEW: For calendar sync
-  notes?: string; // NEW: Agenda items
-  googleEventId?: string; // NEW: Future sync
+  status?: OutcomeStatus;
+  nextApptDate?: string | null;
+  location?: string;
+  notes?: string;
+  googleEventId?: string;
 }
 
 export interface FollowUp {
   status: ContactStatus;
-  notes?: string; // 'Remarks'
+  notes?: string;
   priority?: 'High' | 'Medium' | 'Low';
   closure?: string;
   closingRemarks?: string;
@@ -261,6 +260,19 @@ export interface FollowUp {
 }
 
 export type LifecycleStage = 'lead' | 'contacted' | 'meeting' | 'proposal' | 'client' | 'cold';
+
+// --- DYNAMIC FIELDS TYPES ---
+export type FieldType = 'text' | 'number' | 'date' | 'select' | 'currency' | 'boolean' | 'rating';
+
+export interface FieldDefinition {
+  id: string;
+  key: string;
+  label: string;
+  type: FieldType;
+  options?: string[];
+  section: string;
+  is_hidden?: boolean;
+}
 
 export interface Client {
   id: string;
@@ -278,11 +290,13 @@ export interface Client {
   insuranceState?: InsuranceState;
   lastUpdated: string;
   
-  // Enhanced Fields
   followUp: FollowUp;
   appointments?: AppointmentData;
   documents?: ClientDocument[];
   
+  // Dynamic Fields
+  fieldValues?: Record<string, any>; // Keyed by Field ID or Key
+
   ownerEmail?: string;
   _ownerId?: string;
 }
