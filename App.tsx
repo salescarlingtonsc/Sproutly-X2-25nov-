@@ -4,7 +4,7 @@ import { useAuth } from './contexts/AuthContext';
 import { ClientProvider, useClient } from './contexts/ClientContext';
 import { ToastProvider, useToast } from './contexts/ToastContext';
 import { DialogProvider, useDialog } from './contexts/DialogContext';
-import { AiProvider } from './contexts/AiContext'; // IMPORT
+import { AiProvider } from './contexts/AiContext';
 import AppShell from './components/layout/AppShell';
 import LandingPage from './features/auth/LandingPage';
 import AuthModal from './features/auth/AuthModal';
@@ -27,13 +27,13 @@ import VisionBoardTab from './features/vision/VisionBoardTab';
 import AnalyticsTab from './features/analytics/AnalyticsTab';
 import CrmTab from './features/crm/CrmTab';
 import AdminTab from './features/admin/AdminTab';
-import ReportTab from './features/report/ReportTab'; // NEW IMPORT
+import ReportTab from './features/report/ReportTab';
 
 // Logic
 import { db } from './lib/db';
+import { logTabUsage } from './lib/db/activities';
 import { Client } from './types';
 
-// --- INTERNAL APP COMPONENT ---
 const AppInner: React.FC = () => {
   const { user } = useAuth();
   const { 
@@ -47,7 +47,7 @@ const AppInner: React.FC = () => {
   const [activeTab, setActiveTab] = useState('disclaimer');
   const [isAuthModalOpen, setAuthModalOpen] = useState(false);
 
-  // CRM State (List of Clients)
+  // CRM State
   const [clients, setClients] = useState<Client[]>([]);
   const [saveStatus, setSaveStatus] = useState<'idle'|'saving'|'saved'|'error'>('idle');
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
@@ -55,6 +55,47 @@ const AppInner: React.FC = () => {
   // Auto-Save Refs
   const lastSavedJson = useRef<string>('');
   const isSavingRef = useRef<boolean>(false);
+
+  // --- STABLE TAB USAGE TELEMETRY ---
+  const tabStartTimeRef = useRef<number>(Date.now());
+  const lastActiveTabRef = useRef<string>(activeTab);
+
+  useEffect(() => {
+    const recordUsage = () => {
+      const now = Date.now();
+      const elapsedSec = Math.floor((now - tabStartTimeRef.current) / 1000);
+      
+      // Thresholds: 2s min, 1hr max
+      if (elapsedSec >= 2 && elapsedSec < 3600) {
+        // Fire-and-forget: No await here to prevent blocking visibility transitions
+        logTabUsage(lastActiveTabRef.current, elapsedSec);
+      }
+      
+      tabStartTimeRef.current = now;
+      lastActiveTabRef.current = activeTab;
+    };
+
+    // Handle visibility changes (switching apps/tabs)
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        recordUsage();
+      } else {
+        // Reset timer when coming back to the app
+        tabStartTimeRef.current = Date.now();
+      }
+    };
+
+    // Initial transition record
+    recordUsage(); 
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('beforeunload', recordUsage);
+    
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('beforeunload', recordUsage);
+    };
+  }, [activeTab]);
 
   // --- Effects ---
   useEffect(() => {
@@ -70,7 +111,6 @@ const AppInner: React.FC = () => {
   };
 
   const handleNewClient = async () => {
-     // Check if unsaved changes might be lost
      if (profile.name && clientId === null) {
         const ok = await confirm({
            title: "Unsaved Profile",
@@ -80,7 +120,6 @@ const AppInner: React.FC = () => {
         });
         if (!ok) return;
      }
-     
      resetClient();
      lastSavedJson.current = ''; 
      setActiveTab('profile');
@@ -100,16 +139,11 @@ const AppInner: React.FC = () => {
         return;
      }
      if (!profile.name) {
-        // Silent fail for autosave if no name
         if (!isAutoSave) toast.error("Please enter a client name first.");
         return;
      }
-     
      if (isSavingRef.current) return;
-
      const clientData = generateClientObject();
-     
-     // SMART DIFF: Ignore lastUpdated timestamp when comparing changes
      const { lastUpdated: _newTs, ...currentContent } = clientData;
      let lastSavedContent = {};
      try {
@@ -118,64 +152,45 @@ const AppInner: React.FC = () => {
         lastSavedContent = rest;
      } catch (e) {}
 
-     if (isAutoSave && JSON.stringify(currentContent) === JSON.stringify(lastSavedContent)) {
-        return;
-     }
+     if (isAutoSave && JSON.stringify(currentContent) === JSON.stringify(lastSavedContent)) return;
 
      isSavingRef.current = true;
      setSaveStatus('saving');
-
      try {
         const saved = await db.saveClient(clientData, user.id);
         lastSavedJson.current = JSON.stringify(saved);
         setLastSaved(new Date());
-        
-        // If this was a new client (no ID), update context with the ID from DB
         if (!clientId) loadClient(saved);
-        
         setSaveStatus('saved');
-        
         if (!isAutoSave) {
            loadClientsList(); 
            toast.success("Client saved successfully");
         }
-        
-        // Auto-clear saved status
-        setTimeout(() => {
-            setSaveStatus(prev => prev === 'saved' ? 'idle' : prev);
-        }, 2000);
-
+        setTimeout(() => setSaveStatus(prev => prev === 'saved' ? 'idle' : prev), 2000);
      } catch (e: any) {
         console.error(e);
         setSaveStatus('error');
-        if (!isAutoSave) {
-           toast.error("Save failed: " + e.message);
-        }
+        if (!isAutoSave) toast.error("Save failed: " + e.message);
      } finally {
         isSavingRef.current = false;
      }
   }, [user, profile.name, clientId, generateClientObject, toast]);
 
-  // --- AUTO-SAVE TIMER ---
   const saveRef = useRef(handleSaveClient);
   useEffect(() => { saveRef.current = handleSaveClient; });
 
   useEffect(() => {
-    // Reduced interval to 3s for better responsiveness, relying on smart diff to prevent spam
-    const timer = setInterval(() => {
-       saveRef.current(true);
-    }, 3000); 
+    const timer = setInterval(() => saveRef.current(true), 15000); 
     return () => clearInterval(timer);
   }, []);
 
   const handleDeleteClient = async (id: string) => {
      const ok = await confirm({
         title: "Delete Client?",
-        message: "This action cannot be undone. All data for this client will be permanently lost.",
+        message: "This action cannot be undone.",
         isDestructive: true,
         confirmText: "Delete Forever"
      });
-
      if (ok) {
         try {
            await db.deleteClient(id, user?.id);
@@ -211,30 +226,10 @@ const AppInner: React.FC = () => {
         clients={clients}
         onLoadClient={(c) => handleLoadClient(c, true)}
      >
-        <AuthModal 
-           isOpen={isAuthModalOpen} 
-           onClose={() => setAuthModalOpen(false)} 
-        />
-        
+        <AuthModal isOpen={isAuthModalOpen} onClose={() => setAuthModalOpen(false)} />
         {activeTab === 'disclaimer' && <DisclaimerTab />}
-        
-        {activeTab === 'dashboard' && (
-           <DashboardTab 
-              user={user!}
-              clients={clients}
-              setActiveTab={setActiveTab}
-              onLoadClient={handleLoadClient}
-              onNewClient={handleNewClient}
-           />
-        )}
-
-        {activeTab === 'profile' && (
-           <ProfileTab 
-              clients={clients}
-              onLoadClient={handleLoadClient}
-              onNewProfile={handleNewClient}
-           />
-        )}
+        {activeTab === 'dashboard' && <DashboardTab user={user!} clients={clients} setActiveTab={setActiveTab} onLoadClient={handleLoadClient} onNewClient={handleNewClient} />}
+        {activeTab === 'profile' && <ProfileTab clients={clients} onLoadClient={handleLoadClient} onNewProfile={handleNewClient} />}
         {activeTab === 'life_events' && <LifeEventsTab />}
         {activeTab === 'children' && <ChildrenTab />}
         {activeTab === 'cpf' && <CpfTab />}
@@ -245,32 +240,11 @@ const AppInner: React.FC = () => {
         {activeTab === 'wealth' && <WealthToolTab />}
         {activeTab === 'property' && <PropertyCalculatorTab />}
         {activeTab === 'vision' && <VisionBoardTab />}
-        
         {activeTab === 'analytics' && <AnalyticsTab clients={clients} />}
-        
         {activeTab === 'report' && <ReportTab />}
-
-        {activeTab === 'crm' && (
-           <CrmTab 
-              clients={clients} 
-              profile={profile} 
-              selectedClientId={clientId}
-              newClient={handleNewClient}
-              saveClient={() => handleSaveClient(false)}
-              loadClient={handleLoadClient}
-              deleteClient={handleDeleteClient}
-              setFollowUp={() => {}}
-              completeFollowUp={handleCompleteFollowUp}
-              maxClients={100}
-              userRole={user?.role}
-              onRefresh={loadClientsList}
-           />
-        )}
+        {activeTab === 'crm' && <CrmTab clients={clients} profile={profile} selectedClientId={clientId} newClient={handleNewClient} saveClient={() => handleSaveClient(false)} loadClient={handleLoadClient} deleteClient={handleDeleteClient} setFollowUp={() => {}} completeFollowUp={handleCompleteFollowUp} maxClients={100} userRole={user?.role} onRefresh={loadClientsList} />}
         {activeTab === 'admin' && user?.role === 'admin' && <AdminTab />}
-
       </AppShell>
-      
-      {/* AI Chat Assistant with Global Context */}
       <AiAssistant currentClient={generateClientObject()} />
     </>
   );
@@ -279,21 +253,15 @@ const AppInner: React.FC = () => {
 const App: React.FC = () => {
   const { user, isLoading } = useAuth();
   const [isAuthModalOpen, setAuthModalOpen] = useState(false);
-
   if (isLoading) return <div className="min-h-screen flex items-center justify-center bg-slate-50"><div className="animate-spin text-4xl">⏳</div></div>;
-
   if (!user) {
      return (
         <ToastProvider>
            <LandingPage onLogin={() => setAuthModalOpen(true)} />
-           <AuthModal 
-              isOpen={isAuthModalOpen} 
-              onClose={() => setAuthModalOpen(false)} 
-           />
+           <AuthModal isOpen={isAuthModalOpen} onClose={() => setAuthModalOpen(false)} />
         </ToastProvider>
      );
   }
-
   return (
     <ToastProvider>
       <DialogProvider>

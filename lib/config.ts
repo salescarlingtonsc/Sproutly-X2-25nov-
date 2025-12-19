@@ -1,35 +1,28 @@
 
 import { SubscriptionTier, Expenses, UserProfile } from '../types';
 
-// ============================================================================
-// ⚙️ CONFIGURATION SETTINGS
-// Adjust membership limits, allowed tabs, and tier settings here.
-// These values propagate to the Admin Dashboard and Pricing Modal automatically.
-// ============================================================================
-
 export const TIER_CONFIG = {
   free: {
     label: 'Free Trial',
-    clientLimit: 1, // Limit for free users
-    // Added 'dashboard' to all tiers
-    allowedTabs: ['disclaimer', 'dashboard', 'profile', 'life_events', 'report'], 
+    clientLimit: 5,
+    allowedTabs: ['disclaimer', 'dashboard', 'profile', 'crm', 'life_events', 'report'], 
     color: 'gray'
   },
   platinum: {
     label: 'Platinum',
-    clientLimit: 10, // Limit for platinum users
+    clientLimit: 15, 
     allowedTabs: ['disclaimer', 'dashboard', 'profile', 'children', 'cashflow', 'insurance', 'crm', 'life_events', 'report'], 
     color: 'indigo'
   },
   diamond: {
     label: 'Diamond',
-    clientLimit: 30, // Limit for diamond users
+    clientLimit: 50, 
     allowedTabs: ['disclaimer', 'dashboard', 'profile', 'life_events', 'children', 'cpf', 'cashflow', 'insurance', 'retirement', 'investor', 'wealth', 'property', 'vision', 'analytics', 'crm', 'report'],
     color: 'emerald'
   },
   organisation: {
     label: 'Organisation',
-    clientLimit: 100, // Base limit for organisations (customizable via extra slots)
+    clientLimit: 500, 
     allowedTabs: ['disclaimer', 'dashboard', 'profile', 'life_events', 'children', 'cpf', 'cashflow', 'insurance', 'retirement', 'investor', 'wealth', 'property', 'vision', 'analytics', 'crm', 'report'],
     color: 'purple'
   }
@@ -37,7 +30,7 @@ export const TIER_CONFIG = {
 
 export const TAB_DEFINITIONS = [
   { id: 'disclaimer', label: 'Protocol', icon: '⚖️' },
-  { id: 'dashboard', label: 'Command', icon: '🚀' }, // NEW DASHBOARD
+  { id: 'dashboard', label: 'Command', icon: '🚀' }, 
   { id: 'profile', label: 'Profile', icon: '👤' },
   { id: 'life_events', label: 'Life Events', icon: '⚡' },
   { id: 'children', label: 'Children', icon: '👶' },
@@ -45,12 +38,12 @@ export const TAB_DEFINITIONS = [
   { id: 'cashflow', label: 'Cashflow', icon: '📊' },
   { id: 'insurance', label: 'Insurance', icon: '🛡️' },
   { id: 'retirement', label: 'Retirement', icon: '🏖️' },
-  { id: 'investor', label: 'Investor', icon: '📈' },
+  { id: 'investor', label: 'Portfolio', icon: '📈' },
   { id: 'wealth', label: 'Wealth Tool', icon: '💎' },
-  { id: 'property', label: 'Property', icon: '🏠' },
+  { id: 'property', label: 'Real Estate', icon: '🏠' },
   { id: 'vision', label: 'Vision Board', icon: '🎥' },
-  { id: 'analytics', label: 'Analytics', icon: '🤖' },
-  { id: 'report', label: 'Deliverable', icon: '📄' }, // NEW REPORT TAB
+  { id: 'analytics', label: 'Intelligence', icon: '🧠' },
+  { id: 'report', label: 'Deliverable', icon: '📄' }, 
   { id: 'crm', label: 'CRM', icon: '📋' },
   { id: 'admin', label: 'Admin', icon: '🔧' }
 ];
@@ -73,11 +66,11 @@ export const TAB_GROUPS = [
     tabs: ['investor', 'wealth', 'property']
   },
   {
-    title: 'Intelligence',
+    title: 'Insights',
     tabs: ['vision', 'analytics', 'report']
   },
   {
-    title: 'System',
+    title: 'Agency',
     tabs: ['admin', 'disclaimer']
   }
 ];
@@ -92,31 +85,23 @@ export const EXPENSE_CATEGORIES: { key: keyof Expenses; label: string }[] = [
 ];
 
 export const canAccessTab = (user: UserProfile | null, tabId: string): boolean => {
-  // Admin role gets access to everything + Admin tab
   if (!user) return false;
   if (user.role === 'admin') return true;
-  if (tabId === 'admin') return false; // Non-admins cannot see admin tab
+  if (tabId === 'admin') return false;
 
-  // 1. Check for Manual Granular Permissions first
-  // If the user has a 'modules' array, that is the source of truth.
   if (user.modules && Array.isArray(user.modules) && user.modules.length > 0) {
     return user.modules.includes(tabId);
   }
   
-  // 2. Fallback to Tier Logic
   const currentTier = user.subscriptionTier || 'free';
-  const config = TIER_CONFIG[currentTier];
-  
-  // Safety check
-  if (!config) return false; 
+  const config = TIER_CONFIG[currentTier as keyof typeof TIER_CONFIG] || TIER_CONFIG.free;
   
   return config.allowedTabs.includes(tabId);
 };
 
 export const getClientLimit = (tier: SubscriptionTier, extraSlots: number = 0): number => {
   const currentTier = tier || 'free';
-  // Fallback to 'free' config if tier is invalid/legacy
-  const config = TIER_CONFIG[currentTier] || TIER_CONFIG.free;
+  const config = TIER_CONFIG[currentTier as keyof typeof TIER_CONFIG] || TIER_CONFIG.free;
   const baseLimit = config.clientLimit || 1;
   return baseLimit + (extraSlots || 0);
 };

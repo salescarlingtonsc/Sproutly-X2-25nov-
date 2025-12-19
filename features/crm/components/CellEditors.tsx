@@ -2,7 +2,6 @@
 import React, { useState, useEffect, useRef, useLayoutEffect, PropsWithChildren } from 'react';
 import { createPortal } from 'react-dom';
 
-// --- STYLES ---
 const OPTION_STYLES: Record<string, string> = {
   'new': 'bg-emerald-100 text-emerald-800',
   'picked_up': 'bg-blue-50 text-blue-700',
@@ -18,6 +17,12 @@ const OPTION_STYLES: Record<string, string> = {
   'High': 'bg-red-100 text-red-700',
   'Medium': 'bg-orange-100 text-orange-700',
   'Low': 'bg-gray-100 text-gray-600',
+  'npu1': 'bg-amber-100 text-amber-800',
+  'npu2': 'bg-amber-100 text-amber-800',
+  'npu3': 'bg-amber-100 text-amber-800',
+  'npu4': 'bg-amber-100 text-amber-800',
+  'npu5': 'bg-amber-100 text-amber-800',
+  'npu6': 'bg-amber-100 text-amber-800',
 };
 
 export const getOptionStyle = (val: string) => {
@@ -27,7 +32,6 @@ export const getOptionStyle = (val: string) => {
   return found ? OPTION_STYLES[found] : 'bg-gray-100 text-gray-800';
 };
 
-// --- PORTAL ---
 const EditorPortal = ({ children }: PropsWithChildren<{}>) => {
   return createPortal(
     <div className="fixed inset-0 z-[9999] isolate" onMouseDown={e => e.stopPropagation()}>
@@ -37,7 +41,6 @@ const EditorPortal = ({ children }: PropsWithChildren<{}>) => {
   );
 };
 
-// --- EDITOR PROPS ---
 interface BaseEditorProps {
   value: any;
   onChange: (val: any) => void;
@@ -46,7 +49,6 @@ interface BaseEditorProps {
   onAddOption?: (newOpt: string) => void;
 }
 
-// --- 1. SELECT EDITOR (Airtable Style) ---
 interface SelectEditorProps extends BaseEditorProps {
   options: string[];
 }
@@ -78,7 +80,6 @@ export const SelectEditor = ({ value, onChange, onClose, rect, options, onAddOpt
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    // Stop propagation so grid doesn't capture Enter/Tab
     e.stopPropagation();
 
     if (e.key === 'ArrowDown') {
@@ -90,7 +91,6 @@ export const SelectEditor = ({ value, onChange, onClose, rect, options, onAddOpt
       setActiveIndex(prev => Math.max(prev - 1, 0));
     } else if (e.key === 'Enter') {
       e.preventDefault();
-      // If adding new option
       if (activeIndex === filteredOptions.length && searchTerm && !filteredOptions.includes(searchTerm)) {
          handleCreate();
       } else if (filteredOptions[activeIndex]) {
@@ -111,7 +111,6 @@ export const SelectEditor = ({ value, onChange, onClose, rect, options, onAddOpt
 
   return (
     <EditorPortal>
-      {/* Invisible backdrop to close on click outside */}
       <div className="absolute inset-0" onMouseDown={onClose} />
       
       <div 
@@ -123,7 +122,7 @@ export const SelectEditor = ({ value, onChange, onClose, rect, options, onAddOpt
         }}
         onMouseDown={e => e.stopPropagation()} 
       >
-        <div className="p-2 border-b border-gray-100">
+        <div className="p-2 border-b border-gray-100 bg-white">
           <input
             ref={inputRef}
             type="text"
@@ -131,14 +130,14 @@ export const SelectEditor = ({ value, onChange, onClose, rect, options, onAddOpt
             onChange={e => { setSearchTerm(e.target.value); setActiveIndex(0); }}
             onKeyDown={handleKeyDown}
             placeholder="Find or add option"
-            className="w-full text-xs p-1.5 bg-gray-50 rounded border-none outline-none focus:ring-1 focus:ring-indigo-500 font-medium text-gray-900"
+            className="w-full text-xs p-1.5 bg-gray-50 rounded border border-gray-100 outline-none focus:ring-1 focus:ring-indigo-500 font-bold text-slate-900"
           />
         </div>
-        <div className="overflow-y-auto p-1 custom-scrollbar" style={{ maxHeight: '200px' }}>
+        <div className="overflow-y-auto p-1 bg-white custom-scrollbar" style={{ maxHeight: '200px' }}>
           {filteredOptions.map((opt, idx) => (
             <div
               key={opt}
-              className={`px-3 py-2 cursor-pointer rounded text-xs font-medium flex items-center gap-2 transition-colors ${idx === activeIndex ? 'bg-indigo-50' : 'hover:bg-gray-50'}`}
+              className={`px-3 py-2 cursor-pointer rounded text-xs font-bold flex items-center gap-2 transition-colors ${idx === activeIndex ? 'bg-indigo-50 text-indigo-700' : 'text-slate-600 hover:bg-slate-50'}`}
               onMouseEnter={() => setActiveIndex(idx)}
               onClick={() => handleSelect(opt)}
             >
@@ -146,18 +145,14 @@ export const SelectEditor = ({ value, onChange, onClose, rect, options, onAddOpt
               {opt}
             </div>
           ))}
-          {/* Add Option Item */}
           {searchTerm && !filteredOptions.includes(searchTerm) && (
             <div
-              className={`px-3 py-2 cursor-pointer rounded text-xs font-bold text-indigo-600 flex items-center gap-2 ${activeIndex === filteredOptions.length ? 'bg-indigo-50' : 'hover:bg-gray-50'}`}
+              className={`px-3 py-2 cursor-pointer rounded text-xs font-bold text-indigo-600 flex items-center gap-2 ${activeIndex === filteredOptions.length ? 'bg-indigo-50' : 'hover:bg-slate-50'}`}
               onMouseEnter={() => setActiveIndex(filteredOptions.length)}
               onClick={handleCreate}
             >
               <span>+</span> Create "{searchTerm}"
             </div>
-          )}
-          {filteredOptions.length === 0 && !searchTerm && (
-             <div className="px-3 py-2 text-xs text-gray-400 italic">Type to search...</div>
           )}
         </div>
       </div>
@@ -165,7 +160,6 @@ export const SelectEditor = ({ value, onChange, onClose, rect, options, onAddOpt
   );
 };
 
-// --- 2. TEXT EDITOR (Floating Textarea) ---
 export const TextEditor = ({ value, onChange, onClose, rect }: BaseEditorProps) => {
   const [localVal, setLocalVal] = useState(value || '');
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -178,13 +172,9 @@ export const TextEditor = ({ value, onChange, onClose, rect }: BaseEditorProps) 
   }, []);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    e.stopPropagation(); // Isolate from Grid
-
+    e.stopPropagation();
     if (e.key === 'Enter') {
-      if (e.shiftKey || e.metaKey || e.ctrlKey) {
-         // Allow newline
-         return; 
-      }
+      if (e.shiftKey || e.metaKey || e.ctrlKey) return; 
       e.preventDefault();
       onChange(localVal);
       onClose();
@@ -215,9 +205,10 @@ export const TextEditor = ({ value, onChange, onClose, rect }: BaseEditorProps) 
           value={localVal}
           onChange={e => setLocalVal(e.target.value)}
           onKeyDown={handleKeyDown}
-          className="w-full h-full p-2 text-sm bg-white text-gray-900 outline-none resize-none font-medium"
+          className="w-full h-full p-2 text-sm bg-white text-slate-900 outline-none resize-none font-bold"
+          style={{ backgroundColor: '#ffffff', color: '#0f172a' }}
         />
-        <div className="text-[9px] text-gray-400 px-2 pb-1 text-right bg-gray-50 border-t border-gray-100">
+        <div className="text-[9px] font-bold text-slate-400 px-2 pb-1 text-right bg-slate-50 border-t border-slate-100">
            Enter to save • Shift+Enter for newline
         </div>
       </div>
@@ -225,23 +216,15 @@ export const TextEditor = ({ value, onChange, onClose, rect }: BaseEditorProps) 
   );
 };
 
-// --- 3. DATE EDITOR ---
 export const DateEditor = ({ value, onChange, onClose, rect }: BaseEditorProps) => {
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    // Only focus, do NOT showPicker() automatically as it can cause artifacts
-    if (inputRef.current) {
-       inputRef.current.focus();
-    }
+    if (inputRef.current) inputRef.current.focus();
   }, []);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-     if(e.key === 'Tab' || e.key === 'Enter') {
-        onClose();
-     } else if (e.key === 'Escape') {
-        onClose();
-     }
+     if(e.key === 'Tab' || e.key === 'Enter' || e.key === 'Escape') onClose();
   };
 
   return (
@@ -258,7 +241,7 @@ export const DateEditor = ({ value, onChange, onClose, rect }: BaseEditorProps) 
           value={value || ''}
           onChange={(e) => { onChange(e.target.value); onClose(); }}
           onKeyDown={handleKeyDown}
-          className="p-1 border border-gray-300 rounded text-sm outline-none focus:border-indigo-500 bg-white text-gray-900 block w-full"
+          className="p-1.5 border border-gray-200 rounded text-sm font-bold outline-none focus:border-indigo-500 bg-white text-slate-900 block w-full"
           style={{ colorScheme: 'light' }}
         />
       </div>

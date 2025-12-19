@@ -1,39 +1,36 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Client, FieldDefinition } from '../../types';
-import { db } from '../../lib/db';
-import { getFieldDefinitions, saveClientFieldValue, createFieldDefinition } from '../../lib/db/dynamicFields';
-import { useAuth } from '../../contexts/AuthContext';
-import { generateWhatsAppDraft } from '../../lib/gemini';
+
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { Client, FieldDefinition, Profile } from '../../types';
+import { fetchClients, saveClientUpdate } from '../../lib/db/crm';
+import { getFieldDefinitions, upsertFieldValue, createFieldDefinition } from '../../lib/db/dynamicFields';
+import { useWriteQueue } from '../../hooks/useWriteQueue';
+import { toNum, fmtSGD } from '../../lib/helpers';
+
+// New Apple UI Components
+import Button from '../../components/ui/Button';
+import ToggleSwitch from '../../components/ui/ToggleSwitch';
+import SegmentedControl from '../../components/ui/SegmentedControl';
+import Modal from '../../components/ui/Modal';
+import CommandBar from '../../components/ui/CommandBar';
+import { useHotkeys } from '../../components/ui/useHotkeys';
+
+// CRM Components
 import ColumnHeader from './components/ColumnHeader';
+import CrmRow from './components/CrmRow';
+import ViewsDropdown, { SavedView } from './components/ViewsDropdown';
+import ColumnPicker from './components/ColumnPicker';
 import ClientDrawer from './components/ClientDrawer';
 import BlastModal from './components/BlastModal';
-import CrmRow from './components/CrmRow';
-import ColumnPicker from './components/ColumnPicker';
-
-const VIEW_SETTINGS_KEY = 'crm_view_settings_v2';
-const ROW_HEIGHT = 44; 
-const OVERSCAN = 15;
-
-// Base System Columns
-const BASE_COLUMNS = [
-  { id: 'name', label: 'Name', type: 'text', minWidth: 200, field: 'name', section: 'profile' },
-  { id: 'status', label: 'Status', type: 'select', minWidth: 140, field: 'status', section: 'followUp' },
-  { id: 'phone', label: 'Phone', type: 'phone', minWidth: 120, field: 'phone', section: 'profile' },
-  { id: 'nextAppt', label: 'Next Appt', type: 'date', minWidth: 150, field: 'nextApptDate', section: 'appointments' },
-  { id: 'notes', label: 'Notes', type: 'text', minWidth: 250, field: 'notes', section: 'followUp' },
-];
-
-const STATUS_OPTIONS = ['new', 'picked_up', 'appt_set', 'proposal', 'client', 'not_keen'];
 
 interface CrmTabProps {
   clients: Client[];
-  profile: any;
+  profile: Profile;
   selectedClientId: string | null;
   newClient: () => void;
   saveClient: () => void;
-  loadClient: (client: Client, redirect?: boolean) => void;
+  loadClient: (client: Client, redirect: boolean) => void;
   deleteClient: (id: string) => void;
-  setFollowUp: (val: any) => void;
+  setFollowUp: () => void;
   completeFollowUp: (id: string) => void;
   maxClients: number;
   userRole?: string;
@@ -41,343 +38,283 @@ interface CrmTabProps {
 }
 
 const CrmTab: React.FC<CrmTabProps> = ({ 
-  clients, 
+  clients: globalClients, 
   loadClient, 
-  deleteClient, 
-  onRefresh
+  onRefresh,
+  deleteClient
 }) => {
-  const { user } = useAuth();
+  const [localClients, setLocalClients] = useState<Client[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [fields, setFields] = useState<FieldDefinition[]>([]);
   
-  // State
-  const [dynamicFields, setDynamicFields] = useState<FieldDefinition[]>([]);
-  const [localClients, setLocalClients] = useState<Client[]>(clients);
+  // Persistence & UI State
+  const [isCompact, setIsCompact] = useState(() => localStorage.getItem('crm_density') === 'compact');
+  const [reducedMotion, setReducedMotion] = useState(() => localStorage.getItem('crm_motion') === 'reduced');
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [isBlastOpen, setIsBlastOpen] = useState(false);
+  const [isCommandOpen, setIsCommandOpen] = useState(false);
+  
+  // Filtering & View
+  const [query, setQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [sortCol, setSortCol] = useState('updated_at');
+  const [sortDir, setSortDir] = useState<'asc'|'desc'>('desc');
+  const [visibleColumnIds, setVisibleColumnIds] = useState<Set<string>>(new Set(['name', 'status', 'phone', 'opportunity']));
   const [colWidths, setColWidths] = useState<Record<string, number>>({});
-  const [sortCol, setSortCol] = useState<string | null>(null);
-  const [sortDir, setSortDir] = useState<'asc'|'desc'|null>(null);
-  const [visibleColumnIds, setVisibleColumnIds] = useState<Set<string>>(new Set(BASE_COLUMNS.map(c => c.id)));
-  
-  const [selectedRowIds, setSelectedRowIds] = useState<Set<string>>(new Set());
-  const [drawerClient, setDrawerClient] = useState<Client | null>(null);
-  
-  // Cell Editing State
-  const [activeCell, setActiveCell] = useState<{rowId: string, colId: string} | null>(null);
-  const [editingCell, setEditingCell] = useState<{rowId: string, colId: string} | null>(null);
+  const [selectedClientForDrawer, setSelectedClientForDrawer] = useState<Client | null>(null);
 
-  // Blast Modal State
-  const [blastModalOpen, setBlastModalOpen] = useState(false);
-  const [blastTopic, setBlastTopic] = useState('');
-  const [blastMessage, setBlastMessage] = useState('');
-  const [isGeneratingBlast, setIsGeneratingBlast] = useState(false);
-  const [generatedLinks, setGeneratedLinks] = useState<{name: string, url: string}[]>([]);
-
-  // Virtualization
-  const [scrollTop, setScrollTop] = useState(0);
-  const [containerHeight, setContainerHeight] = useState(800);
-  const gridContainerRef = useRef<HTMLDivElement>(null);
-
-  // Init
+  // Persistence
   useEffect(() => {
-    loadFields();
-    // Load local storage view
-    const saved = localStorage.getItem(VIEW_SETTINGS_KEY);
-    if (saved) {
-       const parsed = JSON.parse(saved);
-       if (parsed.visibleColumnIds) setVisibleColumnIds(new Set(parsed.visibleColumnIds));
-       if (parsed.colWidths) setColWidths(parsed.colWidths);
-    }
-  }, []);
+    localStorage.setItem('crm_density', isCompact ? 'compact' : 'comfortable');
+    localStorage.setItem('crm_motion', reducedMotion ? 'reduced' : 'normal');
+  }, [isCompact, reducedMotion]);
 
-  useEffect(() => {
-     setLocalClients(clients);
-  }, [clients]);
+  // Global Shortcuts
+  useHotkeys('k', () => setIsCommandOpen(true), { meta: true });
+  useHotkeys('b', () => setIsBlastOpen(true), { meta: true });
 
-  useEffect(() => {
-     localStorage.setItem(VIEW_SETTINGS_KEY, JSON.stringify({
-        visibleColumnIds: Array.from(visibleColumnIds),
-        colWidths
-     }));
-  }, [visibleColumnIds, colWidths]);
+  const { rowStatuses, enqueue } = useWriteQueue(async (id, data) => {
+     await saveClientUpdate(id, data);
+     onRefresh();
+  });
 
-  // Height Observer
-  useEffect(() => {
-    const updateHeight = () => {
-      if (gridContainerRef.current) setContainerHeight(gridContainerRef.current.clientHeight);
-    };
-    window.addEventListener('resize', updateHeight);
-    updateHeight(); // Initial check
-    
-    // Safety check for initial render ref availability
-    const timer = setTimeout(updateHeight, 100);
-    return () => {
-      window.removeEventListener('resize', updateHeight);
-      clearTimeout(timer);
-    };
-  }, []);
-
-  const loadFields = async () => {
-     const fields = await getFieldDefinitions();
-     setDynamicFields(fields);
-  };
-
-  // --- MERGE COLUMNS ---
-  const allColumns = useMemo(() => {
-     const dynCols = dynamicFields.map(f => ({
-        id: f.id,
-        label: f.label,
-        type: f.type,
-        minWidth: 120,
-        field: f.id, // ID is the key for dynamic values
-        section: 'dynamic',
-        options: f.options
-     }));
-     return [...BASE_COLUMNS, ...dynCols];
-  }, [dynamicFields]);
-
-  const visibleColumns = useMemo(() => {
-     return allColumns.filter(c => visibleColumnIds.has(c.id));
-  }, [allColumns, visibleColumnIds]);
-
-  // --- SORTING ---
-  const getSortValue = (client: Client, colId: string) => {
-     // Check Base
-     const base = BASE_COLUMNS.find(c => c.id === colId);
-     if (base) {
-        if (base.section === 'profile') return (client.profile as any)?.[base.field];
-        if (base.section === 'followUp') return (client.followUp as any)?.[base.field];
-        if (base.section === 'appointments') return (client.appointments as any)?.[base.field];
-     }
-     // Check Dynamic
-     if (client.fieldValues && client.fieldValues[colId] !== undefined) {
-        return client.fieldValues[colId];
-     }
-     return '';
-  };
-
-  const processedClients = useMemo(() => {
-    const sorted = [...localClients].sort((a, b) => {
-       if (!sortCol || !sortDir) return new Date(b.lastUpdated).getTime() - new Date(a.lastUpdated).getTime();
-       const valA = getSortValue(a, sortCol) || '';
-       const valB = getSortValue(b, sortCol) || '';
-       if (valA < valB) return sortDir === 'asc' ? -1 : 1;
-       if (valA > valB) return sortDir === 'asc' ? 1 : -1;
-       return 0;
-    });
-    return sorted;
-  }, [localClients, sortCol, sortDir, dynamicFields]);
-
-  // --- VIRTUALIZATION ---
-  const totalRows = processedClients.length;
-  const startIndex = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
-  const endIndex = Math.min(totalRows, Math.ceil((scrollTop + containerHeight) / ROW_HEIGHT) + OVERSCAN);
-  const visibleRows = processedClients.slice(startIndex, endIndex);
-  const paddingTop = startIndex * ROW_HEIGHT;
-  const paddingBottom = (totalRows - endIndex) * ROW_HEIGHT;
-
-  // --- UPDATES ---
-  const handleUpdate = async (id: string, field: string, value: any, section?: string) => {
-     // Optimistic Update
-     setLocalClients(prev => prev.map(c => {
-        if (c.id !== id) return c;
-        const copy = { ...c };
-        
-        if (section === 'dynamic') {
-           copy.fieldValues = { ...(copy.fieldValues || {}), [field]: value };
-           saveClientFieldValue(id, field, 'text', value); // Fire and forget
-        } else if (section) {
-           // Handle specific updates for nested objects or root properties
-           if (section === 'profile' || section === 'followUp' || section === 'appointments') {
-              (copy as any)[section] = { ...(copy as any)[section], [field]: value };
-           } else {
-              // Root property update
-              (copy as any)[field] = value;
-           }
-           // Trigger standard save
-           db.saveClient(copy, user?.id); 
-        }
-        return copy;
-     }));
-  };
-
-  // --- FIELD MANAGER ---
-  const handleManageFields = async () => {
-     const label = prompt("New Field Name:");
-     if (!label) return;
-     const type = prompt("Type (text, number, date, select, boolean):", "text");
-     if (!type) return;
-     
-     await createFieldDefinition({ 
-       key: label.toLowerCase().replace(/\s/g, '_'), 
-       label, 
-       type: type as any,
-       section: 'dynamic' // FIX: Added section to match type requirements
-     });
-     loadFields();
-  };
-
-  // --- BLAST ACTIONS ---
-  const handleGenerateBlastAI = async () => {
-    setIsGeneratingBlast(true);
+  const loadData = useCallback(async () => {
+    setLoading(true);
     try {
-      const draft = await generateWhatsAppDraft(blastTopic);
-      setBlastMessage(draft);
-    } catch (e) {
-      alert("AI Error. Please try again.");
-    } finally {
-      setIsGeneratingBlast(false);
-    }
+      const statuses = statusFilter === 'all' ? [] : [statusFilter];
+      const { rows, total } = await fetchClients({ query, statuses, sortBy: sortCol, sortDir });
+      setLocalClients(rows);
+      setTotal(total);
+      setFields(await getFieldDefinitions());
+    } catch (e) { console.error(e); } 
+    finally { setLoading(false); }
+  }, [query, statusFilter, sortCol, sortDir]);
+
+  useEffect(() => { loadData(); }, [loadData]);
+
+  const handleUpdate = (id: string, field: string, value: any, section?: string) => {
+    setLocalClients(prev => prev.map(c => {
+      if (c.id !== id) return c;
+      const copy = { ...c };
+      if (section === 'dynamic') {
+         copy.fieldValues = { ...(copy.fieldValues || {}), [field]: value };
+         const fDef = fields.find(f => f.id === field || f.key === field);
+         if(fDef) upsertFieldValue(id, fDef.id, fDef.type, value);
+      } else if (section) {
+         (copy as any)[section] = { ...(copy as any)[section], [field]: value };
+      }
+      enqueue(id, copy);
+      return copy;
+    }));
   };
 
-  const handleGenerateLinks = () => {
-    const targets = localClients.filter(c => selectedRowIds.has(c.id));
-    const links = targets.map(c => {
-      const phone = c.profile.phone?.replace(/\D/g, '') || '';
-      const firstName = c.profile.name.split(' ')[0];
-      const personalized = blastMessage.replace('{name}', firstName);
-      return {
-        name: c.profile.name,
-        url: phone ? `https://wa.me/${phone}?text=${encodeURIComponent(personalized)}` : '#'
-      };
-    });
-    setGeneratedLinks(links);
-  };
+  const columns = useMemo(() => {
+     const base = [
+        { id: 'name', label: 'Client Name', type: 'text', field: 'name', section: 'profile', minWidth: 240 },
+        { id: 'status', label: 'Lifecycle Stage', type: 'select', field: 'status', section: 'followUp', minWidth: 180 },
+        { id: 'opportunity', label: 'Potential', type: 'number', field: 'score', section: 'meta', minWidth: 140 },
+        { id: 'phone', label: 'Mobile Contact', type: 'phone', field: 'phone', section: 'profile', minWidth: 180 },
+     ];
+     const dynamic = fields.map(f => ({
+        id: f.id, label: f.label, type: f.type, field: f.key, section: 'dynamic', minWidth: 160
+     }));
+     return [...base, ...dynamic].filter(c => visibleColumnIds.has(c.id));
+  }, [fields, visibleColumnIds]);
 
-  // --- SELECTION ---
   const toggleSelection = (id: string) => {
-    const next = new Set(selectedRowIds);
+    const next = new Set(selectedIds);
     if (next.has(id)) next.delete(id);
     else next.add(id);
-    setSelectedRowIds(next);
-  };
-
-  const toggleSelectAll = () => {
-    if (selectedRowIds.size === localClients.length) setSelectedRowIds(new Set());
-    else setSelectedRowIds(new Set(localClients.map(c => c.id)));
+    setSelectedIds(next);
   };
 
   return (
-    <div className="flex flex-col h-full bg-white relative">
+    <div className={`flex flex-col h-full bg-white overflow-hidden ${reducedMotion ? 'motion-reduce' : ''}`}>
       
-      {/* 1. TOOLBAR */}
-      <div className="h-14 border-b border-gray-200 flex items-center justify-between px-4 bg-white shrink-0 z-20">
-        <div className="flex items-center gap-3">
-          <h2 className="text-sm font-bold text-gray-800">CRM <span className="text-gray-400 font-normal">({localClients.length})</span></h2>
-          <div className="h-4 w-px bg-gray-200 mx-2"></div>
-          <ColumnPicker 
-            allColumns={allColumns} 
-            visibleColumnIds={visibleColumnIds} 
-            onChange={setVisibleColumnIds}
-            onManageFields={handleManageFields}
-          />
-        </div>
+      {/* --- PREMIUM TOOLBAR --- */}
+      <div className="h-16 border-b flex items-center justify-between px-6 gap-6 bg-white z-40 shrink-0 shadow-sm">
+         <div className="flex items-center gap-6">
+            <div className="flex items-center gap-3">
+              <span className="text-xl">📋</span>
+              <div className="flex flex-col">
+                 <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 leading-none mb-1">Portfolio Grid</h2>
+                 <span className="text-sm font-bold text-slate-900 leading-none">{total} Clients</span>
+              </div>
+            </div>
+            
+            <SegmentedControl 
+              options={[
+                { label: 'All', value: 'all' },
+                { label: 'Leads', value: 'new' },
+                { label: 'Meetings', value: 'appt_set' },
+                { label: 'Clients', value: 'client' }
+              ]}
+              value={statusFilter}
+              onChange={setStatusFilter}
+            />
+         </div>
 
-        {selectedRowIds.size > 0 && (
-          <div className="flex items-center gap-2 bg-indigo-50 px-3 py-1.5 rounded-lg animate-fade-in">
-            <span className="text-xs font-bold text-indigo-700">{selectedRowIds.size} Selected</span>
-            <button 
-              onClick={() => { setBlastModalOpen(true); setGeneratedLinks([]); }}
-              className="bg-white text-indigo-600 text-[10px] font-bold px-2 py-1 rounded border border-indigo-200 hover:bg-indigo-50 transition-colors"
-            >
-              💬 WhatsApp Blast
-            </button>
-            <button 
-              onClick={() => setSelectedRowIds(new Set())}
-              className="text-indigo-400 hover:text-indigo-600 ml-2"
-            >
-              ✕
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* 2. GRID HEADER */}
-      <div className="flex border-b border-gray-200 bg-gray-50 h-10 sticky top-0 z-20 overflow-hidden shrink-0">
-        <div className="w-10 border-r border-gray-200 flex items-center justify-center shrink-0 bg-gray-50 z-20 sticky left-0">
-          <input 
-            type="checkbox" 
-            checked={selectedRowIds.size === localClients.length && localClients.length > 0} 
-            onChange={toggleSelectAll}
-            className="rounded border-gray-300"
-          />
-        </div>
-        <div className="flex flex-1 overflow-hidden">
-          {visibleColumns.map((col) => (
-            <div key={col.id} className={col.id === 'name' ? 'sticky left-10 z-20' : ''}>
-              <ColumnHeader 
-                label={col.label} 
-                type={col.type} 
-                width={colWidths[col.id] || col.minWidth}
-                isSorted={sortCol === col.id ? sortDir : null}
-                onSort={(dir) => { setSortCol(col.id); setSortDir(dir); }}
-                onResize={(w) => setColWidths(prev => ({...prev, [col.id]: w}))}
-                onHide={() => { const next = new Set(visibleColumnIds); next.delete(col.id); setVisibleColumnIds(next); }}
-                fixed={col.id === 'name'}
+         <div className="flex items-center gap-6 flex-1 justify-end">
+            <div className="relative max-w-sm w-full group">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-300 text-sm group-focus-within:text-indigo-500 transition-colors">🔍</span>
+              <input 
+                className="w-full pl-9 pr-4 py-2 bg-slate-50 border-transparent rounded-xl text-[11px] font-bold focus:bg-white focus:ring-2 focus:ring-indigo-100 transition-all outline-none text-slate-700"
+                placeholder="Find records... (Cmd+K)"
+                value={query}
+                onChange={e => setQuery(e.target.value)}
               />
             </div>
-          ))}
-        </div>
+            
+            <div className="h-4 w-px bg-slate-200" />
+            
+            <div className="flex items-center gap-5">
+              <ToggleSwitch label="Compact" enabled={!!isCompact} onChange={(v) => setIsCompact(v ? 'compact' : '')} size="sm" />
+              <ColumnPicker 
+                allColumns={columns} 
+                visibleColumnIds={visibleColumnIds} 
+                onChange={setVisibleColumnIds} 
+                onManageFields={onRefresh} 
+              />
+              <ViewsDropdown 
+                currentView={{ filters: { query, statuses: [] }, sort: { col: sortCol, dir: sortDir }, visibleColumnIds, colWidths }} 
+                onApply={(v) => {
+                  setSortCol(v.sort.col); setSortDir(v.sort.dir); setVisibleColumnIds(new Set(v.visible_column_ids)); setColWidths(v.col_widths);
+                }} 
+              />
+              <Button variant="primary" size="sm" leftIcon="＋" onClick={() => loadClient({} as any, true)}>New Client</Button>
+            </div>
+         </div>
       </div>
 
-      {/* 3. VIRTUALIZED BODY */}
-      <div 
-        ref={gridContainerRef} 
-        className="flex-1 overflow-auto bg-white custom-scrollbar relative"
-        onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
-      >
-        <div style={{ height: totalRows * ROW_HEIGHT, position: 'relative' }}>
-          <div style={{ transform: `translateY(${paddingTop}px)` }}>
-            <table className="w-full border-collapse table-fixed">
-              <tbody>
-                {visibleRows.map((client) => (
+      {/* --- SELECTION HUD --- */}
+      {selectedIds.size > 0 && (
+        <div className="fixed bottom-10 left-1/2 -translate-x-1/2 z-[1000] bg-slate-900 text-white px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-8 animate-in slide-in-from-bottom-10 duration-300">
+           <div className="flex items-center gap-3">
+              <span className="w-6 h-6 rounded-full bg-indigo-500 flex items-center justify-center text-[11px] font-black">{selectedIds.size}</span>
+              <span className="text-xs font-black uppercase tracking-widest opacity-60">Selection Active</span>
+           </div>
+           <div className="h-4 w-px bg-slate-700" />
+           <div className="flex items-center gap-3">
+              <Button variant="ghost" className="text-white hover:bg-slate-800 border-none" size="sm" onClick={() => setIsBlastOpen(true)} leftIcon="💬">Smart Blast</Button>
+              <Button variant="danger" size="sm" onClick={() => { selectedIds.forEach(id => deleteClient(id)); setSelectedIds(new Set()); }} leftIcon="🗑">Delete</Button>
+              <button onClick={() => setSelectedIds(new Set())} className="text-[10px] font-black text-slate-500 hover:text-white uppercase tracking-widest transition-colors ml-4">Cancel</button>
+           </div>
+        </div>
+      )}
+
+      {/* --- MAIN GRID --- */}
+      <div className="flex-1 overflow-auto custom-scrollbar bg-slate-50/20">
+         <table className="w-full border-collapse table-fixed">
+            <thead className="sticky top-0 z-30">
+               <tr className="bg-white/95 backdrop-blur-md">
+                  <th className="w-12 border-r border-b border-slate-100 p-0 h-10 flex items-center justify-center">
+                    <input 
+                       type="checkbox" 
+                       className="rounded border-slate-200 text-indigo-600 focus:ring-indigo-500" 
+                       checked={selectedIds.size === localClients.length && localClients.length > 0}
+                       onChange={(e) => {
+                          if (e.target.checked) setSelectedIds(new Set(localClients.map(c => c.id)));
+                          else setSelectedIds(new Set());
+                       }}
+                    />
+                  </th>
+                  {columns.map(col => (
+                     <th key={col.id} className="p-0 border-r border-b border-slate-100">
+                        <ColumnHeader 
+                          label={col.label} type={col.type} width={colWidths[col.id] || col.minWidth} 
+                          isSorted={sortCol === col.id ? sortDir : null}
+                          onSort={dir => { setSortCol(col.id); setSortDir(dir || 'desc'); }}
+                          onHide={() => {
+                             const next = new Set(visibleColumnIds);
+                             next.delete(col.id);
+                             setVisibleColumnIds(next);
+                          }} 
+                          onResize={(w) => setColWidths(prev => ({...prev, [col.id]: w}))}
+                        />
+                     </th>
+                  ))}
+               </tr>
+            </thead>
+            <tbody>
+               {localClients.map(client => (
                   <CrmRow 
                     key={client.id}
                     client={client}
-                    columns={visibleColumns}
+                    columns={columns}
                     colWidths={colWidths}
-                    selectedRowIds={selectedRowIds}
-                    activeCell={activeCell}
-                    editingCell={editingCell}
-                    statusOptions={STATUS_OPTIONS}
+                    selectedRowIds={selectedIds}
+                    activeCell={null}
+                    editingCell={null}
+                    statusOptions={['new', 'picked_up', 'appt_set', 'proposal', 'client', 'not_keen']}
                     onToggleSelection={toggleSelection}
-                    onSetActive={(rowId, colId) => setActiveCell({rowId, colId})}
-                    onSetEditing={(rowId, colId) => setEditingCell({rowId, colId})}
-                    onStopEditing={() => setEditingCell(null)}
+                    onSetActive={() => {}}
+                    onSetEditing={() => {}}
+                    onStopEditing={() => {}}
                     onUpdate={handleUpdate}
-                    onLoadClient={loadClient}
-                    onQuickView={setDrawerClient}
-                    renderStatus={(id) => null} // Placeholder for save indicator if needed
+                    onLoadClient={(c) => loadClient(c, true)}
+                    onQuickView={setSelectedClientForDrawer}
+                    rowHeight={isCompact ? 36 : 44}
+                    renderStatus={(id) => {
+                       const s = rowStatuses[id]?.status || 'idle';
+                       if (s === 'saving') return <div className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse"></div>;
+                       if (s === 'saved') return <div className="text-emerald-500 text-[10px] font-bold">✓</div>;
+                       return null;
+                    }}
                   />
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
+               ))}
+               
+               {localClients.length === 0 && !loading && (
+                 <tr>
+                    <td colSpan={columns.length + 1} className="py-40 text-center bg-white">
+                       <div className="max-w-md mx-auto space-y-8 px-8">
+                          <div className="relative h-32 w-32 mx-auto opacity-5">
+                            <svg viewBox="0 0 24 24" className="w-full h-full fill-slate-900"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z" /></svg>
+                          </div>
+                          <div className="space-y-3">
+                             <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight">Vault Empty</h3>
+                             <p className="text-sm text-slate-400 font-medium leading-relaxed">No matching client records found. Adjust your lifecycle filters or start a new intake to populate the portfolio.</p>
+                          </div>
+                          <div className="flex flex-col sm:flex-row gap-3 justify-center">
+                             <Button variant="secondary" leftIcon="📥">Import CSV</Button>
+                             <Button variant="primary" leftIcon="＋" onClick={() => loadClient({} as any, true)}>Create Client</Button>
+                          </div>
+                       </div>
+                    </td>
+                 </tr>
+               )}
+            </tbody>
+         </table>
       </div>
 
-      {/* 4. MODALS & DRAWERS */}
-      <ClientDrawer 
-        client={drawerClient}
-        isOpen={!!drawerClient}
-        onClose={() => setDrawerClient(null)}
-        onUpdateField={(field, val, section) => drawerClient && handleUpdate(drawerClient.id, field, val, section)}
-        onStatusUpdate={(c, s) => handleUpdate(c.id, 'status', s, 'followUp')}
-        onOpenFullProfile={() => { if(drawerClient) loadClient(drawerClient, true); }}
-        onDelete={() => { if(drawerClient) { deleteClient(drawerClient.id); setDrawerClient(null); } }}
+      {/* MODALS & OVERLAYS */}
+      <CommandBar 
+        isOpen={isCommandOpen} 
+        onClose={() => setIsCommandOpen(false)} 
+        clients={localClients}
+        onSelectClient={c => loadClient(c, true)}
+        onAction={(action) => {
+          if (action === 'toggle_compact') setIsCompact(prev => prev ? '' : 'compact');
+          if (action === 'new_client') loadClient({} as any, true);
+          if (action === 'open_blast') setIsBlastOpen(true);
+        }}
       />
 
       <BlastModal 
-        isOpen={blastModalOpen}
-        onClose={() => setBlastModalOpen(false)}
-        selectedCount={selectedRowIds.size}
-        blastTopic={blastTopic}
-        setBlastTopic={setBlastTopic}
-        blastMessage={blastMessage}
-        setBlastMessage={setBlastMessage}
-        isGeneratingBlast={isGeneratingBlast}
-        onGenerateAI={handleGenerateBlastAI}
-        generatedLinks={generatedLinks}
-        onGenerateLinks={handleGenerateLinks}
+        isOpen={isBlastOpen} onClose={() => setIsBlastOpen(false)} 
+        selectedCount={selectedIds.size}
+        blastTopic="" setBlastTopic={() => {}} blastMessage="" setBlastMessage={() => {}}
+        isGeneratingBlast={false} onGenerateAI={() => {}}
+        generatedLinks={[]} onGenerateLinks={() => {}}
       />
 
+      {selectedClientForDrawer && (
+        <ClientDrawer 
+          client={selectedClientForDrawer} isOpen={!!selectedClientForDrawer} onClose={() => setSelectedClientForDrawer(null)}
+          onUpdateField={handleUpdate} onStatusUpdate={(c, s) => handleUpdate(c.id, 'status', s, 'followUp')}
+          onOpenFullProfile={() => loadClient(selectedClientForDrawer, true)} onDelete={() => deleteClient(selectedClientForDrawer.id)}
+        />
+      )}
     </div>
   );
 };

@@ -1,62 +1,66 @@
 
 import { supabase } from '../supabase';
+import { AuditLog } from '../../types';
 
-export interface ActivityItem {
+export interface Activity {
   id: string;
   type: string;
   title: string;
-  details?: any;
+  details: any;
   created_at: string;
-  user_email?: string;
 }
 
-export const logActivity = async (clientId: string, type: string, title: string, details?: any) => {
-  if (!supabase) return;
-  
+export const logActivity = async (clientId: string | null, type: string, title: string, details: any = {}) => {
   try {
-    const { data: { user } } = await supabase.auth.getUser();
+    if (!supabase) return;
+    const { data: { session } } = await supabase.auth.getSession();
+    const user = session?.user;
     if (!user) return;
 
-    const { error } = await supabase.from('activities').insert({
-      client_id: clientId,
+    // client_id can be null for global app activities (like tab switching)
+    await supabase.from('activities').insert({
       user_id: user.id,
+      client_id: clientId || '00000000-0000-0000-0000-000000000000', // System placeholder for non-client specific logs
       type,
       title,
       details
     });
-
-    if (error) console.error('Log activity failed', error);
   } catch (e) {
-    console.error('Log activity exception', e);
+    // Silent fail for background telemetry
+    console.debug('Telemetry log skipped:', e);
   }
 };
 
-export const getClientActivities = async (clientId: string): Promise<ActivityItem[]> => {
-  if (!supabase) return [];
-
+export const logTabUsage = async (tabId: string, durationSeconds: number) => {
   try {
-    // Join with profiles to get user email if needed, though mostly we just need the activity data
-    // Assuming a simple select for now to avoid PGRST205 if foreign keys aren't perfect
+    if (!supabase || durationSeconds < 2) return;
+    const { data: { session } } = await supabase.auth.getSession();
+    const user = session?.user;
+    if (!user) return;
+
+    await supabase.from('activities').insert({
+      user_id: user.id,
+      client_id: '00000000-0000-0000-0000-000000000000',
+      type: 'tab_usage',
+      title: `Used ${tabId}`,
+      details: { tab_id: tabId, duration_sec: durationSeconds }
+    });
+  } catch (e) {
+    // Silent fail for background telemetry
+    console.debug('Tab usage log skipped:', e);
+  }
+};
+
+export const fetchActivities = async (clientId: string): Promise<Activity[]> => {
+  if (!supabase) return [];
+  try {
     const { data, error } = await supabase
       .from('activities')
-      .select('*') 
+      .select('*')
       .eq('client_id', clientId)
       .order('created_at', { ascending: false });
-
-    if (error) {
-      console.error('Fetch activities error', error);
-      return [];
-    }
-
-    return data.map((row: any) => ({
-      id: row.id,
-      type: row.type,
-      title: row.title,
-      details: row.details,
-      created_at: row.created_at
-    }));
+    return error ? [] : data;
   } catch (e) {
-    console.error('Fetch activities exception', e);
     return [];
   }
 };

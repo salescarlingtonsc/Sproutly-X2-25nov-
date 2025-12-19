@@ -6,6 +6,7 @@ import { toNum, fmtSGD, monthNames } from '../../lib/helpers';
 import LineChart from '../../components/common/LineChart';
 import PageHeader from '../../components/layout/PageHeader';
 import SectionCard from '../../components/layout/SectionCard';
+import LabeledText from '../../components/common/LabeledText';
 import { CashflowState } from '../../types';
 
 const CashflowTab: React.FC = () => {
@@ -21,7 +22,7 @@ const CashflowTab: React.FC = () => {
   const { openAiWithPrompt } = useAi();
   const [ledgerView, setLedgerView] = useState<'yearly' | 'monthly'>('yearly');
 
-  const { projectToAge, bankInterestRate, additionalIncomes, withdrawals, careerEvents = [], customBaseIncome } = cashflowState;
+  const { currentSavings, projectToAge, bankInterestRate, additionalIncomes, withdrawals, careerEvents = [], customBaseIncome } = cashflowState;
   
   // Handlers for state updates
   const updateState = (key: keyof CashflowState, value: any) => {
@@ -52,10 +53,9 @@ const CashflowTab: React.FC = () => {
     const totalMonths = Math.max(1, (targetAge - currentAge) * 12);
     const projection: any[] = [];
     
-    let balance = toNum(cashflowState.currentSavings, 0);
-    const monthlyInterestRate = toNum(bankInterestRate, 0) / 100 / 12;
+    let balance = toNum(currentSavings, 0);
+    const monthlyInterestRate = (toNum(bankInterestRate, 0) / 100) / 12;
     
-    // Explicitly typing sum as number
     const totalMonthlyExpenses = Object.values(expenses).reduce((sum: number, v) => sum + toNum(v), 0) + customExpenses.reduce((sum: number, v) => sum + toNum(v.amount), 0);
     const fiAge = toNum(profile.retirementAge, 65);
     const effectiveTakeHome = toNum(profile.takeHome) || (cpfData ? toNum(cpfData.takeHome) : 0);
@@ -72,7 +72,7 @@ const CashflowTab: React.FC = () => {
       monthlyInvestment = toNum(profile.monthlyInvestmentAmount);
     } else {
       const investmentPercent = toNum(retirement.investmentPercent, 50);
-      monthlyInvestment = currentActiveIncome * (investmentPercent / 100);
+      monthlyInvestment = (effectiveTakeHome - totalMonthlyExpenses) * (investmentPercent / 100);
     }
 
     for (let m = 0; m < totalMonths; m++) {
@@ -118,13 +118,11 @@ const CashflowTab: React.FC = () => {
       // Withdrawals
       withdrawals.forEach(w => {
          const startM = (toNum(w.startAge) - currentAge)*12 + (toNum(w.startMonth)-currentMonth);
-         // For onetime, startM is the hit month. For recurring, it's the start.
          const endM = w.endAge ? (toNum(w.endAge)-currentAge)*12 + ((w.endMonth||11)-currentMonth) : 9999;
          
          if (w.type === 'onetime') {
              if (m === startM) withdrawalAmount += toNum(w.amount);
          } else {
-             // Recurring
              if (m >= startM && m <= endM) {
                  const diff = m - startM;
                  let sub = false;
@@ -137,12 +135,13 @@ const CashflowTab: React.FC = () => {
 
       // Retirement Expense Logic
       if (isRetired) {
-         const baseExp = toNum(profile.customRetirementExpense) || (cashflowData.totalExpenses * 0.7);
+         const baseExp = toNum(profile.customRetirementExpense) || (totalMonthlyExpenses * 0.7);
          const yearsFromNow = ageAtMonth - currentAge;
          withdrawalAmount += baseExp * Math.pow(1.03, yearsFromNow);
       }
 
       const totalIncome = monthIncome + additionalIncome;
+      // Net cashflow: Income - Expenses - (Optional: Monthly Investment if you want to track bank separate from portfolio)
       const net = totalIncome - withdrawalAmount - (isRetired ? 0 : monthlyInvestment);
       balance += net;
 
@@ -154,37 +153,29 @@ const CashflowTab: React.FC = () => {
          withdrawal: withdrawalAmount,
          interestEarned,
          netCashflow: net,
-         balance,
+         balance: Math.max(0, balance),
          isCareerPaused
       });
     }
     return projection;
-  }, [cashflowData, cashflowState.currentSavings, projectToAge, additionalIncomes, withdrawals, careerEvents, bankInterestRate, profile, expenses, customExpenses, cpfData, currentAge, customBaseIncome, retirement.investmentPercent]);
+  }, [cashflowData, currentSavings, projectToAge, additionalIncomes, withdrawals, careerEvents, bankInterestRate, profile, expenses, customExpenses, cpfData, currentAge, customBaseIncome, retirement.investmentPercent]);
 
   // --- CHART DATA PREP ---
   const chartData = useMemo(() => {
     if (!monthlyProjection.length) return [];
-    
-    // Initial Point (Now)
-    const startBalance = toNum(cashflowState.currentSavings, 0);
+    const startBalance = toNum(currentSavings, 0);
     const startPoint = { label: `Age ${currentAge}`, value: startBalance };
-    
-    // Yearly Points (End of every 12th month, representing end of that year)
-    // i=11 is End of Year 1 (approx Age+1)
     const yearlyPoints = monthlyProjection
         .filter((_, i) => (i + 1) % 12 === 0)
         .map(p => ({
             label: `Age ${p.age + 1}`,
             value: p.balance
         }));
-    
-    // If projection is short, show monthly
     if (monthlyProjection.length < 24) {
        return monthlyProjection.map(p => ({ label: `${p.monthName} ${p.year}`, value: p.balance }));
     }
-        
     return [startPoint, ...yearlyPoints];
-  }, [monthlyProjection, cashflowState.currentSavings, currentAge]);
+  }, [monthlyProjection, currentSavings, currentAge]);
 
   if (!cashflowData) return <div className="p-10 text-center text-gray-400">Loading Cashflow Engine...</div>;
 
@@ -207,57 +198,82 @@ const CashflowTab: React.FC = () => {
         action={headerAction}
       />
 
-      {/* 1. THE HYDRAULIC FLOW SYSTEM */}
-      <SectionCard className="border border-gray-200">
-         <div className="flex flex-col md:flex-row items-center gap-6 justify-between">
-            
-            {/* INFLOW */}
-            <div className="flex-1 w-full text-center">
-               <div className="inline-block p-3 bg-emerald-100 rounded-full text-2xl mb-2">📥</div>
-               <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Monthly Inflow</div>
-               <div className="text-2xl font-black text-emerald-600">{fmtSGD(cashflowData.takeHome)}</div>
-               <div className="text-xs text-gray-500 mt-1">Take-Home Pay</div>
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+         {/* 1. INITIALIZATION PANEL */}
+         <SectionCard title="Initialization" className="lg:col-span-1">
+            <div className="space-y-4">
+               <LabeledText 
+                  label="Starting Bank Balance ($)" 
+                  value={currentSavings} 
+                  onChange={(v) => updateState('currentSavings', v)} 
+                  placeholder="0"
+                  isCurrency
+               />
+               <LabeledText 
+                  label="Bank Interest (%)" 
+                  value={bankInterestRate} 
+                  onChange={(v) => updateState('bankInterestRate', v)} 
+                  type="number"
+                  placeholder="0.05"
+               />
+               <LabeledText 
+                  label="Project To Age" 
+                  value={projectToAge} 
+                  onChange={(v) => updateState('projectToAge', v)} 
+                  type="number"
+                  placeholder="100"
+               />
             </div>
+         </SectionCard>
 
-            {/* FLOW ARROW */}
-            <div className="hidden md:flex flex-col items-center">
-               <div className="w-full h-1 bg-gray-200 w-16 relative">
-                  <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2 h-2 bg-gray-400 rounded-full"></div>
+         {/* 2. THE HYDRAULIC FLOW SYSTEM */}
+         <SectionCard className="lg:col-span-3 border border-gray-200">
+            <div className="flex flex-col md:flex-row items-center gap-6 justify-between h-full">
+               {/* INFLOW */}
+               <div className="flex-1 w-full text-center">
+                  <div className="inline-block p-3 bg-emerald-100 rounded-full text-2xl mb-2">📥</div>
+                  <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Monthly Inflow</div>
+                  <div className="text-2xl font-black text-emerald-600">{fmtSGD(cashflowData.takeHome)}</div>
+                  <div className="text-xs text-gray-500 mt-1">Take-Home Pay</div>
                </div>
-            </div>
 
-            {/* THE TANK */}
-            <div className={`flex-1 w-full p-6 rounded-2xl border-2 text-center relative overflow-hidden ${cashflowData.monthlySavings >= 0 ? 'bg-emerald-50 border-emerald-200' : 'bg-red-50 border-red-200'}`}>
-               <div className="relative z-10">
-                  <div className="text-[10px] font-bold uppercase tracking-widest mb-1 opacity-60">Net Free Cash</div>
-                  <div className={`text-4xl font-black ${cashflowData.monthlySavings >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
-                     {cashflowData.monthlySavings >= 0 ? '+' : ''}{fmtSGD(cashflowData.monthlySavings)}
+               <div className="hidden md:flex flex-col items-center">
+                  <div className="w-full h-1 bg-gray-200 w-16 relative">
+                     <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2 h-2 bg-gray-400 rounded-full"></div>
                   </div>
-                  <div className="text-xs font-bold opacity-50 mt-2">
-                     {cashflowData.savingsRate.toFixed(1)}% Savings Rate
+               </div>
+
+               {/* THE TANK */}
+               <div className={`flex-1 w-full p-6 rounded-2xl border-2 text-center relative overflow-hidden ${cashflowData.monthlySavings >= 0 ? 'bg-emerald-50 border-emerald-200' : 'bg-red-50 border-red-200'}`}>
+                  <div className="relative z-10">
+                     <div className="text-[10px] font-bold uppercase tracking-widest mb-1 opacity-60">Net Free Cash</div>
+                     <div className={`text-4xl font-black ${cashflowData.monthlySavings >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
+                        {cashflowData.monthlySavings >= 0 ? '+' : ''}{fmtSGD(cashflowData.monthlySavings)}
+                     </div>
+                     <div className="text-xs font-bold opacity-50 mt-2">
+                        {cashflowData.savingsRate.toFixed(1)}% Savings Rate
+                     </div>
                   </div>
                </div>
-            </div>
 
-            {/* FLOW ARROW */}
-            <div className="hidden md:flex flex-col items-center">
-               <div className="w-full h-1 bg-gray-200 w-16 relative">
-                  <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2 h-2 bg-gray-400 rounded-full"></div>
+               <div className="hidden md:flex flex-col items-center">
+                  <div className="w-full h-1 bg-gray-200 w-16 relative">
+                     <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2 h-2 bg-gray-400 rounded-full"></div>
+                  </div>
+               </div>
+
+               {/* OUTFLOW */}
+               <div className="flex-1 w-full text-center">
+                  <div className="inline-block p-3 bg-red-100 rounded-full text-2xl mb-2">💸</div>
+                  <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Monthly Burn</div>
+                  <div className="text-2xl font-black text-red-600">{fmtSGD(cashflowData.totalExpenses)}</div>
+                  <div className="text-xs text-gray-500 mt-1">Fixed + Variable</div>
                </div>
             </div>
+         </SectionCard>
+      </div>
 
-            {/* OUTFLOW */}
-            <div className="flex-1 w-full text-center">
-               <div className="inline-block p-3 bg-red-100 rounded-full text-2xl mb-2">💸</div>
-               <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Monthly Burn</div>
-               <div className="text-2xl font-black text-red-600">{fmtSGD(cashflowData.totalExpenses)}</div>
-               <div className="text-xs text-gray-500 mt-1">Fixed + Variable</div>
-            </div>
-
-         </div>
-      </SectionCard>
-
-      {/* 2. CAREER EVENTS */}
+      {/* 3. CAREER EVENTS & CHART */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
          <SectionCard title="Career Events" className="lg:col-span-1" action={<button onClick={addCareerEvent} className="text-xs bg-indigo-200 text-indigo-800 px-2 py-1 rounded hover:bg-indigo-300">＋ Add</button>}>
             <div className="space-y-3">
@@ -307,7 +323,7 @@ const CashflowTab: React.FC = () => {
          </SectionCard>
 
          <SectionCard title="Liquid Cash Forecast" className="lg:col-span-2">
-            <p className="text-xs text-gray-500 mb-6">Projections exclude investment contributions to show actual bank liquidity.</p>
+            <p className="text-xs text-gray-500 mb-6">Projections include growth from bank interest and reflect the impact of recurring investments.</p>
             <LineChart 
                xLabels={chartData.map(p => p.label)}
                series={[{ name: 'Cash Balance', values: chartData.map(p => p.value), stroke: '#10b981' }]}
@@ -317,15 +333,13 @@ const CashflowTab: React.FC = () => {
          </SectionCard>
       </div>
 
-      {/* 3. ADDITIONAL STREAMS & WITHDRAWALS */}
+      {/* 4. ADDITIONAL STREAMS & WITHDRAWALS */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-         
          {/* INCOMES */}
          <SectionCard title="Additional Incomes" action={<button onClick={addIncome} className="text-xs bg-emerald-100 text-emerald-700 px-2 py-1 rounded hover:bg-emerald-200 transition-colors">＋ Add Stream</button>}>
             <div className="space-y-3">
                {additionalIncomes.map(i => (
                   <div key={i.id} className="bg-emerald-50/50 p-3 rounded-lg border border-emerald-100 text-xs relative group">
-                     {/* Row 1: Name & Amount */}
                      <div className="flex gap-2 mb-2">
                         <input 
                            type="text" 
@@ -342,66 +356,27 @@ const CashflowTab: React.FC = () => {
                            className="w-20 bg-white border border-emerald-200 rounded px-2 py-1 text-right font-mono" 
                         />
                      </div>
-                     
-                     {/* Row 2: Controls */}
                      <div className="flex gap-2 items-center flex-wrap">
-                        <select 
-                           value={i.type} 
-                           onChange={(e) => updateIncomeItem(i.id, 'type', e.target.value)}
-                           className="bg-white border border-emerald-200 rounded px-1 py-0.5 text-[10px]"
-                        >
+                        <select value={i.type} onChange={(e) => updateIncomeItem(i.id, 'type', e.target.value)} className="bg-white border border-emerald-200 rounded px-1 py-0.5 text-[10px]">
                            <option value="recurring">Recurring</option>
                            <option value="onetime">One-Time</option>
                         </select>
-                        
                         {i.type === 'recurring' && (
-                           <select 
-                              value={i.frequency} 
-                              onChange={(e) => updateIncomeItem(i.id, 'frequency', e.target.value)}
-                              className="bg-white border border-emerald-200 rounded px-1 py-0.5 text-[10px]"
-                           >
+                           <select value={i.frequency} onChange={(e) => updateIncomeItem(i.id, 'frequency', e.target.value)} className="bg-white border border-emerald-200 rounded px-1 py-0.5 text-[10px]">
                               <option value="monthly">Mthly</option>
                               <option value="yearly">Yrly</option>
                            </select>
                         )}
-
                         <div className="flex items-center gap-1 ml-auto">
                            <span className="text-[10px] text-gray-500">Start:</span>
-                           <input 
-                              type="number" 
-                              value={i.startAge} 
-                              onChange={(e) => updateIncomeItem(i.id, 'startAge', e.target.value)}
-                              className="w-8 bg-white border border-emerald-200 rounded px-1 py-0.5 text-center text-xs" 
-                              title="Start Age"
-                           />
-                           <select
-                              value={i.startMonth || 0}
-                              onChange={(e) => updateIncomeItem(i.id, 'startMonth', parseInt(e.target.value))}
-                              className="bg-white border border-emerald-200 rounded px-0 py-0.5 text-[10px]"
-                              title="Start Month"
-                           >
+                           <input type="number" value={i.startAge} onChange={(e) => updateIncomeItem(i.id, 'startAge', e.target.value)} className="w-8 bg-white border border-emerald-200 rounded px-1 py-0.5 text-center text-xs" />
+                           <select value={i.startMonth || 0} onChange={(e) => updateIncomeItem(i.id, 'startMonth', parseInt(e.target.value))} className="bg-white border border-emerald-200 rounded px-0 py-0.5 text-[10px]">
                               {monthNames.map((m, idx) => <option key={idx} value={idx}>{m}</option>)}
                            </select>
-
                            {i.type === 'recurring' && (
                               <>
                                  <span className="text-[10px] text-gray-500 ml-1">End:</span>
-                                 <input 
-                                    type="number" 
-                                    value={i.endAge || ''} 
-                                    onChange={(e) => updateIncomeItem(i.id, 'endAge', e.target.value)}
-                                    placeholder="∞"
-                                    className="w-8 bg-white border border-emerald-200 rounded px-1 py-0.5 text-center text-xs" 
-                                    title="End Age"
-                                 />
-                                 <select
-                                    value={i.endMonth === undefined ? 11 : i.endMonth}
-                                    onChange={(e) => updateIncomeItem(i.id, 'endMonth', parseInt(e.target.value))}
-                                    className="bg-white border border-emerald-200 rounded px-0 py-0.5 text-[10px]"
-                                    title="End Month"
-                                 >
-                                    {monthNames.map((m, idx) => <option key={idx} value={idx}>{m}</option>)}
-                                 </select>
+                                 <input type="number" value={i.endAge || ''} onChange={(e) => updateIncomeItem(i.id, 'endAge', e.target.value)} placeholder="∞" className="w-8 bg-white border border-emerald-200 rounded px-1 py-0.5 text-center text-xs" />
                               </>
                            )}
                         </div>
@@ -418,7 +393,6 @@ const CashflowTab: React.FC = () => {
             <div className="space-y-3">
                {withdrawals.map(w => (
                   <div key={w.id} className="bg-red-50/50 p-3 rounded-lg border border-red-100 text-xs relative group">
-                     {/* Row 1: Name & Amount */}
                      <div className="flex gap-2 mb-2">
                         <input 
                            type="text" 
@@ -435,66 +409,27 @@ const CashflowTab: React.FC = () => {
                            className="w-20 bg-white border border-red-200 rounded px-2 py-1 text-right font-mono text-red-600" 
                         />
                      </div>
-                     
-                     {/* Row 2: Controls */}
                      <div className="flex gap-2 items-center flex-wrap">
-                        <select 
-                           value={w.type} 
-                           onChange={(e) => updateWithdrawalItem(w.id, 'type', e.target.value)}
-                           className="bg-white border border-red-200 rounded px-1 py-0.5 text-[10px]"
-                        >
+                        <select value={w.type} onChange={(e) => updateWithdrawalItem(w.id, 'type', e.target.value)} className="bg-white border border-red-200 rounded px-1 py-0.5 text-[10px]">
                            <option value="onetime">One-Time</option>
                            <option value="recurring">Recurring</option>
                         </select>
-                        
                         {w.type === 'recurring' && (
-                           <select 
-                              value={w.frequency} 
-                              onChange={(e) => updateWithdrawalItem(w.id, 'frequency', e.target.value)}
-                              className="bg-white border border-red-200 rounded px-1 py-0.5 text-[10px]"
-                           >
+                           <select value={w.frequency} onChange={(e) => updateWithdrawalItem(w.id, 'frequency', e.target.value)} className="bg-white border border-red-200 rounded px-1 py-0.5 text-[10px]">
                               <option value="monthly">Mthly</option>
                               <option value="yearly">Yrly</option>
                            </select>
                         )}
-
                         <div className="flex items-center gap-1 ml-auto">
                            <span className="text-[10px] text-gray-500">Start:</span>
-                           <input 
-                              type="number" 
-                              value={w.startAge} 
-                              onChange={(e) => updateWithdrawalItem(w.id, 'startAge', e.target.value)}
-                              className="w-8 bg-white border border-red-200 rounded px-1 py-0.5 text-center text-xs" 
-                              title="Start Age"
-                           />
-                           <select
-                              value={w.startMonth || 0}
-                              onChange={(e) => updateWithdrawalItem(w.id, 'startMonth', parseInt(e.target.value))}
-                              className="bg-white border border-red-200 rounded px-0 py-0.5 text-[10px]"
-                              title="Start Month"
-                           >
+                           <input type="number" value={w.startAge} onChange={(e) => updateWithdrawalItem(w.id, 'startAge', e.target.value)} className="w-8 bg-white border border-red-200 rounded px-1 py-0.5 text-center text-xs" />
+                           <select value={w.startMonth || 0} onChange={(e) => updateWithdrawalItem(w.id, 'startMonth', parseInt(e.target.value))} className="bg-white border border-red-200 rounded px-0 py-0.5 text-[10px]">
                               {monthNames.map((m, idx) => <option key={idx} value={idx}>{m}</option>)}
                            </select>
-
                            {w.type === 'recurring' && (
                               <>
                                  <span className="text-[10px] text-gray-500 ml-1">End:</span>
-                                 <input 
-                                    type="number" 
-                                    value={w.endAge || ''} 
-                                    onChange={(e) => updateWithdrawalItem(w.id, 'endAge', e.target.value)}
-                                    placeholder="∞"
-                                    className="w-8 bg-white border border-red-200 rounded px-1 py-0.5 text-center text-xs" 
-                                    title="End Age"
-                                 />
-                                 <select
-                                    value={w.endMonth === undefined ? 11 : w.endMonth}
-                                    onChange={(e) => updateWithdrawalItem(w.id, 'endMonth', parseInt(e.target.value))}
-                                    className="bg-white border border-red-200 rounded px-0 py-0.5 text-[10px]"
-                                    title="End Month"
-                                 >
-                                    {monthNames.map((m, idx) => <option key={idx} value={idx}>{m}</option>)}
-                                 </select>
+                                 <input type="number" value={w.endAge || ''} onChange={(e) => updateWithdrawalItem(w.id, 'endAge', e.target.value)} placeholder="∞" className="w-8 bg-white border border-red-200 rounded px-1 py-0.5 text-center text-xs" />
                               </>
                            )}
                         </div>
@@ -507,24 +442,14 @@ const CashflowTab: React.FC = () => {
          </SectionCard>
       </div>
 
-      {/* 4. CASHFLOW LEDGER */}
+      {/* 5. CASHFLOW LEDGER */}
       <SectionCard 
          title="Cashflow Ledger" 
          noPadding
          action={
             <div className="flex bg-gray-100 p-1 rounded-lg">
-               <button 
-                  onClick={() => setLedgerView('yearly')}
-                  className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${ledgerView === 'yearly' ? 'bg-white shadow text-indigo-600' : 'text-gray-500 hover:text-slate-700'}`}
-               >
-                  Yearly
-               </button>
-               <button 
-                  onClick={() => setLedgerView('monthly')}
-                  className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${ledgerView === 'monthly' ? 'bg-white shadow text-indigo-600' : 'text-gray-500 hover:text-slate-700'}`}
-               >
-                  Monthly
-               </button>
+               <button onClick={() => setLedgerView('yearly')} className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${ledgerView === 'yearly' ? 'bg-white shadow text-indigo-600' : 'text-gray-500 hover:text-slate-700'}`}>Yearly</button>
+               <button onClick={() => setLedgerView('monthly')} className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${ledgerView === 'monthly' ? 'bg-white shadow text-indigo-600' : 'text-gray-500 hover:text-slate-700'}`}>Monthly</button>
             </div>
          }
       >

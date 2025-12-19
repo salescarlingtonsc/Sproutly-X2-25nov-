@@ -1,5 +1,6 @@
 
 import React from 'react';
+import Button from '../../../components/ui/Button';
 
 interface BlastModalProps {
   isOpen: boolean;
@@ -23,87 +24,68 @@ const BlastModal: React.FC<BlastModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-[9999] flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full overflow-hidden animate-fade-in-up">
-        <div className="bg-gradient-to-r from-emerald-500 to-teal-600 p-6 text-white">
-          <h3 className="text-lg font-bold flex items-center gap-2">
-            <span className="text-2xl">💬</span> Smart Blast Engine
+    <div className="fixed inset-0 bg-slate-900/10 backdrop-blur-sm z-[9999] flex items-center justify-center p-4">
+      <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full overflow-hidden animate-in zoom-in-95 duration-200">
+        <div className="bg-slate-900 p-8 text-white relative">
+          <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-500/10 rounded-full blur-2xl pointer-events-none"></div>
+          <h3 className="text-xl font-black flex items-center gap-3 relative z-10">
+            <span className="text-2xl">💬</span> Smart Outreach
           </h3>
-          <p className="text-emerald-100 text-xs mt-1">Generating personalized links for {selectedCount} clients.</p>
+          <p className="text-slate-400 text-xs mt-2 relative z-10 font-medium">Batch messaging optimized for {selectedCount} profile(s).</p>
         </div>
         
-        <div className="p-6">
+        <div className="p-8">
           {generatedLinks.length === 0 ? (
-            <div className="space-y-4">
+            <div className="space-y-6">
               <div>
-                <label className="block text-xs font-bold text-gray-500 uppercase mb-2">Message Topic (for AI)</label>
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Goal of Outreach</label>
                 <div className="flex gap-2">
                   <input 
                     type="text" 
-                    className="flex-1 p-2 bg-gray-50 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-emerald-500"
-                    placeholder="e.g. CPF Rate Changes, Market Update..."
+                    className="flex-1 px-4 py-2.5 bg-slate-50 border-transparent border-2 rounded-xl text-sm font-bold focus:bg-white focus:border-indigo-100 outline-none transition-all placeholder-slate-300"
+                    placeholder="e.g. Market update, Annual Review"
                     value={blastTopic}
                     onChange={(e) => setBlastTopic(e.target.value)}
                   />
-                  <button 
+                  <Button 
+                    variant="ghost" 
                     onClick={onGenerateAI}
-                    disabled={!blastTopic || isGeneratingBlast}
-                    className="px-3 bg-purple-100 text-purple-700 rounded-lg text-xs font-bold hover:bg-purple-200 transition-colors"
+                    isLoading={isGeneratingBlast}
+                    className="whitespace-nowrap"
                   >
-                    {isGeneratingBlast ? '...' : '✨ Auto-Write'}
-                  </button>
+                    ✨ Sproutly Draft
+                  </Button>
                 </div>
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-gray-500 uppercase mb-2">Message Template</label>
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Message Content</label>
                 <textarea 
-                  className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 outline-none h-32 resize-none"
+                  className="w-full p-4 bg-slate-50 border-transparent border-2 rounded-2xl text-sm font-medium focus:bg-white focus:border-indigo-100 outline-none h-40 resize-none transition-all"
                   value={blastMessage}
                   onChange={(e) => setBlastMessage(e.target.value)}
-                  placeholder="Hi {name}, checking in on your portfolio..."
+                  placeholder="Hi {name}, checking in..."
                 />
-                <p className="text-[10px] text-gray-400 mt-2">Tip: Use <strong>{'{name}'}</strong> to auto-insert client's first name.</p>
               </div>
-              <div className="flex gap-3">
-                <button onClick={onClose} className="flex-1 py-3 text-sm font-bold text-gray-500 hover:bg-gray-100 rounded-xl transition-colors">Cancel</button>
-                <button 
-                  onClick={onGenerateLinks} 
-                  disabled={!blastMessage}
-                  className="flex-1 py-3 bg-slate-900 text-white rounded-xl text-sm font-bold shadow-lg hover:bg-slate-800 transition-all disabled:opacity-50"
-                >
-                  🚀 Generate Links
-                </button>
+              <div className="flex gap-4 pt-2">
+                <Button variant="ghost" className="flex-1" onClick={onClose}>Discard</Button>
+                <Button variant="primary" className="flex-1" onClick={onGenerateLinks} disabled={!blastMessage} leftIcon="🚀">Confirm Batch</Button>
               </div>
             </div>
           ) : (
-            <div className="space-y-4">
-              <div className="bg-emerald-50 border border-emerald-100 p-4 rounded-xl text-center">
-                <div className="text-emerald-600 font-bold text-lg mb-1">Ready to Launch</div>
-                <p className="text-xs text-emerald-800">Click each link to open WhatsApp Web instantly.</p>
+            <div className="space-y-6">
+              <div className="bg-emerald-50 border border-emerald-100 p-5 rounded-2xl text-center">
+                <div className="text-emerald-700 font-black text-lg mb-1 uppercase tracking-tighter">Ready for delivery</div>
               </div>
-              
               <div className="max-h-60 overflow-y-auto space-y-2 pr-2 custom-scrollbar">
                 {generatedLinks.map((link, i) => (
-                  <a 
-                    key={i} 
-                    href={link.url} 
-                    target="_blank" 
-                    rel="noreferrer"
-                    className="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-xl hover:border-emerald-400 hover:shadow-md transition-all group"
-                    onClick={(e) => (e.currentTarget.style.opacity = '0.5')}
-                  >
-                    <span className="text-sm font-bold text-gray-700">{link.name}</span>
-                    <span className="text-xs font-bold text-emerald-600 bg-emerald-50 px-3 py-1 rounded-full group-hover:bg-emerald-600 group-hover:text-white transition-colors">
-                      Send ➤
-                    </span>
+                  <a key={i} href={link.url} target="_blank" rel="noreferrer" className="flex items-center justify-between p-4 bg-white border border-slate-100 rounded-xl hover:border-emerald-500 hover:shadow-md transition-all group" onClick={(e) => (e.currentTarget.style.opacity = '0.4')}>
+                    <span className="text-sm font-black text-slate-700">{link.name}</span>
+                    <span className="text-[10px] font-black text-emerald-600 bg-emerald-50 px-3 py-1.5 rounded-full group-hover:bg-emerald-600 group-hover:text-white transition-all uppercase tracking-widest">Launch ➤</span>
                   </a>
                 ))}
               </div>
-              
-              <button onClick={onClose} className="w-full py-3 bg-gray-100 text-gray-600 rounded-xl text-sm font-bold hover:bg-gray-200 transition-colors">
-                Done
-              </button>
+              <Button variant="secondary" className="w-full" onClick={onClose}>Finish Batch</Button>
             </div>
           )}
         </div>

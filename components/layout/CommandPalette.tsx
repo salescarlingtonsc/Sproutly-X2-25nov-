@@ -15,22 +15,18 @@ const CommandPalette: React.FC<CommandPaletteProps> = ({ clients, onNavigate, on
   const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Toggle with Cmd+K
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault();
         setIsOpen(prev => !prev);
       }
-      if (e.key === 'Escape') {
-        setIsOpen(false);
-      }
+      if (e.key === 'Escape') setIsOpen(false);
     };
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // Focus input on open
   useEffect(() => {
     if (isOpen) {
       setTimeout(() => inputRef.current?.focus(), 50);
@@ -39,10 +35,9 @@ const CommandPalette: React.FC<CommandPaletteProps> = ({ clients, onNavigate, on
     }
   }, [isOpen]);
 
-  // Filter Results
   const filteredTabs = TAB_DEFINITIONS.filter(t => 
     t.label.toLowerCase().includes(query.toLowerCase()) && t.id !== 'admin'
-  );
+  ).slice(0, 4);
   
   const filteredClients = clients.filter(c => 
     c.profile.name.toLowerCase().includes(query.toLowerCase()) || 
@@ -54,7 +49,6 @@ const CommandPalette: React.FC<CommandPaletteProps> = ({ clients, onNavigate, on
     ...filteredClients.map(c => ({ type: 'client', data: c }))
   ];
 
-  // Navigation Logic
   useEffect(() => {
     const handleNavKeys = (e: KeyboardEvent) => {
       if (!isOpen) return;
@@ -83,87 +77,68 @@ const CommandPalette: React.FC<CommandPaletteProps> = ({ clients, onNavigate, on
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-start justify-center pt-[20vh]" onClick={() => setIsOpen(false)}>
-      <div className="fixed inset-0 bg-slate-900/20 backdrop-blur-sm transition-opacity"></div>
-      
+    <div className="fixed inset-0 z-[10000] flex items-start justify-center pt-[15vh] p-4 bg-slate-900/10 backdrop-blur-[8px] animate-in fade-in duration-200" onClick={() => setIsOpen(false)}>
       <div 
-        className="relative w-full max-w-lg bg-white rounded-xl shadow-2xl overflow-hidden animate-fade-in-up border border-gray-200"
+        className="relative w-full max-w-xl bg-white rounded-2xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200 border border-slate-200"
         onClick={e => e.stopPropagation()}
       >
-        <div className="flex items-center px-4 py-3 border-b border-gray-100">
-          <span className="text-gray-400 text-lg mr-3">🔍</span>
+        <div className="flex items-center px-6 py-5 border-b border-slate-100">
+          <span className="text-xl mr-4 opacity-30 font-light">🔍</span>
           <input 
             ref={inputRef}
             type="text" 
-            className="flex-1 bg-transparent outline-none text-slate-800 placeholder-gray-400 font-medium h-6"
-            placeholder="Go to..."
+            className="flex-1 bg-transparent outline-none text-lg text-slate-800 placeholder-slate-300 font-medium"
+            placeholder="Search clients or commands..."
             value={query}
             onChange={e => { setQuery(e.target.value); setActiveIndex(0); }}
           />
-          <div className="text-[10px] bg-gray-100 text-gray-500 px-2 py-1 rounded font-bold">ESC</div>
+          <div className="flex items-center gap-1.5">
+             <kbd className="text-[10px] bg-slate-50 text-slate-400 px-2 py-1 rounded border border-slate-200 font-bold uppercase">Esc</kbd>
+          </div>
         </div>
 
-        <div className="max-h-[60vh] overflow-y-auto py-2">
+        <div className="max-h-[60vh] overflow-y-auto py-2 px-2 custom-scrollbar">
           {allResults.length === 0 ? (
-            <div className="p-4 text-center text-gray-400 text-sm italic">No matching results found.</div>
+            <div className="p-12 text-center text-slate-400 text-sm font-medium italic">No matches for "{query}"</div>
           ) : (
-            <>
-              {filteredTabs.length > 0 && (
-                <div className="mb-2">
-                  <div className="px-4 py-1 text-[10px] font-bold text-gray-400 uppercase tracking-wider">Tools</div>
-                  {filteredTabs.map((tab, idx) => {
-                    const globalIdx = idx; // Since tabs come first
-                    const isActive = globalIdx === activeIndex;
-                    return (
-                      <button 
-                        key={tab.id}
-                        onClick={() => { onNavigate(tab.id); setIsOpen(false); }}
-                        className={`w-full text-left px-4 py-2.5 flex items-center gap-3 text-sm transition-colors ${isActive ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700 hover:bg-gray-50'}`}
-                      >
-                        <span className="text-lg">{tab.icon}</span>
-                        <span className="font-bold">{tab.label}</span>
-                        {isActive && <span className="ml-auto text-[10px] text-indigo-400 font-bold">↵ Enter</span>}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-
-              {filteredClients.length > 0 && (
-                <div>
-                  <div className="px-4 py-1 text-[10px] font-bold text-gray-400 uppercase tracking-wider mt-2">Clients</div>
-                  {filteredClients.map((client, idx) => {
-                    const globalIdx = filteredTabs.length + idx;
-                    const isActive = globalIdx === activeIndex;
-                    return (
-                      <button 
-                        key={client.id}
-                        onClick={() => { onSelectClient(client); setIsOpen(false); }}
-                        className={`w-full text-left px-4 py-2.5 flex items-center gap-3 text-sm transition-colors ${isActive ? 'bg-emerald-50 text-emerald-700' : 'text-slate-700 hover:bg-gray-50'}`}
-                      >
-                        <div className="w-6 h-6 rounded-full bg-gray-100 flex items-center justify-center text-xs font-bold text-gray-500">
-                           {client.profile.name.charAt(0)}
-                        </div>
-                        <div>
-                           <div className="font-bold">{client.profile.name}</div>
-                           <div className="text-[10px] opacity-70">{client.profile.email}</div>
-                        </div>
-                        {isActive && <span className="ml-auto text-[10px] text-emerald-400 font-bold">↵ Open</span>}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </>
+            <div className="space-y-1">
+              {allResults.map((item, idx) => {
+                const isActive = idx === activeIndex;
+                const isTab = item.type === 'tab';
+                const d = item.data as any;
+                
+                return (
+                  <button 
+                    key={idx}
+                    onMouseEnter={() => setActiveIndex(idx)}
+                    onClick={() => {
+                      if (isTab) onNavigate(d.id);
+                      else onSelectClient(d);
+                      setIsOpen(false);
+                    }}
+                    className={`w-full text-left px-4 py-3 rounded-xl flex items-center gap-4 transition-colors ${isActive ? 'bg-indigo-50 text-indigo-700' : 'text-slate-600 hover:bg-slate-50'}`}
+                  >
+                    <span className={`text-xl w-8 h-8 flex items-center justify-center rounded-lg ${isActive ? 'bg-indigo-100' : 'bg-slate-100'}`}>
+                      {isTab ? d.icon : '👤'}
+                    </span>
+                    <div className="flex-1 min-w-0">
+                       <div className="font-bold text-sm truncate">{isTab ? d.label : d.profile.name}</div>
+                       {!isTab && <div className={`text-[10px] uppercase font-black tracking-tighter opacity-50`}>{d.profile.phone || d.profile.email}</div>}
+                    </div>
+                    {isActive && <span className="text-[10px] font-black opacity-30 tracking-widest uppercase pr-2">Return ↵</span>}
+                  </button>
+                );
+              })}
+            </div>
           )}
         </div>
         
-        <div className="bg-gray-50 px-4 py-2 border-t border-gray-100 flex justify-between items-center text-[10px] text-gray-400 font-medium">
-           <div className="flex gap-2">
-              <span>↑↓ Navigate</span>
-              <span>↵ Select</span>
+        <div className="bg-slate-50 px-6 py-3 border-t border-slate-100 flex justify-between items-center text-[10px] font-black text-slate-300 uppercase tracking-widest">
+           <div className="flex gap-6">
+              <span className="flex items-center gap-1.5">↑↓ Navigate</span>
+              <span className="flex items-center gap-1.5">↵ Select</span>
            </div>
-           <div>Quantum Search</div>
+           <span>Quantum Search</span>
         </div>
       </div>
     </div>

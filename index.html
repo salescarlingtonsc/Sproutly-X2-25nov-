@@ -9,11 +9,35 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
+      :root {
+        color-scheme: light;
+      }
+      
       body { 
         font-family: 'Plus Jakarta Sans', sans-serif; 
         background-color: #f3f4f6;
+        color: #0f172a;
       }
       
+      /* Fix for "Black Blanks" in Input Autofill */
+      input:-webkit-autofill,
+      input:-webkit-autofill:hover, 
+      input:-webkit-autofill:focus,
+      textarea:-webkit-autofill,
+      textarea:-webkit-autofill:hover,
+      textarea:-webkit-autofill:focus {
+        -webkit-text-fill-color: #0f172a !important;
+        -webkit-box-shadow: 0 0 0px 1000px #ffffff inset !important;
+        transition: background-color 5000s ease-in-out 0s;
+      }
+
+      /* Force background visibility for clipped text */
+      .gradient-text {
+        -webkit-background-clip: text !important;
+        background-clip: text !important;
+        -webkit-text-fill-color: transparent !important;
+      }
+
       /* Smooth Scrollbar */
       ::-webkit-scrollbar {
         width: 8px;

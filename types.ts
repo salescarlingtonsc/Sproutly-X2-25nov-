@@ -295,8 +295,24 @@ export interface Client {
   documents?: ClientDocument[];
   
   // Dynamic Fields
-  fieldValues?: Record<string, any>; // Keyed by Field ID or Key
+  fieldValues?: Record<string, any>; 
 
   ownerEmail?: string;
   _ownerId?: string;
+}
+
+// Enterprise Audit Log
+export interface AuditLog {
+  id: string;
+  userId: string;
+  clientId: string;
+  action: 'create' | 'update' | 'delete' | 'view' | 'ai_generate';
+  module: string;
+  description: string;
+  changes?: {
+    field: string;
+    oldValue: any;
+    newValue: any;
+  }[];
+  timestamp: string;
 }

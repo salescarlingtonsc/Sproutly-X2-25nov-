@@ -93,11 +93,8 @@ const PropertyCalculatorTab: React.FC = () => {
       
       totalInterestPaid += interestThisYear;
       
-      // Breakeven Calculation:
-      // Price you must sell at to cover: Purchase Price + BSD + Reno + Legal + Interest Paid
-      // Note: This is simplified (ignores Agent Fees/holding costs for now, but good for "Cost Base")
       const totalCostBase = price + bsd + legalFees + reno + totalInterestPaid;
-      const equity = price - Math.max(0, balance); // Assuming price stays constant for equity calc base
+      const equity = price - Math.max(0, balance); 
 
       data.push({
         year: y,
@@ -112,8 +109,8 @@ const PropertyCalculatorTab: React.FC = () => {
 
   // --- TDSR CHECKER ---
   const monthlyIncome = toNum(profile.monthlyIncome) || toNum(profile.grossSalary) || 0;
-  const tdsrLimit = monthlyIncome * 0.55; // 55% conservative TDSR
-  const msrLimit = monthlyIncome * 0.30; // 30% MSR (HDB only)
+  const tdsrLimit = monthlyIncome * 0.55; 
+  const msrLimit = monthlyIncome * 0.30; 
   
   const isHdb = propertyType === 'hdb';
   const isSafeTDSR = monthlyPayment <= tdsrLimit;
@@ -139,7 +136,7 @@ const PropertyCalculatorTab: React.FC = () => {
       onClick={handleAiEvaluation}
       className="flex items-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-700 rounded-lg text-xs font-bold hover:bg-indigo-100 transition-colors"
     >
-      <span>🏰</span> AI Deal Analysis
+      <span>🏰</span> Sproutly Deal Analysis
     </button>
   );
 
@@ -147,7 +144,7 @@ const PropertyCalculatorTab: React.FC = () => {
     <div className="p-6 max-w-7xl mx-auto space-y-8">
       
       <PageHeader 
-        title="Real Estate Architect"
+        title="Real Estate Strategist"
         icon="🏠"
         subtitle="Deep analysis of acquisition costs, equity buildup, and exit strategies."
         action={headerAction}

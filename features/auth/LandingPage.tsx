@@ -11,10 +11,8 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLogin }) => {
       
       {/* --- BACKGROUND FX --- */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        {/* Animated Orbs */}
         <div className="absolute top-[-20%] left-[-10%] w-[800px] h-[800px] bg-indigo-600/30 rounded-full blur-[120px] animate-pulse-slow"></div>
         <div className="absolute bottom-[-20%] right-[-10%] w-[600px] h-[600px] bg-emerald-600/20 rounded-full blur-[120px] animate-pulse-slow delay-700"></div>
-        {/* Grid Pattern */}
         <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-20"></div>
         <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.03)_1px,transparent_1px)] bg-[size:40px_40px] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_0%,#000_70%,transparent_100%)]"></div>
       </div>
@@ -22,7 +20,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLogin }) => {
       {/* --- CONTENT --- */}
       <div className="max-w-5xl w-full flex flex-col md:flex-row items-center justify-between gap-12 relative z-10">
         
-        {/* LEFT: The Pitch - REVISED PSYCHOLOGY */}
+        {/* LEFT: The Pitch */}
         <div className="flex-1 text-center md:text-left space-y-8">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs font-bold uppercase tracking-widest backdrop-blur-md shadow-[0_0_15px_rgba(245,158,11,0.2)]">
             <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
@@ -30,19 +28,19 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLogin }) => {
           </div>
           
           <h1 className="text-5xl md:text-7xl font-extrabold tracking-tight leading-tight">
-            <span className="text-transparent bg-clip-text bg-gradient-to-r from-white via-indigo-100 to-indigo-300">
+            <span className="gradient-text bg-gradient-to-r from-white via-indigo-100 to-indigo-300">
               Financial Clarity.
             </span>
             <br />
-            <span className="text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-teal-200">
+            <span className="gradient-text bg-gradient-to-r from-emerald-400 to-teal-200">
               Engineered Precision.
             </span>
           </h1>
           
           <p className="text-slate-400 text-lg md:text-xl leading-relaxed max-w-lg mx-auto md:mx-0">
-            The world's most advanced financial modeling engine. Powered by 
-            <span className="text-indigo-400 font-bold"> Gemini 3.0 Pro </span> and 
-            <span className="text-emerald-400 font-bold"> Deep Thinking</span> protocols to visualize wealth with 99.9% logical consistency.
+            The world's most advanced financial modeling engine. Sproutly utilizes 
+            <span className="text-indigo-400 font-bold"> Quantum Core </span> and 
+            <span className="text-emerald-400 font-bold"> Strategic Logic</span> protocols to visualize wealth with 99.9% logical consistency.
           </p>
 
           <div className="flex flex-col sm:flex-row items-center gap-4 pt-4">
@@ -55,9 +53,8 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLogin }) => {
               <span className="group-hover:translate-x-1 transition-transform">→</span>
             </button>
             <div className="flex items-center gap-[-10px]">
-               {/* Social Proof Avatars */}
                {[1,2,3].map(i => (
-                 <div key={i} className={`w-8 h-8 rounded-full border-2 border-slate-900 bg-slate-700 -ml-3 first:ml-0 z-${10-i} flex items-center justify-center text-[10px]`}>
+                 <div key={i} className={`w-8 h-8 rounded-full border-2 border-slate-900 bg-slate-700 -ml-3 first:ml-0 z-10 flex items-center justify-center text-[10px]`}>
                     Adv
                  </div>
                ))}
@@ -66,10 +63,9 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLogin }) => {
           </div>
         </div>
 
-        {/* RIGHT: The Login Card (Glassmorphism) */}
+        {/* RIGHT: The Login Card */}
         <div className="w-full md:w-[400px]">
           <div className="bg-slate-800/40 backdrop-blur-xl p-8 rounded-3xl border border-white/10 shadow-2xl relative group">
-            {/* Glow Effect behind card */}
             <div className="absolute -inset-1 bg-gradient-to-r from-indigo-500 to-emerald-500 rounded-3xl opacity-20 blur transition duration-1000 group-hover:opacity-40"></div>
             
             <div className="relative">
@@ -92,7 +88,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLogin }) => {
                 </button>
                 <button
                   onClick={onLogin}
-                  className="w-full py-4 bg-slate-700/50 text-white border border-white/10 rounded-xl font-bold text-sm hover:bg-slate-700 transition-all flex items-center justify-center gap-3"
+                  className="w-full py-4 bg-slate-700 text-white border border-white/10 rounded-xl font-bold text-sm hover:bg-slate-600 transition-all flex items-center justify-center gap-3"
                 >
                   <span>📧</span>
                   Continue with Email

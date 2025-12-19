@@ -1,7 +1,8 @@
 {
-  "name": "Copy of Sproutly Quantum App",
-  "description": "A next-generation financial experience for agents and clients.",
+  "name": "Sproutly Quantum Enterprise",
+  "description": "Enterprise-grade wealth management CRM with high-performance document processing.",
   "requestFramePermissions": [
-    "microphone"
+    "microphone",
+    "camera"
   ]
 }

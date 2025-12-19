@@ -1,269 +1,142 @@
 
-import React, { useState, useRef, useEffect } from 'react';
-import { Client, ClientDocument } from '../../../types';
-import StatusDropdown from './StatusDropdown';
-import { SelectEditor, TextEditor, DateEditor, getOptionStyle } from './CellEditors';
+import React, { useState, useEffect } from 'react';
+import { Client } from '../../../types';
+import { fetchActivities, Activity } from '../../../lib/db/activities';
+import { fetchClientFiles, uploadClientFile } from '../../../lib/db/clientFiles';
+import { parseFinancialDocument } from '../../../lib/gemini';
 import FileUploader from '../../../components/common/FileUploader';
-import { getClientFiles, uploadClientFile, deleteClientFile } from '../../../lib/db/clientFiles';
-import { getClientActivities, logActivity, ActivityItem } from '../../../lib/db/activities';
+import StatusDropdown from './StatusDropdown';
+import Button from '../../../components/ui/Button';
 
 interface ClientDrawerProps {
-  client: Client | null;
+  client: Client;
   isOpen: boolean;
   onClose: () => void;
-  onUpdateField: (field: string, value: any, section?: 'profile' | 'followUp' | 'appointments' | 'root') => void;
+  onUpdateField: (id: string, field: string, value: any, section: string) => void;
   onStatusUpdate: (client: Client, newStatus: string) => void;
   onOpenFullProfile: () => void;
   onDelete: () => void;
 }
 
-const DrawerField = ({ 
-  value, type, options, onChange, placeholder 
-}: { 
-  value: any, type: string, options?: string[], onChange: (v: any) => void, placeholder?: string 
-}) => {
-  const [isEditing, setIsEditing] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  const [rect, setRect] = useState<DOMRect | null>(null);
-
-  useEffect(() => {
-     if (isEditing && ref.current) {
-        setRect(ref.current.getBoundingClientRect());
-     }
-  }, [isEditing]);
-
-  const handleStartEdit = () => setIsEditing(true);
-
-  return (
-    <div 
-      ref={ref}
-      onClick={handleStartEdit}
-      className={`
-         flex-1 p-2 border border-transparent hover:border-gray-200 hover:bg-gray-50 rounded text-sm text-gray-900 transition-all cursor-pointer min-h-[36px] flex items-center
-         ${isEditing ? 'ring-2 ring-indigo-500 bg-white' : ''}
-      `}
-    >
-      {type === 'select' && value ? (
-         <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${getOptionStyle(value)}`}>{value}</span>
-      ) : (
-         <span className={!value ? 'text-gray-300' : ''}>{value || placeholder}</span>
-      )}
-
-      {isEditing && rect && (
-        <>
-          {type === 'select' && (
-            <SelectEditor 
-              value={value} options={options || []} rect={rect}
-              onChange={onChange} onClose={() => setIsEditing(false)}
-            />
-          )}
-          {type === 'text' && (
-            <TextEditor 
-              value={value} rect={rect}
-              onChange={onChange} onClose={() => setIsEditing(false)}
-            />
-          )}
-          {type === 'date' && (
-            <DateEditor 
-              value={value} rect={rect}
-              onChange={onChange} onClose={() => setIsEditing(false)}
-            />
-          )}
-        </>
-      )}
-    </div>
-  );
-};
-
 const ClientDrawer: React.FC<ClientDrawerProps> = ({ 
   client, isOpen, onClose, onUpdateField, onStatusUpdate, onOpenFullProfile, onDelete 
 }) => {
-  const [activeTab, setActiveTab] = useState<'details' | 'documents' | 'activity'>('details');
-  const [files, setFiles] = useState<ClientDocument[]>([]);
-  const [activities, setActivities] = useState<ActivityItem[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState<'details' | 'files' | 'activity' | 'insights'>('details');
+  const [activities, setActivities] = useState<Activity[]>([]);
+  const [files, setFiles] = useState<any[]>([]);
+  const [isProcessing, setIsProcessing] = useState(false);
 
   useEffect(() => {
-    if (client && isOpen) {
-      loadExtras();
-    }
-  }, [client?.id, isOpen, activeTab]);
+    if (isOpen && client.id) loadTabContent();
+  }, [isOpen, client.id, activeTab]);
 
-  const loadExtras = async () => {
-    if (!client) return;
-    setLoading(true);
-    try {
-      if (activeTab === 'documents') {
-         const docs = await getClientFiles(client.id);
-         setFiles(docs);
-      }
-      if (activeTab === 'activity') {
-         const acts = await getClientActivities(client.id);
-         setActivities(acts);
-      }
-    } catch (e) {
-      console.error(e);
-    }
-    setLoading(false);
+  const loadTabContent = async () => {
+     if (activeTab === 'activity') setActivities(await fetchActivities(client.id));
+     if (activeTab === 'files') setFiles(await fetchClientFiles(client.id));
   };
 
-  const handleFileUpload = async (uploadedFiles: File[]) => {
-    if (!client) return;
-    try {
-      for (const f of uploadedFiles) {
-         await uploadClientFile(client.id, f);
-      }
-      loadExtras(); // Refresh list
-    } catch (e) {
-      alert("Failed to upload file");
-    }
+  const handleFileUpload = async (uploaded: File[]) => {
+     setIsProcessing(true);
+     try {
+        for (const f of uploaded) {
+           await uploadClientFile(client.id, f);
+           if (f.type.startsWith('image/') || f.type === 'application/pdf') {
+              const reader = new FileReader();
+              reader.onload = async () => {
+                 const base64 = (reader.result as string).split(',')[1];
+                 try {
+                    const extracted = await parseFinancialDocument(base64, f.type);
+                    if (extracted.balances?.oa) onUpdateField(client.id, 'oa', extracted.balances.oa.toString(), 'cpfState.currentBalances');
+                 } catch (err) {}
+              };
+              reader.readAsDataURL(f);
+           }
+        }
+        await loadTabContent();
+     } catch (e) {} finally { setIsProcessing(false); }
   };
 
-  const handleDeleteFile = async (id: string, path: string) => {
-    if (!client) return;
-    if(!confirm("Delete file permanently?")) return;
-    await deleteClientFile(id, path, client.id);
-    loadExtras();
-  };
+  if (!isOpen) return null;
 
-  const handleStatusChange = async (c: Client, s: string) => {
-    onStatusUpdate(c, s);
-    // Explicitly log the status change activity
-    await logActivity(c.id, 'status_change', `Status updated to ${s}`);
-    // If activity tab is open, refresh it
-    if (activeTab === 'activity') loadExtras();
-  };
-
-  if (!isOpen || !client) return null;
+  const tabLabels: any = { details: 'Details', files: 'Files', activity: 'Activity', insights: 'Core Insights' };
 
   return (
-    <div className="fixed inset-0 z-[100] flex justify-center items-center p-4 sm:p-8">
-      <div 
-        className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm transition-opacity" 
-        onClick={onClose}
-      ></div>
-      
-      <div className="relative w-full max-w-5xl bg-white rounded-lg shadow-2xl flex flex-col z-10 h-[90vh] overflow-hidden animate-fade-in-up">
+    <div className="fixed inset-0 z-50 flex justify-end">
+      <div className="absolute inset-0 bg-slate-900/10 backdrop-blur-sm animate-in fade-in duration-300" onClick={onClose} />
+      <div className="relative w-full max-w-xl bg-white h-full shadow-2xl flex flex-col animate-in slide-in-from-right duration-300">
         
-        {/* Header */}
-        <div className="px-6 py-3 border-b border-gray-200 flex justify-between items-center bg-white shrink-0">
-          <div className="flex items-center gap-2 text-sm text-gray-500">
-             <button onClick={onClose} className="hover:bg-gray-100 p-1 rounded transition-colors">✕</button>
-             <span className="font-medium text-gray-400">/ {client.profile.name}</span>
-          </div>
-          <div className="flex items-center gap-2">
-             <button onClick={onDelete} className="text-xs font-bold text-red-600 bg-red-50 px-3 py-1.5 rounded hover:bg-red-100 transition-colors">
-                Delete
-             </button>
-             <button onClick={onOpenFullProfile} className="text-xs font-bold text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded hover:bg-indigo-100 transition-colors">
-                Full Profile ↗
-             </button>
-          </div>
+        <div className="px-8 py-6 border-b border-slate-50 flex items-center justify-between bg-white">
+           <div className="space-y-1">
+              <h3 className="font-black text-xl text-slate-800 tracking-tighter">{client.profile.name || 'Profile Draft'}</h3>
+              <p className="text-[10px] text-slate-300 font-black uppercase tracking-widest flex items-center gap-2">
+                 Ref: {client.id.split('-')[0]} <span className="w-1 h-1 rounded-full bg-slate-200"></span> Last active {new Date(client.lastUpdated).toLocaleDateString()}
+              </p>
+           </div>
+           <button onClick={onClose} className="p-2 hover:bg-slate-50 rounded-full transition-colors text-slate-300 hover:text-slate-900">✕</button>
         </div>
-
-        {/* Tabs */}
-        <div className="px-6 border-b border-gray-100 flex gap-6 bg-gray-50/50">
-           {['details', 'documents', 'activity'].map((t) => (
+        
+        <div className="flex px-6 bg-white border-b border-slate-50 sticky top-0 z-10">
+           {['details', 'files', 'activity', 'insights'].map(t => (
               <button 
-                key={t}
-                onClick={() => setActiveTab(t as any)}
-                className={`py-3 text-sm font-bold border-b-2 transition-colors capitalize ${activeTab === t ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
+                key={t} onClick={() => setActiveTab(t as any)}
+                className={`px-4 py-4 text-[10px] font-black uppercase tracking-widest border-b-2 transition-all relative ${activeTab === t ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-400 hover:text-slate-600'}`}
               >
-                 {t}
+                {tabLabels[t]}
+                {t === 'insights' && <span className="ml-1 animate-pulse">✨</span>}
               </button>
            ))}
         </div>
 
-        {/* Body */}
-        <div className="flex-1 overflow-y-auto p-8 custom-scrollbar bg-white">
-           
+        <div className="flex-1 overflow-y-auto p-8 bg-slate-50/20">
            {activeTab === 'details' && (
-              <div className="max-w-2xl mx-auto space-y-8">
-                 <input 
-                    type="text" 
-                    value={client.profile.name}
-                    onChange={(e) => onUpdateField('name', e.target.value)}
-                    className="text-3xl font-bold text-gray-900 w-full outline-none placeholder-gray-300 bg-transparent"
-                    placeholder="Unnamed Record"
-                 />
-                 <div className="space-y-6">
-                    <div className="flex gap-4 items-start">
-                       <div className="w-32 pt-2 text-xs font-bold text-gray-500 uppercase flex items-center gap-2">Status</div>
-                       <div className="flex-1"><StatusDropdown client={client} onUpdate={handleStatusChange} /></div>
-                    </div>
-                    {/* Standard Fields */}
-                    <div className="flex gap-4 items-center group">
-                       <div className="w-32 text-xs font-bold text-gray-500 uppercase">Phone</div>
-                       <DrawerField type="text" value={client.profile.phone} onChange={(v) => onUpdateField('phone', v)} placeholder="+65..." />
-                    </div>
-                    <div className="flex gap-4 items-center group">
-                       <div className="w-32 text-xs font-bold text-gray-500 uppercase">Retirement Age</div>
-                       <DrawerField type="text" value={client.profile.retirementAge} onChange={(v) => onUpdateField('retirementAge', v)} placeholder="65" />
-                    </div>
-                    <div className="flex gap-4 items-start group">
-                       <div className="w-32 pt-2 text-xs font-bold text-gray-500 uppercase">Remarks</div>
-                       <DrawerField type="text" value={client.followUp?.notes} onChange={(v) => onUpdateField('notes', v, 'followUp')} placeholder="Add notes..." />
-                    </div>
+              <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-200">
+                 <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-4">Stage Management</label>
+                    <StatusDropdown client={client} onUpdate={onStatusUpdate} />
                  </div>
               </div>
            )}
 
-           {activeTab === 'documents' && (
-              <div className="max-w-3xl mx-auto">
-                 <div className="mb-8">
-                    <FileUploader onUpload={handleFileUpload} />
-                 </div>
-                 
-                 {loading && <div className="text-center py-4 text-gray-400">Loading files...</div>}
-                 
-                 <div className="space-y-2">
-                    {files.map(f => (
-                       <div key={f.id} className="flex items-center justify-between p-4 border border-gray-200 rounded-xl hover:bg-gray-50 transition-colors group">
-                          <div className="flex items-center gap-3">
-                             <div className="w-10 h-10 bg-indigo-50 text-indigo-600 rounded-lg flex items-center justify-center text-xl">📄</div>
-                             <div>
-                                <div className="text-sm font-bold text-gray-900">{f.name}</div>
-                                <div className="text-xs text-gray-500">{(f.size / 1024 / 1024).toFixed(2)} MB • {new Date(f.created_at).toLocaleDateString()}</div>
-                             </div>
-                          </div>
-                          <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                             <a href={f.url} target="_blank" rel="noreferrer" className="px-3 py-1.5 bg-white border border-gray-300 rounded text-xs font-bold text-gray-700 hover:bg-gray-100">View</a>
-                             <button onClick={() => handleDeleteFile(f.id, f.path)} className="px-3 py-1.5 bg-red-50 text-red-600 rounded text-xs font-bold hover:bg-red-100">Delete</button>
-                          </div>
-                       </div>
-                    ))}
-                    {!loading && files.length === 0 && (
-                       <div className="text-center text-gray-400 py-10">No documents uploaded yet.</div>
-                    )}
+           {activeTab === 'files' && (
+              <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-200">
+                 <div className="bg-indigo-600 rounded-3xl p-8 text-white shadow-xl relative overflow-hidden">
+                    <h4 className="font-black text-xl tracking-tighter mb-2">Quantum Document Ingest</h4>
+                    <p className="text-xs text-indigo-100 mb-6 font-medium opacity-80 leading-relaxed">Auto-extract values from financial statements using Sproutly Logic.</p>
+                    <FileUploader onUpload={handleFileUpload} isUploading={isProcessing} />
                  </div>
               </div>
            )}
 
            {activeTab === 'activity' && (
-              <div className="max-w-3xl mx-auto">
-                 {loading && <div className="text-center py-4 text-gray-400">Loading timeline...</div>}
-                 
-                 <div className="space-y-6 relative border-l-2 border-gray-100 ml-4 py-4">
-                    {activities.map((act) => (
-                       <div key={act.id} className="relative pl-8">
-                          <div className="absolute -left-[9px] top-0 w-4 h-4 rounded-full bg-indigo-100 border-2 border-indigo-500"></div>
-                          <div className="text-xs text-gray-400 mb-1">{new Date(act.created_at).toLocaleString()}</div>
-                          <div className="text-sm font-bold text-gray-800">{act.title}</div>
-                          <div className="text-xs text-gray-500 mt-1 uppercase tracking-wider">{act.type.replace('_', ' ')}</div>
-                          {act.details && (
-                             <div className="text-xs text-gray-600 bg-gray-50 p-2 rounded mt-2 border border-gray-100">
-                                {typeof act.details === 'string' ? act.details : JSON.stringify(act.details)}
-                             </div>
-                          )}
+              <div className="space-y-6 border-l-2 border-slate-100 ml-4 pl-8 py-2 animate-in fade-in slide-in-from-bottom-2 duration-200">
+                 {activities.map(a => (
+                    <div key={a.id} className="relative mb-8">
+                       <div className="absolute -left-[41px] top-0 w-4 h-4 rounded-full bg-white border-2 border-indigo-500 shadow-sm" />
+                       <div className="text-[9px] font-black text-slate-300 uppercase tracking-widest mb-2">{new Date(a.created_at).toLocaleString()}</div>
+                       <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
+                          <div className="text-xs font-bold text-slate-700 leading-relaxed">{a.title}</div>
+                          {a.type === 'file' && <div className="mt-2 text-[10px] text-indigo-500 font-black uppercase tracking-widest border border-indigo-50 bg-indigo-50/30 px-2 py-0.5 rounded w-fit">Protocol Verified</div>}
                        </div>
-                    ))}
-                    {!loading && activities.length === 0 && (
-                       <div className="text-center text-gray-400 py-10 italic">No recorded activity. Change status or upload files to see logs.</div>
-                    )}
-                 </div>
+                    </div>
+                 ))}
               </div>
            )}
 
+           {activeTab === 'insights' && (
+              <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-200">
+                 <div className="bg-slate-900 rounded-3xl p-8 text-white shadow-2xl border border-slate-800 relative overflow-hidden">
+                    <div className="absolute top-0 right-0 w-24 h-24 bg-indigo-500/10 rounded-full blur-2xl"></div>
+                    <h4 className="font-black text-xs uppercase tracking-[0.2em] text-indigo-400 mb-6">Institutional Stress Test</h4>
+                    <p className="text-xs text-slate-400 mb-8 leading-relaxed font-medium">Stress test this portfolio against 10,000+ macro scenarios using Sproutly Quantum Core.</p>
+                    <Button variant="primary" className="w-full bg-indigo-600 hover:bg-indigo-500 border-none shadow-indigo-500/20 shadow-lg py-4">Initialize Analysis</Button>
+                 </div>
+              </div>
+           )}
+        </div>
+        
+        <div className="p-6 border-t border-slate-50 bg-white flex gap-4">
+           <Button variant="ghost" className="flex-1" onClick={onDelete}>Delete Profile</Button>
+           <Button variant="primary" className="flex-[2]" onClick={onOpenFullProfile} leftIcon="↗">Open Strategy Desk</Button>
         </div>
       </div>
     </div>

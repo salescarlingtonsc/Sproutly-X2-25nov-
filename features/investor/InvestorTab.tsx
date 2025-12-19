@@ -14,10 +14,9 @@ const InvestorTab: React.FC = () => {
   const { portfolioValue, portfolioType } = investorState;
   const currentVal = toNum(portfolioValue, 0);
 
-  // --- SIMULATION LOGIC ---
   const data = [];
   const years = 20;
-  const cashRate = 0.005; // 0.5% bank interest
+  const cashRate = 0.005;
   const marketRate = portfolioType === 'conservative' ? 0.04 : (portfolioType === 'growth' ? 0.08 : 0.06);
   
   for (let i = 0; i <= years; i++) {
@@ -41,33 +40,31 @@ const InvestorTab: React.FC = () => {
       onClick={handleAiThesis}
       className="flex items-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-700 rounded-lg text-xs font-bold hover:bg-indigo-100 transition-colors"
     >
-      <span>🧠</span> AI Investment Thesis
+      <span>🧠</span> Sproutly Thesis
     </button>
   );
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-8">
-      
       <PageHeader 
-        title="Portfolio Architect" 
+        title="Portfolio Strategy" 
         icon="📈" 
         subtitle="Analyze asset allocation and calculate the cost of inaction."
         action={headerAction}
       />
       
-      {/* 1. TRADING DESK HEADER */}
       <div className="bg-[#0B1120] rounded-2xl p-8 text-white shadow-2xl relative overflow-hidden">
          <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-600/30 rounded-full blur-[80px]"></div>
          <div className="relative z-10 grid grid-cols-1 md:grid-cols-2 gap-8 items-center">
             <div>
                <h2 className="text-xs font-bold text-indigo-400 uppercase tracking-widest mb-2">Capital Deployment</h2>
-               <div className="text-4xl md:text-5xl font-black tracking-tight mb-2 flex items-baseline">
-                  <span className="text-gray-500 mr-1">$</span>
+               <div className="text-4xl md:text-5xl font-black tracking-tight mb-2 flex items-baseline bg-white/5 border border-white/10 px-4 py-2 rounded-xl">
+                  <span className="text-gray-500 mr-2">$</span>
                   <input 
                      type="text" 
                      value={portfolioValue}
                      onChange={(e) => setInvestorState({ ...investorState, portfolioValue: e.target.value })}
-                     className="bg-transparent outline-none w-[300px] placeholder-gray-700 text-white"
+                     className="bg-transparent outline-none w-full placeholder-gray-700 text-white"
                      placeholder="0"
                   />
                </div>
@@ -88,11 +85,8 @@ const InvestorTab: React.FC = () => {
          </div>
       </div>
 
-      {/* 2. THE GAP VISUALIZER */}
       {currentVal > 0 && (
          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            
-            {/* Chart */}
             <SectionCard title="Wealth Divergence (20 Years)" className="lg:col-span-2">
                <div className="h-[300px] w-full">
                   <ResponsiveContainer>
@@ -117,16 +111,13 @@ const InvestorTab: React.FC = () => {
                </div>
             </SectionCard>
 
-            {/* The Bill */}
             <SectionCard className="flex flex-col justify-center">
                <div className="text-center">
                   <div className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-4">The Cost of Waiting</div>
-                  
                   <div className="mb-6">
                      <div className="text-sm text-gray-500 mb-1">Projected Loss (Inflation Adjusted)</div>
                      <div className="text-3xl font-black text-red-500">{fmtSGD(opportunityCost)}</div>
                   </div>
-
                   <div className="space-y-3 text-left bg-gray-50 p-4 rounded-xl text-xs border border-gray-100">
                      <div className="flex justify-between">
                         <span className="text-gray-500">Bank Rate</span>
