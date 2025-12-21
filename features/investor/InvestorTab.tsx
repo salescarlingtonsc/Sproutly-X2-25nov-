@@ -3,7 +3,7 @@ import React, { useState } from 'react';
 import { useClient } from '../../contexts/ClientContext';
 import { useAi } from '../../contexts/AiContext';
 import { toNum, fmtSGD } from '../../lib/helpers';
-import { generateInvestmentThesis } from '../../lib/gemini';
+// Fix: Removed non-existent and unused import 'generateInvestmentThesis'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import PageHeader from '../../components/layout/PageHeader';
 import SectionCard from '../../components/layout/SectionCard';

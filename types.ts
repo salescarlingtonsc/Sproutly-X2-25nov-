@@ -24,7 +24,10 @@ export interface InvestmentRates {
   growth: number;
 }
 
-export type LeadSource = 'IG' | 'FB' | 'LinkedIn' | 'Roadshow' | 'Referral' | 'Cold' | 'Other';
+export type LeadSource = 'IG' | 'FB' | 'LinkedIn' | 'Roadshow' | 'Referral' | 'Cold' | 'Personal' | 'Other';
+export type LeadInterest = 'Retirement' | 'Children' | 'Property' | 'Wealth' | 'Protection' | 'Tax';
+
+export type SubscriptionTier = 'free' | 'platinum' | 'diamond' | 'organisation';
 
 export interface Profile {
   name: string;
@@ -48,7 +51,9 @@ export interface Profile {
   children?: Child[];
   tags?: string[];
   source?: LeadSource;
+  interest?: LeadInterest;
   motivation?: string;
+  assignedTo?: string;
 }
 
 export interface Expenses {
@@ -67,6 +72,11 @@ export interface CustomExpense {
   amount: string;
 }
 
+export interface CpfState {
+  currentBalances: { oa: string; sa: string; ma: string };
+  withdrawals: any[];
+}
+
 export interface CpfData {
   employee: number;
   employer: number;
@@ -79,6 +89,16 @@ export interface CpfData {
   excessSalary: number;
 }
 
+export interface CashflowState {
+  currentSavings: string;
+  projectToAge: string;
+  bankInterestRate: string;
+  additionalIncomes: any[];
+  withdrawals: any[];
+  careerEvents: any[];
+  customBaseIncome?: string;
+}
+
 export interface CashflowData {
   takeHome: number;
   totalExpenses: number;
@@ -87,72 +107,29 @@ export interface CashflowData {
   savingsRate: number;
 }
 
-export interface RetirementSettings {
-  initialSavings: string;
-  scenario: 'conservative' | 'moderate' | 'aggressive' | 'custom';
-  customReturnRate?: string; 
-  investmentPercent: string;
-}
+export type PolicyType = 'term' | 'whole_life' | 'ilp' | 'pure_ci';
 
-export interface CpfWithdrawal {
-  id: number;
-  purpose: string;
-  account: string;
-  amount: string;
-  date: string;
-  type: string;
-  frequency?: string;
-  endDate?: string; 
-}
-
-export interface CpfState {
-  currentBalances: { oa: string; sa: string; ma: string };
-  withdrawals: CpfWithdrawal[];
-}
-
-export interface AdditionalIncome {
+export interface InsurancePolicy {
   id: number;
   name: string;
-  amount: string;
-  type: string;
-  frequency: string;
-  startAge: number;
-  startMonth: number;
-  endAge?: string | number;
-  endMonth?: number; 
+  type: PolicyType;
+  deathCoverage: string;
+  tpdCoverage: string;
+  earlyCiCoverage: string;
+  lateCiCoverage: string;
+  expiryAge: string;
 }
 
-export interface CashflowWithdrawal {
-  id: number;
-  name: string;
-  amount: string;
-  type: string;
-  frequency: string;
-  startAge: number;
-  startMonth: number;
-  endAge?: string | number; 
-  endMonth?: number; 
+export interface InsuranceState {
+  policies: InsurancePolicy[];
+  currentDeath: string;
+  currentTPD: string;
+  currentCI: string;
 }
 
-export interface CareerEvent {
-  id: number;
-  type: 'increment' | 'decrement' | 'pause' | 'resume';
-  age: number;
-  month?: number; 
-  amount?: string; 
-  durationMonths?: string; 
-  notes?: string;
-}
-
-export interface CashflowState {
-  currentSavings: string;
-  projectToAge: string;
-  bankInterestRate: string;
-  additionalIncomes: AdditionalIncome[];
-  withdrawals: CashflowWithdrawal[];
-  careerEvents?: CareerEvent[]; 
-  customBaseIncome?: string;
-  customRetirementIncome?: string;
+export interface InvestorState {
+  portfolioValue: string;
+  portfolioType: string;
 }
 
 export interface PropertyState {
@@ -164,120 +141,57 @@ export interface PropertyState {
   interestRate: string;
   useCpfOa: boolean;
   cpfOaAmount: string;
-  renovationCost?: string; 
-  rentalIncome?: string; 
+  renovationCost?: string;
+  rentalIncome?: string;
 }
 
 export interface WealthState {
   annualPremium: string;
   projectionYears: string;
   growthRate: string;
-  premiumHolidayStartYear?: string; 
-  targetRetirementIncome?: string; 
+  premiumHolidayStartYear?: string;
+  targetRetirementIncome?: string;
   withdrawalStartAge?: string;
 }
 
-export interface InvestorState {
-  portfolioValue: string;
-  portfolioType: string;
-}
-
-export type PolicyType = 'term' | 'whole_life' | 'ilp' | 'pure_ci' | 'investment_only';
-
-export interface InsurancePolicy {
-  id: number;
-  name: string;
-  type: PolicyType;
-  deathCoverage: string;
-  tpdCoverage: string;
-  earlyCiCoverage: string;
-  lateCiCoverage: string;
-  expiryAge?: string; 
-}
-
-export interface InsuranceState {
-  policies: InsurancePolicy[];
-  currentDeath: string;
-  currentTPD: string;
-  currentCI: string;
-}
-
-export type SubscriptionTier = 'free' | 'platinum' | 'diamond' | 'organisation';
-
-export interface UserProfile {
-  id: string;
-  email: string;
-  subscriptionTier: SubscriptionTier;
-  role: string;
-  status: 'pending' | 'approved' | 'rejected';
-  extraSlots: number;
-  modules?: string[];
+export interface RetirementSettings {
+  initialSavings: string;
+  scenario: 'conservative' | 'moderate' | 'aggressive' | 'custom';
+  customReturnRate?: string; 
+  investmentPercent: string;
 }
 
 export type ContactStatus = 
-  | 'new' 
-  | 'picked_up' 
-  | 'npu1' | 'npu2' | 'npu3' | 'npu4' | 'npu5' | 'npu6' 
-  | 'call_back' 
-  | 'not_keen' 
+  | 'new'
+  | 'contacted'
+  | 'qualified'
+  | 'picked_up'
+  | 'npu_1' | 'npu_2' | 'npu_3' | 'npu_4' | 'npu_5' | 'npu_6'
   | 'appt_set' 
+  | 'appt_met'
   | 'proposal'
-  | 'client';
-
-export type OutcomeStatus = 
-  | 'Zoom (not Keen)'
-  | 'Zoom (Keen)'
-  | 'Attended zoom'
-  | 'No Show'
-  | 'Pending';
-
-export interface ClientDocument {
-  id: string;
-  name: string;
-  type: string;
-  size: number;
-  path: string;
-  url?: string;
-  created_at: string;
-}
-
-export interface AppointmentData {
-  firstApptDate: string | null;
-  status?: OutcomeStatus;
-  nextApptDate?: string | null;
-  location?: string;
-  notes?: string;
-  googleEventId?: string;
-}
+  | 'pending_decision'
+  | 'closing'
+  | 'case_closed'
+  | 'client'
+  | 'not_keen';
 
 export interface FollowUp {
   status: ContactStatus;
   notes?: string;
   priority?: 'High' | 'Medium' | 'Low';
-  closure?: string;
-  closingRemarks?: string;
-  fycCaseSize?: string;
-}
-
-export type LifecycleStage = 'lead' | 'contacted' | 'meeting' | 'proposal' | 'client' | 'cold';
-
-// --- DYNAMIC FIELDS TYPES ---
-export type FieldType = 'text' | 'number' | 'date' | 'select' | 'currency' | 'boolean' | 'rating';
-
-export interface FieldDefinition {
-  id: string;
-  key: string;
-  label: string;
-  type: FieldType;
-  options?: string[];
-  section: string;
-  is_hidden?: boolean;
+  dealValue?: string;
+  lastContactedAt?: string;
+  nextFollowUpDate?: string; // Point 3 requirement
+  nextFollowUpTime?: string; // Point 3 requirement
+  conversionProbability?: number; 
+  ai_propensity_score?: number;   
+  momentum_decay?: number;
 }
 
 export interface Client {
   id: string;
   referenceCode?: string;
-  lifecycleStage?: LifecycleStage; 
   profile: Profile;
   expenses: Expenses;
   customExpenses?: CustomExpense[];
@@ -289,30 +203,38 @@ export interface Client {
   investorState?: InvestorState;
   insuranceState?: InsuranceState;
   lastUpdated: string;
-  
   followUp: FollowUp;
-  appointments?: AppointmentData;
-  documents?: ClientDocument[];
-  
-  // Dynamic Fields
+  appointments?: any;
+  documents?: any[];
   fieldValues?: Record<string, any>; 
-
-  ownerEmail?: string;
   _ownerId?: string;
+  _ownerEmail?: string;
 }
 
-// Enterprise Audit Log
+export interface UserProfile {
+  id: string;
+  email: string;
+  subscriptionTier: string;
+  role: string;
+  status: string;
+  extraSlots: number;
+  modules?: string[];
+}
+
+export interface FieldDefinition {
+  id: string;
+  key: string;
+  label: string;
+  type: string;
+  section?: string;
+}
+
 export interface AuditLog {
   id: string;
-  userId: string;
-  clientId: string;
-  action: 'create' | 'update' | 'delete' | 'view' | 'ai_generate';
-  module: string;
-  description: string;
-  changes?: {
-    field: string;
-    oldValue: any;
-    newValue: any;
-  }[];
-  timestamp: string;
+  user_id: string;
+  client_id: string;
+  type: string;
+  title: string;
+  details: any;
+  created_at: string;
 }

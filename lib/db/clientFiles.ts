@@ -2,7 +2,7 @@
 import { supabase } from '../supabase';
 import { logActivity } from './activities';
 
-export const uploadClientFile = async (clientId: string, file: File) => {
+export const uploadClientFile = async (clientId: string, file: File, category: string = 'others') => {
   if (!supabase) return;
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error("Unauthorized");
@@ -21,12 +21,13 @@ export const uploadClientFile = async (clientId: string, file: File) => {
     name: file.name,
     size_bytes: file.size,
     mime_type: file.type,
-    storage_path: path
+    storage_path: path,
+    category: category // Point 4: Tagging support
   });
 
   if (dbError) throw dbError;
 
-  await logActivity(clientId, 'file', `Uploaded file: ${file.name}`);
+  await logActivity(clientId, 'file', `Uploaded ${category} document: ${file.name}`);
 };
 
 export const fetchClientFiles = async (clientId: string) => {

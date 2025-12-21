@@ -5,15 +5,6 @@ import { fmtSGD, toNum } from '../../lib/helpers';
 import { GoogleGenAI } from '@google/genai';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 
-const getApiKey = () => {
-  try {
-    if (typeof import.meta !== 'undefined' && (import.meta as any).env) {
-      return (import.meta as any).env.VITE_GOOGLE_API_KEY || '';
-    }
-  } catch (e) {}
-  return '';
-};
-
 const ReportTab: React.FC = () => {
   const { profile, cashflowData, investorState, insuranceState, cashflowState, cpfState, clientRef } = useClient();
   const [executiveSummary, setExecutiveSummary] = useState('');
@@ -33,13 +24,13 @@ const ReportTab: React.FC = () => {
   ];
 
   const handleGenerateSummary = async () => {
-    const key = getApiKey();
-    if (!key) return;
+    // Correct initialization using process.env.API_KEY
     setLoading(true);
     try {
-       const ai = new GoogleGenAI({ apiKey: key });
+       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
        const prompt = `Write a formal, professional Executive Summary letter for ${profile.name}. Net Worth: ${fmtSGD(netWorth)}. Do not use markdown.`;
-       const response = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt });
+       // Using recommended gemini-3-flash-preview model
+       const response = await ai.models.generateContent({ model: 'gemini-3-flash-preview', contents: prompt });
        setExecutiveSummary(response.text || "Summary unavailable.");
     } catch (e) {
        setExecutiveSummary("Insight temporarily unavailable.");

@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useEffect } from 'react';
 import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
 import { chatWithFinancialContext } from '../../lib/gemini';
@@ -50,7 +49,6 @@ const AiAssistant: React.FC<AiAssistantProps> = ({ currentClient }) => {
   const [isLiveActive, setIsLiveActive] = useState(false);
   const [isMicOn, setIsMicOn] = useState(false);
   const [volumeLevel, setVolumeLevel] = useState(0);
-  const liveSessionRef = useRef<any>(null);
   const audioQueueRef = useRef<number>(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -86,35 +84,25 @@ const AiAssistant: React.FC<AiAssistantProps> = ({ currentClient }) => {
 
   const startLiveSession = async () => {
     if (isLiveActive) return;
-    let apiKey = (import.meta as any).env?.VITE_GOOGLE_API_KEY || '';
-    if (!apiKey) return;
     try {
       setIsLiveActive(true);
-      const ai = new GoogleGenAI({ apiKey });
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const inputContext = new AudioContext({ sampleRate: 16000 });
       const source = inputContext.createMediaStreamSource(stream);
       const processor = inputContext.createScriptProcessor(4096, 1, 1);
-      processor.onaudioprocess = (e) => {
-         const inputData = e.inputBuffer.getChannelData(0);
-         let sum = 0;
-         for (let i = 0; i < inputData.length; i++) sum += inputData[i] * inputData[i];
-         setVolumeLevel(Math.min(100, Math.sqrt(sum / inputData.length) * 500));
-         if (liveSessionRef.current) {
-            const int16 = new Int16Array(inputData.length);
-            for (let i = 0; i < inputData.length; i++) int16[i] = inputData[i] * 32768;
-            let binary = '';
-            const bytes = new Uint8Array(int16.buffer);
-            for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
-            liveSessionRef.current.sendRealtimeInput({ media: { mimeType: 'audio/pcm;rate=16000', data: btoa(binary) } });
-         }
-      };
-      source.connect(processor); processor.connect(inputContext.destination);
-      setIsMicOn(true);
-      liveSessionRef.current = await ai.live.connect({
+
+      /* Fix: Rely solely on sessionPromise resolves to send realtime input as per guidelines */
+      const sessionPromise = ai.live.connect({
          model: 'gemini-2.5-flash-native-audio-preview-09-2025',
-         config: { responseModalities: [Modality.AUDIO], systemInstruction: `You are Sproutly Co-Pilot.` },
+         config: { 
+            responseModalities: [Modality.AUDIO], 
+            systemInstruction: `You are Sproutly Co-Pilot.` 
+         },
          callbacks: {
+            onopen: () => {
+               console.debug('Live API session initialized');
+            },
             onmessage: async (msg: LiveServerMessage) => {
                const audioData = msg.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
                if (audioData) {
@@ -126,9 +114,38 @@ const AiAssistant: React.FC<AiAssistantProps> = ({ currentClient }) => {
                   source.start(startTime); audioQueueRef.current = startTime + buffer.duration;
                }
             },
-            onclose: () => { setIsLiveActive(false); setIsMicOn(false); stream.getTracks().forEach(t => t.stop()); inputContext.close(); }
+            onerror: (e: any) => {
+               console.error('Live API connection error:', e);
+               setIsLiveActive(false);
+            },
+            onclose: () => { 
+               setIsLiveActive(false); 
+               setIsMicOn(false); 
+               stream.getTracks().forEach(t => t.stop()); 
+               inputContext.close(); 
+            }
          }
       });
+
+      processor.onaudioprocess = (e) => {
+         const inputData = e.inputBuffer.getChannelData(0);
+         let sum = 0;
+         for (let i = 0; i < inputData.length; i++) sum += inputData[i] * inputData[i];
+         setVolumeLevel(Math.min(100, Math.sqrt(sum / inputData.length) * 500));
+         
+         /* Fix: Use sessionPromise to ensure data is streamed only after connection resolves, preventing stale closures */
+         sessionPromise.then((session) => {
+            const int16 = new Int16Array(inputData.length);
+            for (let i = 0; i < inputData.length; i++) int16[i] = inputData[i] * 32768;
+            let binary = '';
+            const bytes = new Uint8Array(int16.buffer);
+            for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+            session.sendRealtimeInput({ media: { mimeType: 'audio/pcm;rate=16000', data: btoa(binary) } });
+         });
+      };
+      
+      source.connect(processor); processor.connect(inputContext.destination);
+      setIsMicOn(true);
     } catch (e) { setIsLiveActive(false); }
   };
 

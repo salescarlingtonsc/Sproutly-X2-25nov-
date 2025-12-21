@@ -1,4 +1,3 @@
-
 export const toNum = (val: any, def = 0): number => {
   const n = parseFloat(String(val).replace(/[^0-9.-]/g, ''));
   return isNaN(n) ? def : n;
@@ -41,4 +40,43 @@ export const getAge = (dobIso: string): number => {
 
 export const safeArray = <T>(arr: any): T[] => {
   return Array.isArray(arr) ? arr : [];
+};
+
+/**
+ * Standardized 12-hour clock formatter (GMT+8/en-SG)
+ */
+export const fmtTime = (date: Date | string): string => {
+  const d = typeof date === 'string' ? new Date(date) : date;
+  return d.toLocaleTimeString('en-SG', {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true
+  });
+};
+
+/**
+ * Standardized 12-hour date-time formatter (GMT+8/en-SG)
+ */
+export const fmtDateTime = (date: Date | string): string => {
+  const d = typeof date === 'string' ? new Date(date) : date;
+  return d.toLocaleString('en-SG', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true
+  });
+};
+
+/**
+ * Converts 24h "HH:mm" string (from input type="time") to 12h string
+ */
+export const convert24to12 = (time24: string): string => {
+  if (!time24 || !time24.includes(':')) return time24;
+  const [h, m] = time24.split(':');
+  const hours = parseInt(h, 10);
+  const suffix = hours >= 12 ? 'pm' : 'am';
+  const h12 = hours % 12 || 12;
+  return `${h12}:${m} ${suffix}`;
 };

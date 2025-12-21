@@ -86,11 +86,23 @@ export const EXPENSE_CATEGORIES: { key: keyof Expenses; label: string }[] = [
 
 export const canAccessTab = (user: UserProfile | null, tabId: string): boolean => {
   if (!user) return false;
-  if (user.role === 'admin') return true;
-  if (tabId === 'admin') return false;
+  
+  // CORE GATE: Users who are not approved can ONLY see the Disclaimer/Admin (to see their own status)
+  // or a placeholder. In practice, App.tsx will wall them off, but this is the backup logic.
+  if (user.status !== 'approved' && user.role !== 'admin') {
+     return tabId === 'disclaimer';
+  }
 
+  // Admins see everything
+  if (user.role === 'admin') return true;
+
+  // Viewers can see Admin directory but it will be read-only (handled in tab logic)
+  if (tabId === 'admin' && user.role === 'viewer') return true;
+  if (tabId === 'admin' && user.role !== 'admin') return false;
+
+  // Manual module override check
   if (user.modules && Array.isArray(user.modules) && user.modules.length > 0) {
-    return user.modules.includes(tabId);
+    if (user.modules.includes(tabId)) return true;
   }
   
   const currentTier = user.subscriptionTier || 'free';

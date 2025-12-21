@@ -1,26 +1,28 @@
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { Client, FieldDefinition, Profile } from '../../types';
-import { fetchClients, saveClientUpdate } from '../../lib/db/crm';
-import { getFieldDefinitions, upsertFieldValue, createFieldDefinition } from '../../lib/db/dynamicFields';
-import { useWriteQueue } from '../../hooks/useWriteQueue';
-import { toNum, fmtSGD } from '../../lib/helpers';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { Client, FieldDefinition, Profile, ContactStatus } from '../../types';
+import { getFieldDefinitions } from '../../lib/db/dynamicFields';
+import { useClient } from '../../contexts/ClientContext';
+import { useAuth } from '../../contexts/AuthContext';
+import { calculateLeadScore } from '../../lib/gemini';
+import { fmtSGD, toNum } from '../../lib/helpers';
+import { dbTemplates, DBTemplate } from '../../lib/db/templates';
 
-// New Apple UI Components
+// UI Components
 import Button from '../../components/ui/Button';
-import ToggleSwitch from '../../components/ui/ToggleSwitch';
 import SegmentedControl from '../../components/ui/SegmentedControl';
-import Modal from '../../components/ui/Modal';
 import CommandBar from '../../components/ui/CommandBar';
 import { useHotkeys } from '../../components/ui/useHotkeys';
 
 // CRM Components
 import ColumnHeader from './components/ColumnHeader';
 import CrmRow from './components/CrmRow';
-import ViewsDropdown, { SavedView } from './components/ViewsDropdown';
 import ColumnPicker from './components/ColumnPicker';
 import ClientDrawer from './components/ClientDrawer';
+import ImportModal from './components/ImportModal';
 import BlastModal from './components/BlastModal';
+import ProtocolManagerModal from './components/ProtocolManagerModal';
+import ViewsDropdown, { SavedView } from './components/ViewsDropdown';
 
 interface CrmTabProps {
   clients: Client[];
@@ -30,291 +32,262 @@ interface CrmTabProps {
   saveClient: () => void;
   loadClient: (client: Client, redirect: boolean) => void;
   deleteClient: (id: string) => void;
-  setFollowUp: () => void;
-  completeFollowUp: (id: string) => void;
-  maxClients: number;
-  userRole?: string;
   onRefresh: () => void;
+  onUpdateGlobalClient: (client: Client) => void;
 }
 
 const CrmTab: React.FC<CrmTabProps> = ({ 
   clients: globalClients, 
   loadClient, 
   onRefresh,
-  deleteClient
+  deleteClient,
+  selectedClientId,
+  onUpdateGlobalClient
 }) => {
-  const [localClients, setLocalClients] = useState<Client[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
+  const { user } = useAuth();
+  const { loadClient: syncToContext } = useClient();
   const [fields, setFields] = useState<FieldDefinition[]>([]);
-  
-  // Persistence & UI State
-  const [isCompact, setIsCompact] = useState(() => localStorage.getItem('crm_density') === 'compact');
-  const [reducedMotion, setReducedMotion] = useState(() => localStorage.getItem('crm_motion') === 'reduced');
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [loadingFields, setLoadingFields] = useState(true);
+  const [isImportOpen, setIsImportOpen] = useState(false);
   const [isBlastOpen, setIsBlastOpen] = useState(false);
+  const [isProtocolOpen, setIsProtocolOpen] = useState(false);
+  const [templateCount, setTemplateCount] = useState(0);
+  
+  const [localClients, setLocalClients] = useState<Client[]>(globalClients);
+  const isEditingRef = useRef(false);
+
+  const isReadOnly = user?.role === 'viewer';
+
+  useEffect(() => {
+    if (!isEditingRef.current) {
+      setLocalClients(globalClients);
+    }
+  }, [globalClients]);
+
+  useEffect(() => {
+    (async () => {
+      setFields(await getFieldDefinitions());
+      setLoadingFields(false);
+      const tpts = await dbTemplates.getTemplates();
+      setTemplateCount(tpts.length);
+    })();
+  }, []);
+
+  const [isCompact, setIsCompact] = useState(() => localStorage.getItem('crm_density') === 'compact');
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isCommandOpen, setIsCommandOpen] = useState(false);
   
+  const [activeCell, setActiveCell] = useState<{ rowId: string; colId: string } | null>(null);
+  const [editingCell, setEditingCell] = useState<{ rowId: string; colId: string } | null>(null);
+
   // Filtering & View
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [sortCol, setSortCol] = useState('updated_at');
   const [sortDir, setSortDir] = useState<'asc'|'desc'>('desc');
-  const [visibleColumnIds, setVisibleColumnIds] = useState<Set<string>>(new Set(['name', 'status', 'phone', 'opportunity']));
+  // Updated defaults to include consolidated schedule columns
+  const [visibleColumnIds, setVisibleColumnIds] = useState<Set<string>>(new Set(['name', 'phone', 'next_appt_combined', 'next_follow_up_combined', 'status', 'ai_score', 'expected_revenue', 'owner_email']));
   const [colWidths, setColWidths] = useState<Record<string, number>>({});
   const [selectedClientForDrawer, setSelectedClientForDrawer] = useState<Client | null>(null);
 
-  // Persistence
-  useEffect(() => {
-    localStorage.setItem('crm_density', isCompact ? 'compact' : 'comfortable');
-    localStorage.setItem('crm_motion', reducedMotion ? 'reduced' : 'normal');
-  }, [isCompact, reducedMotion]);
-
-  // Global Shortcuts
-  useHotkeys('k', () => setIsCommandOpen(true), { meta: true });
-  useHotkeys('b', () => setIsBlastOpen(true), { meta: true });
-
-  const { rowStatuses, enqueue } = useWriteQueue(async (id, data) => {
-     await saveClientUpdate(id, data);
-     onRefresh();
-  });
-
-  const loadData = useCallback(async () => {
-    setLoading(true);
-    try {
-      const statuses = statusFilter === 'all' ? [] : [statusFilter];
-      const { rows, total } = await fetchClients({ query, statuses, sortBy: sortCol, sortDir });
-      setLocalClients(rows);
-      setTotal(total);
-      setFields(await getFieldDefinitions());
-    } catch (e) { console.error(e); } 
-    finally { setLoading(false); }
-  }, [query, statusFilter, sortCol, sortDir]);
-
-  useEffect(() => { loadData(); }, [loadData]);
-
-  const handleUpdate = (id: string, field: string, value: any, section?: string) => {
-    setLocalClients(prev => prev.map(c => {
-      if (c.id !== id) return c;
-      const copy = { ...c };
-      if (section === 'dynamic') {
-         copy.fieldValues = { ...(copy.fieldValues || {}), [field]: value };
-         const fDef = fields.find(f => f.id === field || f.key === field);
-         if(fDef) upsertFieldValue(id, fDef.id, fDef.type, value);
-      } else if (section) {
-         (copy as any)[section] = { ...(copy as any)[section], [field]: value };
-      }
-      enqueue(id, copy);
-      return copy;
-    }));
+  const handleApplyView = (view: SavedView) => {
+    if (view.filters?.query !== undefined) setQuery(view.filters.query);
+    if (view.sort) {
+      setSortCol(view.sort.col);
+      setSortDir(view.sort.dir);
+    }
+    if (view.visible_column_ids) setVisibleColumnIds(new Set(view.visible_column_ids));
+    if (view.col_widths) setColWidths(view.col_widths);
   };
+
+  const filteredAndSortedClients = useMemo(() => {
+    let result = [...localClients];
+    if (query) {
+      const q = query.toLowerCase();
+      result = result.filter(c => 
+        (c.profile?.name || '').toLowerCase().includes(q) || 
+        (String(c.profile?.phone || '')).includes(q)
+      );
+    }
+    if (statusFilter !== 'all') {
+      result = result.filter(c => (c.followUp?.status || 'new') === statusFilter);
+    }
+    result.sort((a, b) => {
+      let valA: any = '';
+      let valB: any = '';
+      if (sortCol === 'name') { valA = a.profile?.name || ''; valB = b.profile?.name || ''; }
+      else if (sortCol === 'status') { valA = a.followUp?.status || ''; valB = b.followUp?.status || ''; }
+      else if (sortCol === 'ai_score') { valA = toNum(a.followUp?.ai_propensity_score); valB = toNum(b.followUp?.ai_propensity_score); }
+      else if (sortCol === 'expected_revenue') { 
+        valA = toNum(a.followUp?.dealValue) * (toNum(a.followUp?.ai_propensity_score, 50)/100); 
+        valB = toNum(b.followUp?.dealValue) * (toNum(b.followUp?.ai_propensity_score, 50)/100); 
+      }
+      else if (sortCol === 'last_contact') { valA = a.followUp?.lastContactedAt || ''; valB = b.followUp?.lastContactedAt || ''; }
+      else if (sortCol === 'next_follow_up_combined') { valA = a.followUp?.nextFollowUpDate || ''; valB = b.followUp?.nextFollowUpDate || ''; }
+      else if (sortCol === 'next_appt_combined') { valA = a.appointments?.firstApptDate || ''; valB = b.appointments?.firstApptDate || ''; }
+      else if (sortCol === 'updated_at') { valA = a.lastUpdated || ''; valB = b.lastUpdated || ''; }
+      else { valA = a.fieldValues?.[sortCol] || ''; valB = b.fieldValues?.[sortCol] || ''; }
+      if (valA < valB) return sortDir === 'asc' ? -1 : 1;
+      if (valA > valB) return sortDir === 'asc' ? 1 : -1;
+      return 0;
+    });
+    return result;
+  }, [localClients, query, statusFilter, sortCol, sortDir]);
 
   const columns = useMemo(() => {
      const base = [
-        { id: 'name', label: 'Client Name', type: 'text', field: 'name', section: 'profile', minWidth: 240 },
-        { id: 'status', label: 'Lifecycle Stage', type: 'select', field: 'status', section: 'followUp', minWidth: 180 },
-        { id: 'opportunity', label: 'Potential', type: 'number', field: 'score', section: 'meta', minWidth: 140 },
-        { id: 'phone', label: 'Mobile Contact', type: 'phone', field: 'phone', section: 'profile', minWidth: 180 },
+        { id: 'name', label: 'Client Identity', type: 'text', field: 'name', section: 'profile', minWidth: 200 },
+        { id: 'phone', label: 'Contact (WA)', type: 'phone', field: 'phone', section: 'profile', minWidth: 160 },
+        // Consolidated Date & Time Columns (Requirement 2 & 3)
+        { id: 'next_appt_combined', label: 'Appointment', type: 'datetime-combined', field: 'firstApptDate', section: 'appointments', minWidth: 180 },
+        { id: 'next_follow_up_combined', label: 'Follow Up', type: 'datetime-combined', field: 'nextFollowUpDate', section: 'followUp', minWidth: 180 },
+        { id: 'status', label: 'Stage', type: 'select', field: 'status', section: 'followUp', minWidth: 160 },
+        { id: 'ai_score', label: 'Propensity %', type: 'number', field: 'ai_propensity_score', section: 'followUp', minWidth: 120 },
+        { id: 'expected_revenue', label: 'Weighted Val', type: 'currency', field: 'dealValue', section: 'followUp', minWidth: 140 },
+        { id: 'last_contact', label: 'Last Touch', type: 'date', field: 'lastContactedAt', section: 'followUp', minWidth: 140 },
+        { id: 'owner_email', label: 'Manager', type: 'text', field: '_ownerEmail', section: 'meta', minWidth: 180 },
      ];
-     const dynamic = fields.map(f => ({
-        id: f.id, label: f.label, type: f.type, field: f.key, section: 'dynamic', minWidth: 160
-     }));
+     const dynamic = fields.map(f => ({ id: f.id, label: f.label, type: f.type, field: f.key, section: 'dynamic', minWidth: 150 }));
      return [...base, ...dynamic].filter(c => visibleColumnIds.has(c.id));
   }, [fields, visibleColumnIds]);
 
+  const handleUpdate = (id: string, field: string, value: any, section?: string) => {
+    if (isReadOnly) return;
+    isEditingRef.current = true;
+    const clientToUpdate = localClients.find(c => c.id === id);
+    if (!clientToUpdate) return;
+    const copy = JSON.parse(JSON.stringify(clientToUpdate));
+    
+    if (section === 'dynamic') {
+       copy.fieldValues = { ...(copy.fieldValues || {}), [field]: value };
+    } else if (section) {
+       const parts = section.split('.');
+       let target = copy;
+       for (let i = 0; i < parts.length; i++) {
+          const p = parts[i];
+          if (i === parts.length - 1) { target[p] = { ...(target[p] || {}), [field]: value }; }
+          else { target[p] = target[p] || {}; target = target[p]; }
+       }
+    }
+    setLocalClients(prev => prev.map(c => c.id === id ? copy : c));
+    onUpdateGlobalClient(copy);
+    if (id === selectedClientId) syncToContext(copy);
+    setTimeout(() => { isEditingRef.current = false; }, 2000);
+  };
+
   const toggleSelection = (id: string) => {
     const next = new Set(selectedIds);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
+    if (next.has(id)) next.delete(id); else next.add(id);
     setSelectedIds(next);
   };
 
+  useHotkeys('k', () => setIsCommandOpen(true), { meta: true });
+
+  const customStatusOptions: ContactStatus[] = [
+    'new', 'picked_up', 'npu_1', 'npu_2', 'npu_3', 'npu_4', 'npu_5', 'npu_6', 
+    'appt_set', 'appt_met', 'pending_decision', 'case_closed', 'not_keen'
+  ];
+
   return (
-    <div className={`flex flex-col h-full bg-white overflow-hidden ${reducedMotion ? 'motion-reduce' : ''}`}>
-      
-      {/* --- PREMIUM TOOLBAR --- */}
-      <div className="h-16 border-b flex items-center justify-between px-6 gap-6 bg-white z-40 shrink-0 shadow-sm">
-         <div className="flex items-center gap-6">
+    <div className={`flex flex-col h-full bg-white overflow-hidden`}>
+      <div className="bg-slate-50 px-6 py-4 border-b border-slate-100 flex items-center gap-10">
+         <div className="flex flex-col">
+            <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Global pipeline</span>
+            <span className="text-xl font-black text-slate-900">{fmtSGD(filteredAndSortedClients.length * 5000).split('.')[0]} <span className="text-[10px] text-slate-300 font-bold uppercase ml-1">Est</span></span>
+         </div>
+         <div className="flex-col hidden md:flex">
+            <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Active Velocity</span>
+            <span className="text-xl font-black text-indigo-600">{((filteredAndSortedClients.filter(c => c.followUp.status !== 'new').length / (localClients.length || 1))*100).toFixed(0)}%</span>
+         </div>
+         <div className="flex-1" />
+         <div className="flex items-center gap-3">
+             <ViewsDropdown currentView={{ filters: { query, statuses: [] }, sort: { col: sortCol, dir: sortDir }, visibleColumnIds, colWidths }} onApply={handleApplyView} />
+         </div>
+      </div>
+
+      <div className="h-16 border-b flex items-center justify-between px-6 gap-6 bg-white shrink-0 shadow-sm">
+         <div className="flex items-center gap-4">
             <div className="flex items-center gap-3">
               <span className="text-xl">📋</span>
               <div className="flex flex-col">
-                 <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 leading-none mb-1">Portfolio Grid</h2>
-                 <span className="text-sm font-bold text-slate-900 leading-none">{total} Clients</span>
+                 <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 leading-none mb-1">Quantum Spreadsheet</h2>
+                 <span className="text-sm font-bold text-slate-900 leading-none">{filteredAndSortedClients.length} Records</span>
               </div>
             </div>
-            
+            <div className="h-8 w-px bg-slate-100 mx-2" />
             <SegmentedControl 
-              options={[
-                { label: 'All', value: 'all' },
-                { label: 'Leads', value: 'new' },
-                { label: 'Meetings', value: 'appt_set' },
-                { label: 'Clients', value: 'client' }
-              ]}
-              value={statusFilter}
-              onChange={setStatusFilter}
+              options={[{ label: 'All', value: 'all' }, { label: 'Inbound', value: 'new' }, { label: 'Meetings', value: 'appt_set' }]}
+              value={statusFilter} onChange={setStatusFilter}
             />
          </div>
 
          <div className="flex items-center gap-6 flex-1 justify-end">
-            <div className="relative max-w-sm w-full group">
+            <div className="relative max-w-xs w-full group">
               <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-300 text-sm group-focus-within:text-indigo-500 transition-colors">🔍</span>
-              <input 
-                className="w-full pl-9 pr-4 py-2 bg-slate-50 border-transparent rounded-xl text-[11px] font-bold focus:bg-white focus:ring-2 focus:ring-indigo-100 transition-all outline-none text-slate-700"
-                placeholder="Find records... (Cmd+K)"
-                value={query}
-                onChange={e => setQuery(e.target.value)}
-              />
+              <input className="w-full pl-9 pr-4 py-2 bg-slate-50 border-transparent rounded-xl text-[11px] font-bold focus:bg-white focus:ring-2 focus:ring-indigo-100 transition-all outline-none text-slate-700" placeholder="Airtable-style Search..." value={query} onChange={e => setQuery(e.target.value)} />
             </div>
-            
-            <div className="h-4 w-px bg-slate-200" />
-            
-            <div className="flex items-center gap-5">
-              <ToggleSwitch label="Compact" enabled={!!isCompact} onChange={(v) => setIsCompact(v ? 'compact' : '')} size="sm" />
-              <ColumnPicker 
-                allColumns={columns} 
-                visibleColumnIds={visibleColumnIds} 
-                onChange={setVisibleColumnIds} 
-                onManageFields={onRefresh} 
-              />
-              <ViewsDropdown 
-                currentView={{ filters: { query, statuses: [] }, sort: { col: sortCol, dir: sortDir }, visibleColumnIds, colWidths }} 
-                onApply={(v) => {
-                  setSortCol(v.sort.col); setSortDir(v.sort.dir); setVisibleColumnIds(new Set(v.visible_column_ids)); setColWidths(v.col_widths);
-                }} 
-              />
-              <Button variant="primary" size="sm" leftIcon="＋" onClick={() => loadClient({} as any, true)}>New Client</Button>
+            <div className="flex items-center gap-4">
+              {!isReadOnly && <Button variant="ghost" size="sm" leftIcon="📥" onClick={() => setIsImportOpen(true)}>Import</Button>}
+              <Button variant="ghost" size="sm" leftIcon="💬" onClick={() => setIsProtocolOpen(true)} className="relative">
+                Protocols
+                {templateCount > 0 && (
+                  <span className="absolute -top-1 -right-1 w-4 h-4 bg-indigo-600 text-white text-[8px] rounded-full flex items-center justify-center font-black">
+                    {templateCount}
+                  </span>
+                )}
+              </Button>
+              <ColumnPicker allColumns={columns} visibleColumnIds={visibleColumnIds} onChange={setVisibleColumnIds} onManageFields={onRefresh} />
+              {!isReadOnly && <Button variant="primary" size="sm" leftIcon="＋" onClick={() => loadClient({} as any, true)}>Add</Button>}
             </div>
          </div>
       </div>
 
-      {/* --- SELECTION HUD --- */}
-      {selectedIds.size > 0 && (
-        <div className="fixed bottom-10 left-1/2 -translate-x-1/2 z-[1000] bg-slate-900 text-white px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-8 animate-in slide-in-from-bottom-10 duration-300">
-           <div className="flex items-center gap-3">
-              <span className="w-6 h-6 rounded-full bg-indigo-500 flex items-center justify-center text-[11px] font-black">{selectedIds.size}</span>
-              <span className="text-xs font-black uppercase tracking-widest opacity-60">Selection Active</span>
-           </div>
-           <div className="h-4 w-px bg-slate-700" />
-           <div className="flex items-center gap-3">
-              <Button variant="ghost" className="text-white hover:bg-slate-800 border-none" size="sm" onClick={() => setIsBlastOpen(true)} leftIcon="💬">Smart Blast</Button>
-              <Button variant="danger" size="sm" onClick={() => { selectedIds.forEach(id => deleteClient(id)); setSelectedIds(new Set()); }} leftIcon="🗑">Delete</Button>
-              <button onClick={() => setSelectedIds(new Set())} className="text-[10px] font-black text-slate-500 hover:text-white uppercase tracking-widest transition-colors ml-4">Cancel</button>
-           </div>
-        </div>
-      )}
-
-      {/* --- MAIN GRID --- */}
-      <div className="flex-1 overflow-auto custom-scrollbar bg-slate-50/20">
+      <div className="flex-1 overflow-auto custom-scrollbar bg-slate-50/20" onClick={() => { if(!editingCell) setActiveCell(null); }}>
          <table className="w-full border-collapse table-fixed">
             <thead className="sticky top-0 z-30">
                <tr className="bg-white/95 backdrop-blur-md">
                   <th className="w-12 border-r border-b border-slate-100 p-0 h-10 flex items-center justify-center">
-                    <input 
-                       type="checkbox" 
-                       className="rounded border-slate-200 text-indigo-600 focus:ring-indigo-500" 
-                       checked={selectedIds.size === localClients.length && localClients.length > 0}
-                       onChange={(e) => {
-                          if (e.target.checked) setSelectedIds(new Set(localClients.map(c => c.id)));
-                          else setSelectedIds(new Set());
-                       }}
-                    />
+                    <input type="checkbox" className="rounded border-slate-200 text-indigo-600 focus:ring-indigo-500" checked={selectedIds.size === filteredAndSortedClients.length && filteredAndSortedClients.length > 0} onChange={(e) => e.target.checked ? setSelectedIds(new Set(filteredAndSortedClients.map(c => c.id))) : setSelectedIds(new Set())} />
                   </th>
                   {columns.map(col => (
                      <th key={col.id} className="p-0 border-r border-b border-slate-100">
-                        <ColumnHeader 
-                          label={col.label} type={col.type} width={colWidths[col.id] || col.minWidth} 
-                          isSorted={sortCol === col.id ? sortDir : null}
-                          onSort={dir => { setSortCol(col.id); setSortDir(dir || 'desc'); }}
-                          onHide={() => {
-                             const next = new Set(visibleColumnIds);
-                             next.delete(col.id);
-                             setVisibleColumnIds(next);
-                          }} 
-                          onResize={(w) => setColWidths(prev => ({...prev, [col.id]: w}))}
-                        />
+                        <ColumnHeader label={col.label} type={col.type} width={colWidths[col.id] || col.minWidth} isSorted={sortCol === col.id ? sortDir : null} onSort={dir => { setSortCol(col.id); setSortDir(dir || 'desc'); }} onHide={() => { const next = new Set(visibleColumnIds); next.delete(col.id); setVisibleColumnIds(next); }} onResize={(w) => setColWidths(prev => ({...prev, [col.id]: w}))} />
                      </th>
                   ))}
                </tr>
             </thead>
             <tbody>
-               {localClients.map(client => (
+               {filteredAndSortedClients.map(client => (
                   <CrmRow 
-                    key={client.id}
-                    client={client}
-                    columns={columns}
-                    colWidths={colWidths}
-                    selectedRowIds={selectedIds}
-                    activeCell={null}
-                    editingCell={null}
-                    statusOptions={['new', 'picked_up', 'appt_set', 'proposal', 'client', 'not_keen']}
-                    onToggleSelection={toggleSelection}
-                    onSetActive={() => {}}
-                    onSetEditing={() => {}}
-                    onStopEditing={() => {}}
-                    onUpdate={handleUpdate}
-                    onLoadClient={(c) => loadClient(c, true)}
-                    onQuickView={setSelectedClientForDrawer}
-                    rowHeight={isCompact ? 36 : 44}
-                    renderStatus={(id) => {
-                       const s = rowStatuses[id]?.status || 'idle';
-                       if (s === 'saving') return <div className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse"></div>;
-                       if (s === 'saved') return <div className="text-emerald-500 text-[10px] font-bold">✓</div>;
-                       return null;
-                    }}
+                    key={client.id} 
+                    client={client} 
+                    columns={columns} 
+                    colWidths={colWidths} 
+                    selectedRowIds={selectedIds} 
+                    activeCell={activeCell} 
+                    editingCell={editingCell} 
+                    statusOptions={customStatusOptions} 
+                    onToggleSelection={toggleSelection} 
+                    onSetActive={(r, c) => { if(!editingCell) setActiveCell({rowId: r, colId: c}); }} 
+                    onSetEditing={(rowId, colId) => setEditingCell({ rowId, colId })} 
+                    onStopEditing={() => setEditingCell(null)} 
+                    onUpdate={handleUpdate} 
+                    onLoadClient={(c) => loadClient(c, true)} 
+                    onQuickView={setSelectedClientForDrawer} 
+                    rowHeight={isCompact ? 36 : 46} 
+                    renderStatus={() => null} 
                   />
                ))}
-               
-               {localClients.length === 0 && !loading && (
-                 <tr>
-                    <td colSpan={columns.length + 1} className="py-40 text-center bg-white">
-                       <div className="max-w-md mx-auto space-y-8 px-8">
-                          <div className="relative h-32 w-32 mx-auto opacity-5">
-                            <svg viewBox="0 0 24 24" className="w-full h-full fill-slate-900"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z" /></svg>
-                          </div>
-                          <div className="space-y-3">
-                             <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight">Vault Empty</h3>
-                             <p className="text-sm text-slate-400 font-medium leading-relaxed">No matching client records found. Adjust your lifecycle filters or start a new intake to populate the portfolio.</p>
-                          </div>
-                          <div className="flex flex-col sm:flex-row gap-3 justify-center">
-                             <Button variant="secondary" leftIcon="📥">Import CSV</Button>
-                             <Button variant="primary" leftIcon="＋" onClick={() => loadClient({} as any, true)}>Create Client</Button>
-                          </div>
-                       </div>
-                    </td>
-                 </tr>
-               )}
             </tbody>
          </table>
       </div>
 
-      {/* MODALS & OVERLAYS */}
-      <CommandBar 
-        isOpen={isCommandOpen} 
-        onClose={() => setIsCommandOpen(false)} 
-        clients={localClients}
-        onSelectClient={c => loadClient(c, true)}
-        onAction={(action) => {
-          if (action === 'toggle_compact') setIsCompact(prev => prev ? '' : 'compact');
-          if (action === 'new_client') loadClient({} as any, true);
-          if (action === 'open_blast') setIsBlastOpen(true);
-        }}
-      />
+      <CommandBar isOpen={isCommandOpen} onClose={() => setIsCommandOpen(false)} clients={globalClients} onSelectClient={c => loadClient(c, true)} onAction={(action) => { if (action === 'toggle_compact') setIsCompact(prev => !prev); if (action === 'new_client' && !isReadOnly) loadClient({} as any, true); if (action === 'open_blast') setIsBlastOpen(true); if (action === 'import_csv' && !isReadOnly) setIsImportOpen(true); }} />
 
-      <BlastModal 
-        isOpen={isBlastOpen} onClose={() => setIsBlastOpen(false)} 
-        selectedCount={selectedIds.size}
-        blastTopic="" setBlastTopic={() => {}} blastMessage="" setBlastMessage={() => {}}
-        isGeneratingBlast={false} onGenerateAI={() => {}}
-        generatedLinks={[]} onGenerateLinks={() => {}}
-      />
+      {selectedClientForDrawer && <ClientDrawer client={selectedClientForDrawer} isOpen={!!selectedClientForDrawer} onClose={() => setSelectedClientForDrawer(null)} onUpdateField={handleUpdate} onStatusUpdate={(c, s) => handleUpdate(c.id, 'status', s, 'followUp')} onOpenFullProfile={() => loadClient(selectedClientForDrawer, true)} onDelete={() => deleteClient(selectedClientForDrawer.id)} />}
 
-      {selectedClientForDrawer && (
-        <ClientDrawer 
-          client={selectedClientForDrawer} isOpen={!!selectedClientForDrawer} onClose={() => setSelectedClientForDrawer(null)}
-          onUpdateField={handleUpdate} onStatusUpdate={(c, s) => handleUpdate(c.id, 'status', s, 'followUp')}
-          onOpenFullProfile={() => loadClient(selectedClientForDrawer, true)} onDelete={() => deleteClient(selectedClientForDrawer.id)}
-        />
-      )}
+      <ImportModal isOpen={isImportOpen} onClose={() => setIsImportOpen(false)} onComplete={onRefresh} />
+      <ProtocolManagerModal isOpen={isProtocolOpen} onClose={() => { setIsProtocolOpen(false); onRefresh(); }} />
     </div>
   );
 };

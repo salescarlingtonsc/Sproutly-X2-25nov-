@@ -4,153 +4,251 @@ import { GoogleGenAI, Type, Modality } from "@google/genai";
 const getAI = () => new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 /**
- * PROACTIVE INTELLIGENCE: NEXT BEST ACTION (NBA)
- * Uses gemini-3-pro-preview with Deep Thinking to scan client data for revenue/service opportunities.
+ * STRATEGIC OUTREACH PROTOCOL ENGINE
+ * Generates personalized messages based on pipeline stage.
  */
-export const generateNextBestActions = async (clients: any[]) => {
+export const generateAutomatedPitch = async (clientData: any) => {
   const ai = getAI();
+  const currentStatus = clientData?.followUp?.status || 'new';
+  
   const prompt = `
-    ACT AS A SENIOR PRIVATE WEALTH STRATEGIST.
-    Analyze the following client list: ${JSON.stringify(clients.map(c => ({
-      id: c.id,
-      name: c.profile.name,
-      status: c.followUp.status,
-      income: c.profile.monthlyIncome,
-      savings: c.cashflowState?.currentSavings,
-      protection: c.insuranceState?.policies?.length || 0,
-      property: c.propertyState?.propertyPrice ? 'Has Property Plan' : 'No Property Plan'
-    })))}
-
-    TASK: Identify the top 3 most urgent HIGH-VALUE opportunities across the entire book of business.
-    THINK DEEPLY about:
-    - Protection gaps (High income but low insurance).
-    - Liquidity traps (High cash savings but no investment history).
-    - Momentum (Leads that haven't been contacted in 3 days).
+    GENERATE A STRATEGIC SALES PROTOCOL.
+    CLIENT DOSSIER: ${JSON.stringify(clientData)}
+    CURRENT PIPELINE STAGE: ${currentStatus}
     
-    RETURN ONLY A JSON ARRAY of actions.
+    SYSTEM CONTEXT:
+    We use a specific funnel: New -> Picked up -> NPU 1 to 6 (No Pick Ups) -> Appt set -> Appt met -> Pending -> Closed.
+    
+    TASK:
+    1. If stage is NPU [X], craft a message that sounds persistent but respectful.
+    2. If stage is 'Appt met', craft a 'Decision Bridge' message highlighting one gap in their CPF/Insurance.
+    3. Generate an objection rebuttal for this specific profile.
+    
+    THINKING REQUIREMENTS:
+    - Model the client's "Adherence Resistance" based on their current NPU level.
+    - Set thinkingBudget to 32768.
   `;
 
-  const response = await ai.models.generateContent({
-    model: 'gemini-3-pro-preview',
-    contents: prompt,
-    config: {
-      thinkingConfig: { thinkingBudget: 32768 },
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.ARRAY,
-        items: {
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-pro-preview',
+      contents: prompt,
+      config: {
+        thinkingConfig: { thinkingBudget: 32768 },
+        responseMimeType: "application/json",
+        responseSchema: {
           type: Type.OBJECT,
           properties: {
-            clientId: { type: Type.STRING },
-            clientName: { type: Type.STRING },
-            action: { type: Type.STRING },
-            priority: { type: Type.STRING, enum: ['CRITICAL', 'HIGH', 'MEDIUM'] },
-            rationale: { type: Type.STRING },
-            revenuePotential: { type: Type.STRING }
+            opening_hook: { type: Type.STRING },
+            whatsapp_draft: { type: Type.STRING },
+            objection_rebuttal: {
+              type: Type.OBJECT,
+              properties: {
+                objection: { type: Type.STRING },
+                script: { type: Type.STRING }
+              }
+            },
+            closing_strategy: { type: Type.STRING }
           },
-          required: ['clientId', 'clientName', 'action', 'priority', 'rationale']
+          required: ['opening_hook', 'whatsapp_draft', 'objection_rebuttal']
         }
       }
-    }
-  });
+    });
 
-  return JSON.parse(response.text || '[]');
+    return JSON.parse(response.text || '{}');
+  } catch (error) {
+    console.error("Outreach Engine Error:", error);
+    return null;
+  }
 };
 
 /**
- * AI VISION OCR: Document Ingestion
- * Parses complex financial PDFs/Images into state.
+ * QUANTUM AUDIT ENGINE
+ * Deep structural analysis of financial plans.
  */
-export const ingestFinancialDocument = async (base64Data: string, mimeType: string) => {
+export const runQuantumDeepDive = async (clientData: any) => {
   const ai = getAI();
   const prompt = `
-    Analyze this financial document (CPF Statement/Policy). 
-    Extract: 1. Balances 2. Holder Name 3. Expiry Dates.
-    Map values to our state schema.
+    PERFORM A QUANTUM-LEVEL FINANCIAL AUDIT.
+    Dossier: ${JSON.stringify(clientData)}
+    
+    CRITICAL INSTRUCTION:
+    Evaluate for multi-generational liability matching, tax decay, and insurance gaps.
+    Use maximum thinking depth to identify non-obvious risks.
   `;
-
-  const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash-image',
-    contents: {
-      parts: [
-        { inlineData: { data: base64Data, mimeType } },
-        { text: prompt }
-      ]
-    },
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          balances: {
-            type: Type.OBJECT,
-            properties: {
-              oa: { type: Type.NUMBER },
-              sa: { type: Type.NUMBER },
-              ma: { type: Type.NUMBER }
-            }
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-pro-preview',
+      contents: prompt,
+      config: {
+        thinkingConfig: { thinkingBudget: 32768 },
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            executive_summary: { type: Type.STRING },
+            critical_gaps: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: { 
+                  area: { type: Type.STRING }, 
+                  severity: { type: Type.STRING }, 
+                  observation: { type: Type.STRING },
+                  reasoning_path: { type: Type.STRING }
+                }
+              }
+            },
+            action_plan: { type: Type.ARRAY, items: { type: Type.STRING } },
+            projected_impact_sgd: { type: Type.NUMBER }
           },
-          confidence: { type: Type.NUMBER }
+          required: ['executive_summary', 'critical_gaps', 'action_plan']
         }
       }
-    }
-  });
-
-  return JSON.parse(response.text || '{}');
+    });
+    return JSON.parse(response.text || '{}');
+  } catch (error) { throw error; }
 };
 
-// --- EXISTING FUNCTIONS (STUBBED TO ENSURE FILE COMPLETENESS) ---
-export const parseFinancialDocument = async (base64Data: string, mimeType: string) => ingestFinancialDocument(base64Data, mimeType);
-export const runInstitutionalStressTest = async (clientData: any, scenario: string) => {
+export const calculateLeadScore = async (clientData: any) => {
+  const ai = getAI();
+  const prompt = `CALCULATE CLOSING PROPENSITY for client: ${JSON.stringify(clientData)}. Use reasoning to model NPU decay.`;
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-pro-preview',
+      contents: prompt,
+      config: {
+        thinkingConfig: { thinkingBudget: 32768 },
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            score: { type: Type.NUMBER },
+            engagement_level: { type: Type.STRING, enum: ['High', 'Stable', 'Low'] },
+            primary_reason: { type: Type.STRING }
+          },
+          required: ['score', 'engagement_level', 'primary_reason']
+        }
+      }
+    });
+    return JSON.parse(response.text || '{}');
+  } catch (e) { return { score: 50, engagement_level: 'Stable', primary_reason: 'Analysis standby.' }; }
+};
+
+export const getCurrentMortgageRates = async () => {
   const ai = getAI();
   const response = await ai.models.generateContent({
-    model: 'gemini-3-pro-preview',
-    contents: `Stress test scenario: ${scenario}. Data: ${JSON.stringify(clientData)}`,
-    config: { thinkingConfig: { thinkingBudget: 32768 } }
+    model: 'gemini-3-flash-preview',
+    contents: "Current Singapore bank mortgage rates 2025. Return numeric average only.",
+    config: { tools: [{ googleSearch: {} }] }
   });
-  return response.text;
+  return response.text?.trim() || "3.5%";
 };
+
+export const getMarketRealityCheck = async (query: string) => {
+  const ai = getAI();
+  const response = await ai.models.generateContent({
+    model: 'gemini-3-flash-preview',
+    contents: query,
+    config: { tools: [{ googleSearch: {} }] }
+  });
+  return {
+    text: response.text,
+    sources: response.candidates?.[0]?.groundingMetadata?.groundingChunks
+  };
+};
+
+export const generateNextBestActions = async (clients: any[]) => {
+  const ai = getAI();
+  const prompt = `Analyze pipeline: ${JSON.stringify((clients || []).map(c => ({ id: c.id, name: c.profile?.name, status: c.followUp?.status })))}. Identify 3 high-probability revenue actions. Use deep reasoning.`;
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-pro-preview',
+      contents: prompt,
+      config: {
+        thinkingConfig: { thinkingBudget: 32768 },
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: { 
+              clientId: { type: Type.STRING }, 
+              clientName: { type: Type.STRING }, 
+              action: { type: Type.STRING }, 
+              priority: { type: Type.STRING }, 
+              rationale: { type: Type.STRING } 
+            }
+          }
+        }
+      }
+    });
+    return JSON.parse(response.text || '[]');
+  } catch (error) { return []; }
+};
+
 export const chatWithFinancialContext = async (history: any[], userMessage: string, clientState: any, useLite: boolean = false) => {
   const ai = getAI();
   const model = useLite ? "gemini-3-flash-preview" : "gemini-3-pro-preview";
   const config = useLite ? {} : { thinkingConfig: { thinkingBudget: 32768 } };
-  const chat = ai.chats.create({ model, config, history: history.map(h => ({ role: h.role === 'user' ? 'user' : 'model', parts: [{ text: h.text }] })) });
-  const result = await chat.sendMessage({ message: userMessage });
+  const chat = ai.chats.create({ 
+    model, 
+    config: {
+      ...config,
+      systemInstruction: "You are the Sproutly Strategic Co-Pilot. You have access to client financial data. Be precise, logical, and helpful."
+    }, 
+    history: (history || []).map(h => ({ role: h.role === 'user' ? 'user' : 'model', parts: [{ text: h.text }] })) 
+  });
+  const result = await chat.sendMessage({ message: `Context: ${JSON.stringify(clientState)}. User: ${userMessage}` });
   return result.text;
 };
-export const generateInvestmentThesis = async (prompt: string) => (await getAI().models.generateContent({ model: 'gemini-3-flash-preview', contents: prompt })).text;
-export const getCurrentMortgageRates = async () => (await getAI().models.generateContent({ model: 'gemini-3-flash-preview', contents: "Singapore mortgage rates 2025", config: { tools: [{ googleSearch: {} }] } })).text || "3.5%";
-export const generateClientStrategy = async (profile: any, metrics: any) => {
+
+export const getFinancialNewsBriefing = async () => {
   const res = await getAI().models.generateContent({ 
     model: 'gemini-3-flash-preview', 
-    contents: `Strategy for ${profile.name}`, 
-    config: { responseMimeType: 'application/json', responseSchema: { type: Type.OBJECT, properties: { hook: { type: Type.STRING }, gap_analysis: { type: Type.STRING }, solution_pitch: { type: Type.STRING }, urgency_driver: { type: Type.STRING } } } } 
+    contents: "Singapore financial market news today.", 
+    config: { tools: [{ googleSearch: {} }] } 
   });
-  return JSON.parse(res.text || '{}');
+  return { news: (res.text || "").split('\n').map(l => ({ headline: l, impact: "Market Pulse" })) };
 };
-export const runDeepRiskAnalysis = async (client: any) => {
-  const res = await getAI().models.generateContent({ 
-    model: 'gemini-3-pro-preview', 
-    contents: `Risk analysis for ${client.profile.name}`, 
-    config: { thinkingConfig: { thinkingBudget: 32768 }, responseMimeType: 'application/json' } 
-  });
-  return JSON.parse(res.text || '{}');
-};
-export const getMarketRealityCheck = async (query: string) => {
-  const res = await getAI().models.generateContent({ model: 'gemini-3-flash-preview', contents: query, config: { tools: [{ googleSearch: {} }] } });
-  return { text: res.text, sources: res.candidates?.[0]?.groundingMetadata?.groundingChunks };
-};
+
 export const generateClientAudioBriefing = async (data: any) => {
-  const res = await getAI().models.generateContent({ model: 'gemini-2.5-flash-preview-tts', contents: `Briefing for ${data.profile.name}`, config: { responseModalities: [Modality.AUDIO] } });
+  const res = await getAI().models.generateContent({ 
+    model: 'gemini-2.5-flash-preview-tts', 
+    contents: `Strategic briefing for advisor regarding ${data.profile?.name || 'Client'}.`, 
+    config: { 
+      responseModalities: [Modality.AUDIO], 
+      speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } } 
+    } 
+  });
   return res.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
 };
-export const playRawAudio = async (b64: string) => { /* logic in index.tsx/component */ };
+
+export const playRawAudio = async (b64: string) => {
+    const outputAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({sampleRate: 24000});
+    const decode = (base64: string) => {
+        const binaryString = atob(base64);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
+        return bytes;
+    };
+    const decodeAudioData = async (data: Uint8Array, ctx: AudioContext, sampleRate: number, numChannels: number) => {
+        const dataInt16 = new Int16Array(data.buffer);
+        const frameCount = dataInt16.length / numChannels;
+        const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
+        for (let channel = 0; channel < numChannels; channel++) {
+            const channelData = buffer.getChannelData(channel);
+            for (let i = 0; i < frameCount; i++) channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
+        }
+        return buffer;
+    };
+    const audioBuffer = await decodeAudioData(decode(b64), outputAudioContext, 24000, 1);
+    const source = outputAudioContext.createBufferSource();
+    source.buffer = audioBuffer; source.connect(outputAudioContext.destination); source.start();
+};
+
 export const generateDreamVideo = async (prompt: string, aspectRatio: string) => {
   let op = await getAI().models.generateVideos({ model: 'veo-3.1-fast-generate-preview', prompt, config: { numberOfVideos: 1, aspectRatio: aspectRatio as any } });
   while (!op.done) { await new Promise(r => setTimeout(r, 10000)); op = await getAI().operations.getVideosOperation({ operation: op }); }
   return `${op.response?.generatedVideos?.[0]?.video?.uri}&key=${process.env.API_KEY}`;
-};
-export const getFinancialNewsBriefing = async () => {
-  const res = await getAI().models.generateContent({ model: 'gemini-3-flash-preview', contents: "Singapore finance news", config: { tools: [{ googleSearch: {} }] } });
-  return { news: (res.text || "").split('\n').map(l => ({ headline: l, impact: "Market volatility" })) };
 };

@@ -133,7 +133,7 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     setProfile(c.profile || INITIAL_PROFILE);
     setExpenses(c.expenses || INITIAL_EXPENSES);
     setCustomExpenses(c.customExpenses || []);
-    setChildrenState(c.profile.children || []);
+    setChildrenState(c.profile?.children || []); // Fix: Added optional chaining to prevent evaluate error
     setCpfState(c.cpfState || INITIAL_CPF);
     setCashflowState(c.cashflowState || INITIAL_CASHFLOW);
     setInsuranceState(c.insuranceState || INITIAL_INSURANCE);

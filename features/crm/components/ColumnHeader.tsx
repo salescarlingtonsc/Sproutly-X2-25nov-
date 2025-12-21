@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useEffect } from 'react';
 
 interface ColumnHeaderProps {
@@ -29,7 +28,7 @@ const ColumnHeader: React.FC<ColumnHeaderProps> = ({ label, type, width, isSorte
   useEffect(() => {
      const move = (e: MouseEvent) => {
         if (!isResizing) return;
-        onResize(Math.max(80, startWidthRef.current + (e.clientX - startXRef.current)));
+        onResize(Math.max(60, startWidthRef.current + (e.clientX - startXRef.current)));
      };
      const up = () => setIsResizing(false);
      if (isResizing) {
@@ -42,7 +41,6 @@ const ColumnHeader: React.FC<ColumnHeaderProps> = ({ label, type, width, isSorte
   const getIcon = () => {
     switch (type) {
       case 'date': return '🗓️';
-      case 'number': return '＃';
       case 'currency': return '💰';
       case 'select': return '▼';
       case 'phone': return '📞';
@@ -52,13 +50,17 @@ const ColumnHeader: React.FC<ColumnHeaderProps> = ({ label, type, width, isSorte
 
   return (
     <div 
-      className={`relative flex items-center justify-between px-3 py-3 text-[10px] font-black text-slate-400 uppercase tracking-[0.05em] h-full group select-none border-r border-slate-100 transition-colors ${isSorted ? 'bg-slate-50 text-indigo-600' : 'hover:bg-slate-50'}`}
+      className={`relative flex items-center justify-between px-3 h-10 text-[10px] font-black text-slate-400 uppercase tracking-wider group select-none border-r border-slate-100 transition-colors ${isSorted ? 'bg-indigo-50/50 text-indigo-600' : 'hover:bg-slate-50/50'}`}
       style={{ width }}
     >
-      <div className="flex items-center gap-2 overflow-hidden flex-1 cursor-pointer" onClick={() => onSort(isSorted === 'asc' ? 'desc' : (isSorted === 'desc' ? null : 'asc'))}>
+      <div className="flex items-center gap-2 overflow-hidden flex-1 cursor-pointer h-full" onClick={() => onSort(isSorted === 'asc' ? 'desc' : (isSorted === 'desc' ? null : 'asc'))}>
         <span className="opacity-40 font-normal shrink-0">{getIcon()}</span>
         <span className="truncate whitespace-nowrap">{label}</span>
-        {isSorted && <span className="text-indigo-600 ml-1 shrink-0">{isSorted === 'asc' ? '↓' : '↑'}</span>}
+        {isSorted && (
+          <span className="text-indigo-600 ml-1 shrink-0 font-black">
+            {isSorted === 'asc' ? ' ↓' : ' ↑'}
+          </span>
+        )}
       </div>
 
       <button 
@@ -69,16 +71,16 @@ const ColumnHeader: React.FC<ColumnHeaderProps> = ({ label, type, width, isSorte
       </button>
 
       {isOpen && (
-        <div ref={menuRef} className="absolute top-full right-0 mt-2 w-48 bg-white rounded-xl shadow-2xl border border-slate-100 z-50 overflow-hidden animate-in fade-in slide-in-from-top-1 duration-200 py-1.5">
-            <button onClick={() => { onSort('asc'); setIsOpen(false); }} className="w-full text-left px-4 py-2 text-[11px] font-bold hover:bg-slate-50 flex items-center gap-3 text-slate-700"><span>↓</span> Sort Ascending</button>
-            <button onClick={() => { onSort('desc'); setIsOpen(false); }} className="w-full text-left px-4 py-2 text-[11px] font-bold hover:bg-slate-50 flex items-center gap-3 text-slate-700"><span>↑</span> Sort Descending</button>
+        <div ref={menuRef} className="absolute top-full left-0 mt-2 w-48 bg-white rounded-xl shadow-2xl border border-slate-100 z-[1000] overflow-hidden animate-in fade-in slide-in-from-top-1 duration-150 py-1.5 p-1">
+            <button onClick={() => { onSort('asc'); setIsOpen(false); }} className="w-full text-left px-3 py-2 text-[11px] font-bold hover:bg-slate-50 flex items-center gap-3 text-slate-700 rounded-lg"><span>↓</span> Sort A-Z</button>
+            <button onClick={() => { onSort('desc'); setIsOpen(false); }} className="w-full text-left px-3 py-2 text-[11px] font-bold hover:bg-slate-50 flex items-center gap-3 text-slate-700 rounded-lg"><span>↑</span> Sort Z-A</button>
             <div className="h-px bg-slate-50 my-1"></div>
-            <button onClick={() => { onHide(); setIsOpen(false); }} className="w-full text-left px-4 py-2 text-[11px] font-black text-red-500 hover:bg-red-50 flex items-center gap-3 uppercase tracking-widest"><span>✕</span> Hide Field</button>
+            <button onClick={() => { onHide(); setIsOpen(false); }} className="w-full text-left px-3 py-2 text-[11px] font-bold text-red-500 hover:bg-red-50 flex items-center gap-3 rounded-lg"><span>✕</span> Hide Field</button>
         </div>
       )}
       
       <div 
-         className={`absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-indigo-300 transition-colors z-40 ${isResizing ? 'bg-indigo-500' : ''}`}
+         className={`absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-indigo-400 transition-colors z-40 ${isResizing ? 'bg-indigo-500' : ''}`}
          onMouseDown={(e) => { e.preventDefault(); setIsResizing(true); startXRef.current = e.clientX; startWidthRef.current = width; }}
       />
     </div>

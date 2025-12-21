@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from './contexts/AuthContext';
 import { ClientProvider, useClient } from './contexts/ClientContext';
@@ -29,13 +28,16 @@ import CrmTab from './features/crm/CrmTab';
 import AdminTab from './features/admin/AdminTab';
 import ReportTab from './features/report/ReportTab';
 
+// UI Components
+import Button from './components/ui/Button';
+
 // Logic
 import { db } from './lib/db';
 import { logTabUsage } from './lib/db/activities';
 import { Client } from './types';
 
 const AppInner: React.FC = () => {
-  const { user } = useAuth();
+  const { user, signOut } = useAuth();
   const { 
     clientRef, profile, loadClient, resetClient, generateClientObject, 
     clientId 
@@ -43,78 +45,43 @@ const AppInner: React.FC = () => {
   const toast = useToast();
   const { confirm } = useDialog();
 
-  // Navigation State
   const [activeTab, setActiveTab] = useState('disclaimer');
   const [isAuthModalOpen, setAuthModalOpen] = useState(false);
-
-  // CRM State
   const [clients, setClients] = useState<Client[]>([]);
   const [saveStatus, setSaveStatus] = useState<'idle'|'saving'|'saved'|'error'>('idle');
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
 
-  // Auto-Save Refs
   const lastSavedJson = useRef<string>('');
   const isSavingRef = useRef<boolean>(false);
-
-  // --- STABLE TAB USAGE TELEMETRY ---
-  const tabStartTimeRef = useRef<number>(Date.now());
-  const lastActiveTabRef = useRef<string>(activeTab);
+  const gridSaveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  
+  useEffect(() => {
+    const heartbeat = setInterval(() => {
+      if (document.visibilityState === 'visible' && user && user.status === 'approved') {
+        logTabUsage(activeTab, 60);
+      }
+    }, 60000);
+    return () => clearInterval(heartbeat);
+  }, [activeTab, user]);
 
   useEffect(() => {
-    const recordUsage = () => {
-      const now = Date.now();
-      const elapsedSec = Math.floor((now - tabStartTimeRef.current) / 1000);
-      
-      // Thresholds: 2s min, 1hr max
-      if (elapsedSec >= 2 && elapsedSec < 3600) {
-        // Fire-and-forget: No await here to prevent blocking visibility transitions
-        logTabUsage(lastActiveTabRef.current, elapsedSec);
-      }
-      
-      tabStartTimeRef.current = now;
-      lastActiveTabRef.current = activeTab;
-    };
-
-    // Handle visibility changes (switching apps/tabs)
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'hidden') {
-        recordUsage();
-      } else {
-        // Reset timer when coming back to the app
-        tabStartTimeRef.current = Date.now();
-      }
-    };
-
-    // Initial transition record
-    recordUsage(); 
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('beforeunload', recordUsage);
-    
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('beforeunload', recordUsage);
-    };
-  }, [activeTab]);
-
-  // --- Effects ---
-  useEffect(() => {
-     if (user) {
-        loadClientsList();
-     }
+     if (user && user.status === 'approved') loadClientsList();
   }, [user]);
 
-  // --- Handlers ---
   const loadClientsList = async () => {
-     const data = await db.getClients(user?.id);
-     setClients(data);
+     try {
+       const data = await db.getClients(user?.id);
+       setClients(data);
+     } catch (e) {
+       console.error("Hydration failed.");
+     }
   };
 
   const handleNewClient = async () => {
      if (profile.name && clientId === null) {
         const ok = await confirm({
-           title: "Unsaved Profile",
-           message: "You have an unsaved profile open. Discard changes?",
+           title: "Discard Strategy?",
+           message: "Your current profile draft will be lost. Proceed?",
            isDestructive: true,
            confirmText: "Discard"
         });
@@ -123,7 +90,7 @@ const AppInner: React.FC = () => {
      resetClient();
      lastSavedJson.current = ''; 
      setActiveTab('profile');
-     toast.info("New profile started");
+     toast.info("Fresh strategy initialized");
   };
 
   const handleLoadClient = (client: Client, redirect = true) => {
@@ -132,99 +99,123 @@ const AppInner: React.FC = () => {
      if (redirect) setActiveTab('profile');
   };
 
-  // --- SAVE LOGIC ---
-  const handleSaveClient = useCallback(async (isAutoSave = false) => {
-     if (!user) {
-        if (!isAutoSave) setAuthModalOpen(true);
-        return;
-     }
-     if (!profile.name) {
-        if (!isAutoSave) toast.error("Please enter a client name first.");
-        return;
-     }
-     if (isSavingRef.current) return;
-     const clientData = generateClientObject();
-     const { lastUpdated: _newTs, ...currentContent } = clientData;
-     let lastSavedContent = {};
-     try {
-        const parsed = JSON.parse(lastSavedJson.current || '{}');
-        const { lastUpdated: _oldTs, ...rest } = parsed;
-        lastSavedContent = rest;
-     } catch (e) {}
+  const handleSaveClient = useCallback(async (isAutoSave = false, overrideClient?: Client) => {
+     if (document.hidden && isAutoSave) return;
+     if (!user || user.status !== 'approved') return;
 
-     if (isAutoSave && JSON.stringify(currentContent) === JSON.stringify(lastSavedContent)) return;
+     if (isSavingRef.current && !isAutoSave) return;
 
-     isSavingRef.current = true;
-     setSaveStatus('saving');
+     const clientData = overrideClient || generateClientObject();
+     if (!clientData.profile.name) return; 
+
+     const { lastUpdated: _ts, ...currentContent } = clientData;
+     
+     if (!overrideClient) {
+       let lastSavedContent = {};
+       try {
+          const parsed = JSON.parse(lastSavedJson.current || '{}');
+          const { lastUpdated: _oldTs, ...rest } = parsed;
+          lastSavedContent = rest;
+       } catch (e) {}
+
+       if (isAutoSave && JSON.stringify(currentContent) === JSON.stringify(lastSavedContent)) {
+          return; 
+       }
+     }
+
+     if (!isAutoSave) {
+        isSavingRef.current = true;
+        setSaveStatus('saving');
+     }
+     
      try {
         const saved = await db.saveClient(clientData, user.id);
-        lastSavedJson.current = JSON.stringify(saved);
-        setLastSaved(new Date());
-        if (!clientId) loadClient(saved);
-        setSaveStatus('saved');
-        if (!isAutoSave) {
-           loadClientsList(); 
-           toast.success("Client saved successfully");
+        if (!overrideClient || (overrideClient && !clientId)) {
+           lastSavedJson.current = JSON.stringify(saved);
+           loadClient(saved); 
         }
-        setTimeout(() => setSaveStatus(prev => prev === 'saved' ? 'idle' : prev), 2000);
+        setLastSaved(new Date());
+        if (!isAutoSave) {
+           setSaveStatus('saved');
+           loadClientsList(); 
+           toast.success("Intelligence Cloud Synced");
+           setTimeout(() => setSaveStatus(prev => prev === 'saved' ? 'idle' : prev), 3000);
+        } else if (overrideClient) {
+           loadClientsList();
+        }
      } catch (e: any) {
-        console.error(e);
-        setSaveStatus('error');
-        if (!isAutoSave) toast.error("Save failed: " + e.message);
+        if (!isAutoSave) {
+           setSaveStatus('error');
+           toast.error(e.message || "Sync Error: Check permissions");
+        }
      } finally {
-        isSavingRef.current = false;
+        if (!isAutoSave) isSavingRef.current = false;
      }
-  }, [user, profile.name, clientId, generateClientObject, toast]);
+  }, [user, clientId, generateClientObject, toast, loadClient]);
 
-  const saveRef = useRef(handleSaveClient);
-  useEffect(() => { saveRef.current = handleSaveClient; });
+  const handleUpdateClientInList = (updatedClient: Client) => {
+     setClients(prev => prev.map(c => c.id === updatedClient.id ? updatedClient : c));
+     if (gridSaveDebounceRef.current) clearTimeout(gridSaveDebounceRef.current);
+     gridSaveDebounceRef.current = setTimeout(() => {
+        handleSaveClient(true, updatedClient);
+     }, 1000);
+  };
 
   useEffect(() => {
-    const timer = setInterval(() => saveRef.current(true), 15000); 
+    const timer = setInterval(() => {
+       if (document.visibilityState === 'visible' && user?.status === 'approved') {
+          handleSaveClient(true);
+       }
+    }, 15000); 
     return () => clearInterval(timer);
-  }, []);
+  }, [handleSaveClient, user]);
 
-  const handleDeleteClient = async (id: string) => {
-     const ok = await confirm({
-        title: "Delete Client?",
-        message: "This action cannot be undone.",
-        isDestructive: true,
-        confirmText: "Delete Forever"
-     });
-     if (ok) {
-        try {
-           await db.deleteClient(id, user?.id);
-           if (clientId === id) handleNewClient();
-           loadClientsList();
-           toast.success("Client deleted");
-        } catch (e) {
-           toast.error("Could not delete client");
-        }
-     }
-  };
-
-  const handleCompleteFollowUp = (id: string) => {
-     const client = clients.find(c => c.id === id);
-     if (client) {
-        const updated = { ...client, followUp: { ...client.followUp, status: 'contacted' as any } }; 
-        db.saveClient(updated, user?.id).then(loadClientsList);
-     }
-  };
+  // ACCESS WALL FOR PENDING USERS
+  if (user && user.status !== 'approved' && user.role !== 'admin') {
+     return (
+        <div className="min-h-screen bg-[#0F172A] flex items-center justify-center p-6 text-white font-sans overflow-hidden relative">
+           <div className="absolute top-[-10%] left-[-10%] w-[500px] h-[500px] bg-indigo-600/20 rounded-full blur-[120px] animate-pulse"></div>
+           <div className="max-w-md w-full text-center space-y-8 relative z-10">
+              <div className="inline-flex items-center justify-center w-24 h-24 rounded-3xl bg-white/5 border border-white/10 shadow-2xl mb-4 relative overflow-hidden group">
+                 <div className="absolute inset-0 bg-gradient-to-br from-indigo-500/20 to-emerald-500/20 opacity-0 group-hover:opacity-100 transition-opacity"></div>
+                 <span className="text-5xl relative z-10">{user.status === 'pending' ? '⏳' : '🚫'}</span>
+              </div>
+              <div>
+                 <h1 className="text-3xl font-black tracking-tight mb-3">
+                    {user.status === 'pending' ? 'Activation Required' : 'Access Restricted'}
+                 </h1>
+                 <p className="text-slate-400 leading-relaxed">
+                    {user.status === 'pending' 
+                       ? "Welcome to Sproutly Quantum. Your advisor credentials have been submitted for verification. Please contact your Agency Administrator to activate your portal."
+                       : "Your access to the Sproutly environment has been restricted. If you believe this is an error, please reach out to the Strategic Operations unit."}
+                 </p>
+              </div>
+              <div className="flex flex-col gap-4">
+                 <div className="p-4 bg-white/5 border border-white/10 rounded-2xl text-left">
+                    <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">Identity</div>
+                    <div className="text-sm font-bold text-slate-200">{user.email}</div>
+                    <div className="text-[10px] font-mono text-indigo-400 mt-1 uppercase tracking-tighter">Status: {user.status}</div>
+                 </div>
+                 <Button variant="ghost" className="text-slate-400" onClick={signOut}>Sign Out of Identity</Button>
+              </div>
+              <div className="pt-10">
+                 <div className="text-[10px] font-black uppercase tracking-[0.4em] text-slate-600">Quantum Intelligence Protocol v3.0</div>
+              </div>
+           </div>
+        </div>
+     );
+  }
 
   return (
     <>
      <AppShell
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
+        activeTab={activeTab} setActiveTab={setActiveTab}
         onLoginClick={() => setAuthModalOpen(true)}
-        onPricingClick={() => toast.info("Upgrade module coming soon!")}
+        onPricingClick={() => toast.info("Contact Admin for Tier Elevation")}
         onSaveClick={() => handleSaveClient(false)}
-        clientRef={clientRef || undefined}
-        clientName={profile.name}
-        saveStatus={saveStatus}
-        lastSavedTime={lastSaved}
-        clients={clients}
-        onLoadClient={(c) => handleLoadClient(c, true)}
+        clientRef={clientRef || undefined} clientName={profile.name}
+        saveStatus={saveStatus} lastSavedTime={lastSaved}
+        clients={clients} onLoadClient={(c) => handleLoadClient(c, true)}
      >
         <AuthModal isOpen={isAuthModalOpen} onClose={() => setAuthModalOpen(false)} />
         {activeTab === 'disclaimer' && <DisclaimerTab />}
@@ -242,7 +233,19 @@ const AppInner: React.FC = () => {
         {activeTab === 'vision' && <VisionBoardTab />}
         {activeTab === 'analytics' && <AnalyticsTab clients={clients} />}
         {activeTab === 'report' && <ReportTab />}
-        {activeTab === 'crm' && <CrmTab clients={clients} profile={profile} selectedClientId={clientId} newClient={handleNewClient} saveClient={() => handleSaveClient(false)} loadClient={handleLoadClient} deleteClient={handleDeleteClient} setFollowUp={() => {}} completeFollowUp={handleCompleteFollowUp} maxClients={100} userRole={user?.role} onRefresh={loadClientsList} />}
+        {activeTab === 'crm' && (
+          <CrmTab 
+            clients={clients} 
+            profile={profile} 
+            selectedClientId={clientId} 
+            newClient={handleNewClient} 
+            saveClient={() => handleSaveClient(false)} 
+            loadClient={handleLoadClient} 
+            deleteClient={() => {}} 
+            onRefresh={loadClientsList}
+            onUpdateGlobalClient={handleUpdateClientInList}
+          />
+        )}
         {activeTab === 'admin' && user?.role === 'admin' && <AdminTab />}
       </AppShell>
       <AiAssistant currentClient={generateClientObject()} />
@@ -253,26 +256,9 @@ const AppInner: React.FC = () => {
 const App: React.FC = () => {
   const { user, isLoading } = useAuth();
   const [isAuthModalOpen, setAuthModalOpen] = useState(false);
-  if (isLoading) return <div className="min-h-screen flex items-center justify-center bg-slate-50"><div className="animate-spin text-4xl">⏳</div></div>;
-  if (!user) {
-     return (
-        <ToastProvider>
-           <LandingPage onLogin={() => setAuthModalOpen(true)} />
-           <AuthModal isOpen={isAuthModalOpen} onClose={() => setAuthModalOpen(false)} />
-        </ToastProvider>
-     );
-  }
-  return (
-    <ToastProvider>
-      <DialogProvider>
-        <ClientProvider>
-          <AiProvider>
-            <AppInner />
-          </AiProvider>
-        </ClientProvider>
-      </DialogProvider>
-    </ToastProvider>
-  );
+  if (isLoading) return <div className="min-h-screen flex items-center justify-center bg-[#0F172A]"><div className="w-16 h-16 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div></div>;
+  if (!user) return <ToastProvider><LandingPage onLogin={() => setAuthModalOpen(true)} /><AuthModal isOpen={isAuthModalOpen} onClose={() => setAuthModalOpen(false)} /></ToastProvider>;
+  return <ToastProvider><DialogProvider><ClientProvider><AiProvider><AppInner /></AiProvider></ClientProvider></DialogProvider></ToastProvider>;
 };
 
 export default App;

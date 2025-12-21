@@ -1,10 +1,10 @@
-
 import React, { useState, useRef, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { canAccessTab } from '../../lib/config';
 import { Client } from '../../types';
 import Sidebar from './Sidebar';
 import CommandPalette from './CommandPalette';
+import { fmtTime } from '../../lib/helpers';
 
 interface AppShellProps {
   activeTab: string;
@@ -75,6 +75,9 @@ const AppShell: React.FC<AppShellProps> = ({
     }
   };
 
+  // Determine if user can perform write actions
+  const isReadOnly = user?.role === 'viewer';
+
   return (
     <div className="flex h-screen overflow-hidden bg-slate-50 font-sans text-slate-900">
       
@@ -131,37 +134,45 @@ const AppShell: React.FC<AppShellProps> = ({
             <div className="flex items-center gap-2 md:gap-3">
                
                {/* Save Status - Always visible now */}
-               <div className="flex flex-col items-end mr-1 md:mr-2">
-                  {saveStatus === 'saving' && (
-                     <span className="text-[10px] text-indigo-600 font-bold flex items-center gap-1 bg-indigo-50 px-2 py-1 rounded-full">
-                        <span className="animate-spin">↻</span> <span className="hidden sm:inline">Syncing...</span>
-                     </span>
-                  )}
-                  {saveStatus === 'saved' && (
-                     <span className="text-[10px] text-emerald-600 font-bold flex items-center gap-1 bg-emerald-50 px-2 py-1 rounded-full">
-                        ✓ <span className="hidden sm:inline">Saved</span>
-                     </span>
-                  )}
-                  {saveStatus === 'error' && (
-                     <span className="text-[10px] text-red-600 font-bold flex items-center gap-1 bg-red-50 px-2 py-1 rounded-full">
-                        ⚠️ <span className="hidden sm:inline">Failed</span>
-                     </span>
-                  )}
-                  {saveStatus === 'idle' && lastSavedTime && (
-                      <span className="text-[10px] text-slate-400 font-medium flex items-center gap-1">
-                        <span className="hidden sm:inline">Saved</span> {lastSavedTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
-                      </span>
-                  )}
-               </div>
+               {!isReadOnly && (
+                  <div className="flex flex-col items-end mr-1 md:mr-2">
+                     {saveStatus === 'saving' && (
+                        <span className="text-[10px] text-indigo-600 font-bold flex items-center gap-1 bg-indigo-50 px-2 py-1 rounded-full">
+                           <span className="animate-spin">↻</span> <span className="hidden sm:inline">Syncing...</span>
+                        </span>
+                     )}
+                     {saveStatus === 'saved' && (
+                        <span className="text-[10px] text-emerald-600 font-bold flex items-center gap-1 bg-emerald-50 px-2 py-1 rounded-full">
+                           ✓ <span className="hidden sm:inline">Saved</span>
+                        </span>
+                     )}
+                     {saveStatus === 'error' && (
+                        <span className="text-[10px] text-red-600 font-bold flex items-center gap-1 bg-red-50 px-2 py-1 rounded-full">
+                           ⚠️ <span className="hidden sm:inline">Failed</span>
+                        </span>
+                     )}
+                     {saveStatus === 'idle' && lastSavedTime && (
+                        <span className="text-[10px] text-slate-400 font-medium flex items-center gap-1">
+                           <span className="hidden sm:inline">Saved</span> {fmtTime(lastSavedTime)}
+                        </span>
+                     )}
+                  </div>
+               )}
 
-               <button
-                  onClick={onSaveClick}
-                  disabled={saveStatus === 'saving'}
-                  className="flex items-center gap-2 px-3 py-2 bg-slate-900 text-white rounded-lg text-xs font-bold hover:bg-slate-800 transition-all shadow-sm active:scale-95"
-                  title="Save Changes"
-               >
-                  <span>💾</span> <span className="hidden sm:inline">Save</span>
-               </button>
+               {isReadOnly ? (
+                  <div className="px-3 py-2 bg-slate-100 text-slate-400 rounded-lg text-[10px] font-black uppercase tracking-widest border border-slate-200">
+                     Read Only Mode
+                  </div>
+               ) : (
+                  <button
+                     onClick={onSaveClick}
+                     disabled={saveStatus === 'saving'}
+                     className="flex items-center gap-2 px-3 py-2 bg-slate-900 text-white rounded-lg text-xs font-bold hover:bg-slate-800 transition-all shadow-sm active:scale-95"
+                     title="Save Changes"
+                  >
+                     <span>💾</span> <span className="hidden sm:inline">Save</span>
+                  </button>
+               )}
 
                <div className="h-6 w-px bg-gray-200 mx-1 hidden sm:block"></div>
 

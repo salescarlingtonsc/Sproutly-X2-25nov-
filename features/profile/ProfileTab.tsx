@@ -349,6 +349,19 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
                         </select>
                      </div>
                   </div>
+
+                  <div className="group">
+                     <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1 group-focus-within:text-indigo-600 transition-colors">Retirement Age</label>
+                     <input 
+                        type="number" 
+                        value={profile.retirementAge || '65'} 
+                        onChange={(e) => setProfile({...profile, retirementAge: e.target.value})}
+                        className="w-full pb-2 border-b-2 border-gray-100 bg-transparent text-sm font-bold text-indigo-700 focus:border-indigo-600 focus:outline-none transition-colors"
+                        placeholder="65"
+                        min="20"
+                        max="90"
+                     />
+                  </div>
                </div>
 
                <div className="space-y-4">

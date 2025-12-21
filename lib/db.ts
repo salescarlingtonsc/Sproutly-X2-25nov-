@@ -1,6 +1,7 @@
 
 import { supabase, isSupabaseConfigured } from './supabase';
 import { Client } from '../types';
+import { INITIAL_PROFILE, INITIAL_EXPENSES, INITIAL_CPF, INITIAL_CASHFLOW, INITIAL_INSURANCE, INITIAL_INVESTOR, INITIAL_PROPERTY, INITIAL_WEALTH, INITIAL_RETIREMENT } from '../contexts/ClientContext';
 
 const LOCAL_STORAGE_KEY = 'fa_clients';
 
@@ -8,25 +9,38 @@ export const db = {
   getClients: async (userId?: string): Promise<Client[]> => {
     if (isSupabaseConfigured() && supabase) {
       try {
-        const { data, error } = await supabase
+        // Step 1: Direct fetch from clients.
+        const { data: clients, error: clientError } = await supabase
           .from('clients')
           .select('*')
           .order('updated_at', { ascending: false });
           
-        if (error) {
-          console.error('Data retrieval error:', JSON.stringify(error, null, 2));
+        if (clientError) {
+          console.error('Data retrieval error (clients):', clientError.message);
           return [];
         }
         
-        if (!data) return [];
+        if (!clients) return [];
 
-        return data.map((row: any) => {
+        // Step 2: Optimized profile lookup. 
+        const { data: profiles } = await supabase
+          .from('profiles')
+          .select('id, email');
+        
+        const emailMap: Record<string, string> = {};
+        if (profiles) profiles.forEach(p => { emailMap[p.id] = p.email; });
+
+        return clients.map((row: any) => {
           const clientData = row.data || {};
           return {
             ...clientData, 
             id: row.id,
-            _ownerId: row.user_id 
-          };
+            // Guard: Ensure profile and followUp exist to prevent evaluate errors
+            profile: clientData.profile || { ...INITIAL_PROFILE },
+            followUp: clientData.followUp || { status: 'new' },
+            _ownerId: row.user_id,
+            _ownerEmail: emailMap[row.user_id] || `Advisor (${row.user_id.substring(0,4)})`
+          } as Client;
         });
       } catch (e: any) {
         console.error('Unexpected error in getClients:', e);
@@ -43,77 +57,91 @@ export const db = {
   },
 
   saveClient: async (client: Client, userId?: string): Promise<Client> => {
+    if (!isSupabaseConfigured() || !supabase) {
+      const currentClientsStr = localStorage.getItem(LOCAL_STORAGE_KEY);
+      let currentClients: Client[] = currentClientsStr ? JSON.parse(currentClientsStr) : [];
+      const clientToSave = { ...client, lastUpdated: new Date().toISOString() };
+      const index = currentClients.findIndex(c => c.id === client.id);
+      if (index >= 0) currentClients[index] = clientToSave;
+      else currentClients.push(clientToSave);
+      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(currentClients));
+      return clientToSave;
+    }
+
+    const { data: { user: authUser } } = await supabase.auth.getUser();
+    if (!authUser) throw new Error("401: Authentication required.");
+
+    let finalOwnerId = client._ownerId || authUser.id;
+
     const clientToSave = {
       ...client,
+      _ownerId: finalOwnerId,
       lastUpdated: new Date().toISOString()
     };
 
-    if (isSupabaseConfigured() && supabase) {
-      // getSession is faster and more reliable for high-frequency save operations
-      const { data: { session } } = await supabase.auth.getSession();
-      const activeUserId = session?.user?.id || userId;
-
-      if (!activeUserId) {
-        throw new Error("Authentication required. Please sign in to save data.");
-      }
-
-      const payload: any = {
-        user_id: activeUserId,
-        data: clientToSave,
-        updated_at: new Date().toISOString()
-      };
-      
-      // Ensure we only pass the ID if it's a valid persistent UUID
-      if (client.id && client.id.length > 20 && !client.id.startsWith('REF-')) {
-        payload.id = client.id;
-      }
-
-      const { data, error } = await supabase
-        .from('clients')
-        .upsert(payload, { onConflict: 'id' })
-        .select()
-        .single();
-
-      if (error) {
-        console.error("Sproutly Save Error:", JSON.stringify(error, null, 2));
-        // Common cause of 42501 on upsert: The row exists but user_id is null or belongs to another user.
-        throw new Error(error.message || 'Access Denied: You do not have permission to modify this record.');
-      }
-      
-      return {
-        ...(data.data || {}),
-        id: data.id
-      };
-    }
-
-    const currentClientsStr = localStorage.getItem(LOCAL_STORAGE_KEY);
-    let currentClients: Client[] = currentClientsStr ? JSON.parse(currentClientsStr) : [];
+    const payload: any = {
+      id: client.id,
+      user_id: finalOwnerId, 
+      data: clientToSave,
+      updated_at: new Date().toISOString()
+    };
     
-    const index = currentClients.findIndex(c => c.id === client.id);
-    if (index >= 0) {
-      currentClients[index] = clientToSave;
-    } else {
-      currentClients.push(clientToSave);
-    }
+    const { data, error } = await supabase
+      .from('clients')
+      .upsert(payload, { onConflict: 'id' })
+      .select()
+      .single();
+
+    if (error) throw new Error(error.message || 'Sync Permission Denied.');
     
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(currentClients));
-    return clientToSave;
+    let ownerEmail = 'System User';
+    try {
+      const { data: profile } = await supabase.from('profiles').select('email').eq('id', finalOwnerId).single();
+      if (profile) ownerEmail = profile.email;
+    } catch (e) {}
+
+    return {
+      ...(data.data || {}),
+      id: data.id,
+      _ownerId: finalOwnerId,
+      _ownerEmail: ownerEmail
+    };
   },
 
-  deleteClient: async (clientId: string, userId?: string): Promise<void> => {
+  createClientsBulk: async (leads: any[], targetUserId: string): Promise<number> => {
+    if (!supabase) return 0;
+    const payloads = leads.map(lead => {
+      const id = crypto.randomUUID();
+      return {
+        id,
+        user_id: targetUserId,
+        data: {
+          id,
+          profile: { ...INITIAL_PROFILE, name: lead.name || 'Unnamed Lead', email: lead.email || '', phone: lead.phone || '' },
+          expenses: INITIAL_EXPENSES,
+          retirement: INITIAL_RETIREMENT,
+          lastUpdated: new Date().toISOString(),
+          followUp: { status: lead.status || 'new' },
+          _ownerId: targetUserId 
+        },
+        updated_at: new Date().toISOString()
+      };
+    });
+
+    const { error } = await supabase.from('clients').insert(payloads);
+    if (error) throw error;
+    return payloads.length;
+  },
+
+  deleteClient: async (clientId: string): Promise<void> => {
     if (isSupabaseConfigured() && supabase) {
       const { error } = await supabase.from('clients').delete().eq('id', clientId);
-      if (error) {
-        console.error("Delete Error:", JSON.stringify(error, null, 2));
-        throw new Error(error.message || 'Action restricted.');
-      }
+      if (error) throw new Error(error.message);
       return;
     }
-
-    const currentClientsStr = localStorage.getItem(LOCAL_STORAGE_KEY);
-    if (currentClientsStr) {
-      const currentClients: Client[] = JSON.parse(currentClientsStr);
-      const filtered = currentClients.filter(c => c.id !== clientId);
+    const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
+    if (saved) {
+      const filtered = JSON.parse(saved).filter((c: any) => c.id !== clientId);
       localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(filtered));
     }
   }
