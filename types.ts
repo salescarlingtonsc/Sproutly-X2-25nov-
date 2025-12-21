@@ -1,4 +1,3 @@
-
 export interface Child {
   id: number;
   name: string;
@@ -182,8 +181,8 @@ export interface FollowUp {
   priority?: 'High' | 'Medium' | 'Low';
   dealValue?: string;
   lastContactedAt?: string;
-  nextFollowUpDate?: string; // Point 3 requirement
-  nextFollowUpTime?: string; // Point 3 requirement
+  nextFollowUpDate?: string; 
+  nextFollowUpTime?: string; 
   conversionProbability?: number; 
   ai_propensity_score?: number;   
   momentum_decay?: number;
@@ -219,6 +218,7 @@ export interface UserProfile {
   status: string;
   extraSlots: number;
   modules?: string[];
+  is_admin?: boolean;
 }
 
 export interface FieldDefinition {

@@ -67,19 +67,39 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       
       const isHardcodedAdmin = email === ADMIN_EMAIL;
 
-      // Ensure we fetch the 'modules' column
+      // Select both role and is_admin boolean
       let { data, error } = await supabase
         .from('profiles')
-        .select('subscription_tier, role, extra_slots, status, modules')
+        .select('subscription_tier, role, is_admin, extra_slots, status, modules')
         .eq('id', uid)
         .single();
       
+      if (error) {
+        if (error.message.includes('stack depth')) {
+           console.error("CRITICAL: Auth Recursion Error. Falling back to safe profile state.");
+           // Fallback for admins to allow access to the repair script
+           setUser({
+              id: uid,
+              email: email,
+              subscriptionTier: isHardcodedAdmin ? 'diamond' : 'free',
+              role: isHardcodedAdmin ? 'admin' : 'user',
+              status: isHardcodedAdmin ? 'approved' : 'pending',
+              extraSlots: 0,
+              modules: [],
+              is_admin: isHardcodedAdmin
+           });
+           return;
+        }
+        throw error;
+      }
+
       // Auto-create for new users if not found
-      if ((!data && !error) || (error && error.code === 'PGRST116')) {
+      if (!data) {
         const newProfile = {
           id: uid,
           email: email,
           role: isHardcodedAdmin ? 'admin' : 'user',
+          is_admin: isHardcodedAdmin,
           subscription_tier: isHardcodedAdmin ? 'diamond' : 'free',
           status: isHardcodedAdmin ? 'approved' : 'pending',
           extra_slots: 0,
@@ -87,28 +107,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           modules: []
         };
         await supabase.from('profiles').insert(newProfile);
-        data = newProfile;
-      } else if (error && error.code === 'PGRST116') {
-         // Fallback fix for type error
-         error = { message: 'No data', details: '', hint: '', code: 'PGRST116', name: 'PostgrestError' };
+        data = newProfile as any;
       }
 
-      // Auto-sync Admin Role
-      if (isHardcodedAdmin && data && data.role !== 'admin') {
-         await supabase.from('profiles').update({ role: 'admin', subscription_tier: 'diamond', status: 'approved' }).eq('id', uid);
-         data.role = 'admin';
-         data.subscription_tier = 'diamond';
-         data.status = 'approved';
-      }
+      // Determine final role status (Inclusive Check)
+      const isAdminByData = data?.role === 'admin' || data?.is_admin === true;
+      const finalRole = (isHardcodedAdmin || isAdminByData) ? 'admin' : (data?.role || 'user');
       
-      // Determine final state
-      const finalRole = isHardcodedAdmin ? 'admin' : (data?.role || 'user');
-      const isAdminRole = finalRole === 'admin';
-      
-      const finalTier = isAdminRole ? 'diamond' : ((data?.subscription_tier as SubscriptionTier) || 'free');
-      const finalStatus = isHardcodedAdmin ? 'approved' : (data?.status || 'pending');
+      const finalTier = finalRole === 'admin' ? 'diamond' : ((data?.subscription_tier as SubscriptionTier) || 'free');
+      const finalStatus = (isHardcodedAdmin || data?.status === 'approved') ? 'approved' : (data?.status || 'pending');
       const finalSlots = data?.extra_slots || 0;
-      const finalModules = data?.modules || []; // Load manual modules
+      const finalModules = data?.modules || [];
         
       setUser({
         id: uid,
@@ -117,7 +126,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         role: finalRole,
         status: finalStatus as 'pending' | 'approved' | 'rejected',
         extraSlots: finalSlots,
-        modules: finalModules
+        modules: finalModules,
+        is_admin: data?.is_admin || isHardcodedAdmin
       });
 
     } catch (e) {
@@ -130,7 +140,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         role: isAdmin ? 'admin' : 'user', 
         status: isAdmin ? 'approved' : 'pending',
         extraSlots: 0,
-        modules: []
+        modules: [],
+        is_admin: isAdmin
       });
     } finally {
       setIsLoading(false);

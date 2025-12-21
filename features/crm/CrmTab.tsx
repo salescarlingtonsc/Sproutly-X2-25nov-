@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Client, FieldDefinition, Profile, ContactStatus } from '../../types';
 import { getFieldDefinitions } from '../../lib/db/dynamicFields';
@@ -34,15 +33,22 @@ interface CrmTabProps {
   deleteClient: (id: string) => void;
   onRefresh: () => void;
   onUpdateGlobalClient: (client: Client) => void;
+  onTransferStart?: (id: string) => void;
+  onTransferEnd?: (id: string) => void;
 }
 
 const CrmTab: React.FC<CrmTabProps> = ({ 
   clients: globalClients, 
-  loadClient, 
-  onRefresh,
-  deleteClient,
+  profile: globalProfile,
   selectedClientId,
-  onUpdateGlobalClient
+  newClient,
+  saveClient,
+  loadClient, 
+  deleteClient,
+  onRefresh,
+  onUpdateGlobalClient,
+  onTransferStart,
+  onTransferEnd
 }) => {
   const { user } = useAuth();
   const { loadClient: syncToContext } = useClient();
@@ -58,8 +64,11 @@ const CrmTab: React.FC<CrmTabProps> = ({
 
   const isReadOnly = user?.role === 'viewer';
 
+  // --- CRITICAL SYNC LOGIC ---
   useEffect(() => {
-    if (!isEditingRef.current) {
+    // Force sync if count changed (transfer-out or deletion)
+    const countChanged = localClients.length !== globalClients.length;
+    if (!isEditingRef.current || countChanged) {
       setLocalClients(globalClients);
     }
   }, [globalClients]);
@@ -85,7 +94,6 @@ const CrmTab: React.FC<CrmTabProps> = ({
   const [statusFilter, setStatusFilter] = useState('all');
   const [sortCol, setSortCol] = useState('updated_at');
   const [sortDir, setSortDir] = useState<'asc'|'desc'>('desc');
-  // Updated defaults to include consolidated schedule columns
   const [visibleColumnIds, setVisibleColumnIds] = useState<Set<string>>(new Set(['name', 'phone', 'next_appt_combined', 'next_follow_up_combined', 'status', 'ai_score', 'expected_revenue', 'owner_email']));
   const [colWidths, setColWidths] = useState<Record<string, number>>({});
   const [selectedClientForDrawer, setSelectedClientForDrawer] = useState<Client | null>(null);
@@ -138,7 +146,6 @@ const CrmTab: React.FC<CrmTabProps> = ({
      const base = [
         { id: 'name', label: 'Client Identity', type: 'text', field: 'name', section: 'profile', minWidth: 200 },
         { id: 'phone', label: 'Contact (WA)', type: 'phone', field: 'phone', section: 'profile', minWidth: 160 },
-        // Consolidated Date & Time Columns (Requirement 2 & 3)
         { id: 'next_appt_combined', label: 'Appointment', type: 'datetime-combined', field: 'firstApptDate', section: 'appointments', minWidth: 180 },
         { id: 'next_follow_up_combined', label: 'Follow Up', type: 'datetime-combined', field: 'nextFollowUpDate', section: 'followUp', minWidth: 180 },
         { id: 'status', label: 'Stage', type: 'select', field: 'status', section: 'followUp', minWidth: 160 },
@@ -160,6 +167,10 @@ const CrmTab: React.FC<CrmTabProps> = ({
     
     if (section === 'dynamic') {
        copy.fieldValues = { ...(copy.fieldValues || {}), [field]: value };
+    } else if (section === 'root') {
+       copy[field] = value;
+    } else if (section === 'meta') {
+       copy[field] = value; 
     } else if (section) {
        const parts = section.split('.');
        let target = copy;
@@ -169,9 +180,19 @@ const CrmTab: React.FC<CrmTabProps> = ({
           else { target[p] = target[p] || {}; target = target[p]; }
        }
     }
+
     setLocalClients(prev => prev.map(c => c.id === id ? copy : c));
+    
+    if (selectedClientForDrawer?.id === id) {
+       setSelectedClientForDrawer(copy);
+    }
+
     onUpdateGlobalClient(copy);
-    if (id === selectedClientId) syncToContext(copy);
+    
+    if (id === selectedClientId) {
+      syncToContext(copy);
+    }
+    
     setTimeout(() => { isEditingRef.current = false; }, 2000);
   };
 
@@ -284,7 +305,20 @@ const CrmTab: React.FC<CrmTabProps> = ({
 
       <CommandBar isOpen={isCommandOpen} onClose={() => setIsCommandOpen(false)} clients={globalClients} onSelectClient={c => loadClient(c, true)} onAction={(action) => { if (action === 'toggle_compact') setIsCompact(prev => !prev); if (action === 'new_client' && !isReadOnly) loadClient({} as any, true); if (action === 'open_blast') setIsBlastOpen(true); if (action === 'import_csv' && !isReadOnly) setIsImportOpen(true); }} />
 
-      {selectedClientForDrawer && <ClientDrawer client={selectedClientForDrawer} isOpen={!!selectedClientForDrawer} onClose={() => setSelectedClientForDrawer(null)} onUpdateField={handleUpdate} onStatusUpdate={(c, s) => handleUpdate(c.id, 'status', s, 'followUp')} onOpenFullProfile={() => loadClient(selectedClientForDrawer, true)} onDelete={() => deleteClient(selectedClientForDrawer.id)} />}
+      {selectedClientForDrawer && (
+        <ClientDrawer 
+           client={selectedClientForDrawer} 
+           isOpen={!!selectedClientForDrawer} 
+           onClose={() => setSelectedClientForDrawer(null)} 
+           onUpdateField={handleUpdate} 
+           onStatusUpdate={(c, s) => handleUpdate(c.id, 'status', s, 'followUp')} 
+           onOpenFullProfile={() => loadClient(selectedClientForDrawer, true)} 
+           onDelete={() => deleteClient(selectedClientForDrawer.id)} 
+           onForceRefresh={onRefresh}
+           onTransferStart={onTransferStart}
+           onTransferEnd={onTransferEnd}
+        />
+      )}
 
       <ImportModal isOpen={isImportOpen} onClose={() => setIsImportOpen(false)} onComplete={onRefresh} />
       <ProtocolManagerModal isOpen={isProtocolOpen} onClose={() => { setIsProtocolOpen(false); onRefresh(); }} />

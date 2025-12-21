@@ -10,6 +10,7 @@ import Modal from '../../components/ui/Modal';
 import { DEFAULT_TEMPLATES, interpolateTemplate } from '../../lib/templates';
 import { fmtTime, fmtDateTime } from '../../lib/helpers';
 import { useToast } from '../../contexts/ToastContext';
+import { runDiagnostics } from '../../lib/db/debug';
 
 interface AdminUser {
   id: string;
@@ -31,9 +32,14 @@ const AdminTab: React.FC = () => {
   const [diagnosticMsg, setDiagnosticMsg] = useState('Initializing Core...');
   const [editingUser, setEditingUser] = useState<AdminUser | null>(null);
   const [isUserModalOpen, setIsUserModalOpen] = useState(false);
+  const [isSqlModalOpen, setIsSqlModalOpen] = useState(false);
   const [savingUser, setSavingUser] = useState(false);
+  
+  // Diagnostic State
+  const [diagResults, setDiagResults] = useState<any>(null);
+  const [isRunningDiag, setIsRunningDiag] = useState(false);
 
-  const isAdmin = authUser?.role === 'admin';
+  const isAdmin = authUser?.role === 'admin' || authUser?.is_admin === true;
 
   useEffect(() => { refreshControlPanel(); }, []);
   
@@ -47,7 +53,14 @@ const AdminTab: React.FC = () => {
         .select('*')
         .order('created_at', { ascending: false });
 
-      if (error) throw error;
+      if (error) {
+         if (error.message.includes('stack depth')) {
+            setDiagnosticMsg('RECURSION ERROR: Profiles check failed.');
+            toast.error("Database Recursion Detected. Repair Required.");
+            setIsSqlModalOpen(true); 
+         }
+         throw error;
+      }
       setUsers(profiles || []);
       
       const logs = await fetchGlobalActivity();
@@ -59,6 +72,20 @@ const AdminTab: React.FC = () => {
     } finally { 
       setLoading(false); 
     }
+  };
+
+  const handleRunDiagnostics = async () => {
+     setIsRunningDiag(true);
+     try {
+        const res = await runDiagnostics();
+        setDiagResults(res);
+        if (res.status === 'healthy') toast.success("System Logic Verified.");
+        else toast.error("Diagnostic found inconsistencies.");
+     } catch (e) {
+        toast.error("Diagnostic engine failure.");
+     } finally {
+        setIsRunningDiag(false);
+     }
   };
 
   const handleUpdateUser = async () => {
@@ -96,17 +123,118 @@ const AdminTab: React.FC = () => {
       }
   };
 
-  // Analytics Aggregation (Feature 5: Accurate Time-on-Task)
   const pulseMetrics = useMemo(() => {
      const tabUsage: Record<string, number> = {};
      activities.filter(a => a.type === 'system_navigation').forEach(a => {
         const tab = a.details?.tab_id || 'Other';
-        // Normalize tab names for display
         const label = TAB_DEFINITIONS.find(t => t.id === tab)?.label || tab;
         tabUsage[label] = (tabUsage[label] || 0) + (a.details?.duration_sec || 0);
      });
      return Object.entries(tabUsage).sort((a,b) => b[1] - a[1]).slice(0, 4);
   }, [activities]);
+
+  const repairSql = `-- Sproutly Database Repair Script (v6.0 - FINAL)
+-- Objective: Absolute destruction of RLS recursion (Stack Depth errors)
+
+-- 1. Create a strictly non-recursive SECURITY DEFINER master-check
+-- Using explicit schema 'public' and setting search path for security.
+CREATE OR REPLACE FUNCTION public.check_is_admin() 
+RETURNS boolean 
+LANGUAGE plpgsql 
+SECURITY DEFINER 
+SET search_path = public
+AS $$
+DECLARE
+  v_role text;
+  v_is_admin boolean;
+BEGIN
+  -- Direct query bypassing RLS to break the infinite recursion cycle.
+  SELECT role, is_admin INTO v_role, v_is_admin
+  FROM profiles 
+  WHERE id = auth.uid();
+  
+  RETURN (COALESCE(v_role, '') = 'admin' OR COALESCE(v_is_admin, false) = true);
+END;
+$$;
+
+-- 2. Grant correct execution permissions
+REVOKE EXECUTE ON FUNCTION public.check_is_admin() FROM public;
+GRANT EXECUTE ON FUNCTION public.check_is_admin() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.check_is_admin() TO service_role;
+
+-- 3. Reset RLS and Purge legacy policies for ALL core tables
+DO $$ 
+DECLARE 
+  t text;
+  tables_to_repair text[] := ARRAY[
+    'profiles', 
+    'clients', 
+    'message_templates', 
+    'activities', 
+    'client_files', 
+    'client_field_values', 
+    'field_definitions', 
+    'crm_views'
+  ];
+BEGIN
+  FOREACH t IN ARRAY tables_to_repair LOOP
+    -- Disable RLS temporarily to ensure safe drop of all policies
+    EXECUTE 'ALTER TABLE ' || quote_ident(t) || ' DISABLE ROW LEVEL SECURITY';
+    
+    -- Drop EVERY policy currently associated with this table
+    EXECUTE 'DO $pol$ DECLARE p record; BEGIN FOR p IN (SELECT policyname FROM pg_policies WHERE tablename = ' || quote_literal(t) || ') LOOP EXECUTE ''DROP POLICY IF EXISTS '' || quote_ident(p.policyname) || '' ON ' || quote_ident(t) || '''; END LOOP; END $pol$';
+  END LOOP;
+END $$;
+
+-- 4. Re-apply Clean, Non-Recursive "Sproutly Standard" Policies
+-- Profiles
+CREATE POLICY "Profiles: Self Read" ON profiles FOR SELECT USING ( auth.uid() = id );
+CREATE POLICY "Profiles: Admin Access" ON profiles FOR SELECT USING ( check_is_admin() );
+CREATE POLICY "Profiles: Self Update" ON profiles FOR UPDATE USING ( auth.uid() = id );
+
+-- Clients
+CREATE POLICY "Clients: Owner Access" ON clients FOR ALL USING ( auth.uid() = user_id );
+CREATE POLICY "Clients: Admin Access" ON clients FOR ALL USING ( check_is_admin() );
+
+-- Message Templates
+CREATE POLICY "Templates: Owner Access" ON message_templates FOR ALL USING ( auth.uid() = user_id );
+CREATE POLICY "Templates: Admin Access" ON message_templates FOR ALL USING ( check_is_admin() );
+
+-- Activities
+CREATE POLICY "Activities: Owner Access" ON activities FOR ALL USING ( auth.uid() = user_id );
+CREATE POLICY "Activities: Admin Access" ON activities FOR ALL USING ( check_is_admin() );
+
+-- CRM Views
+CREATE POLICY "Views: Owner Access" ON crm_views FOR ALL USING ( auth.uid() = user_id );
+
+-- 5. Promote Current User to Admin (IMPORTANT)
+-- This ensures the user executing the script remains an Admin in the application.
+UPDATE profiles 
+SET role = 'admin', is_admin = true, status = 'approved' 
+WHERE id = auth.uid();
+
+-- 6. Final Activation: Re-enable RLS on all repaired tables
+DO $$ 
+DECLARE 
+  t text;
+  tables_to_repair text[] := ARRAY[
+    'profiles', 
+    'clients', 
+    'message_templates', 
+    'activities', 
+    'client_files', 
+    'client_field_values', 
+    'field_definitions', 
+    'crm_views'
+  ];
+BEGIN
+  FOREACH t IN ARRAY tables_to_repair LOOP
+    EXECUTE 'ALTER TABLE ' || quote_ident(t) || ' ENABLE ROW LEVEL SECURITY';
+  END LOOP;
+END $$;
+
+-- 7. Verification Results
+SELECT 'Standard Protocol v6.0 Success' as status, check_is_admin() as identity_is_admin;`;
 
   if (loading) return (
     <div className="p-24 text-center space-y-4">
@@ -116,7 +244,7 @@ const AdminTab: React.FC = () => {
   );
   
   return (
-    <div className="p-8 max-w-7xl mx-auto space-y-16 pb-24 font-sans">
+    <div className="p-8 max-w-7xl mx-auto space-y-12 pb-24 font-sans">
        {/* HEADER */}
        <div className="bg-slate-900 rounded-[2rem] p-8 text-white relative overflow-hidden shadow-2xl">
           <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-500/10 rounded-full blur-[80px]"></div>
@@ -128,68 +256,52 @@ const AdminTab: React.FC = () => {
                    <p className="text-indigo-300 text-[10px] font-bold uppercase tracking-widest">SYSTEM ONLINE</p>
                 </div>
              </div>
-             <Button variant="ghost" className="text-white border-white/10" onClick={refreshControlPanel}>Sync Pulse</Button>
-          </div>
-       </div>
-
-       {/* FEATURE 5: PRODUCTIVITY PULSE (VISUAL ANALYTICS) */}
-       <div className="space-y-6">
-          <div className="px-2 flex justify-between items-end">
-             <div>
-                <h3 className="text-xl font-black text-slate-900 tracking-tight">Productivity Pulse</h3>
-                <p className="text-xs text-slate-400 font-medium uppercase tracking-widest">Aggregate time-on-task across all modules.</p>
+             <div className="flex gap-4">
+                <Button variant="ghost" className="text-white border-white/10" onClick={() => setIsSqlModalOpen(true)}>Repair Database</Button>
+                <Button variant="ghost" className="text-white border-white/10" onClick={handleRunDiagnostics} isLoading={isRunningDiag}>Verify Integrity</Button>
+                <Button variant="primary" className="bg-indigo-600 hover:bg-indigo-700 border-none" onClick={refreshControlPanel}>Sync Pulse</Button>
              </div>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-             {pulseMetrics.map(([tab, sec]) => (
-                <div key={tab} className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm flex flex-col justify-between h-32 group hover:border-indigo-500 transition-all">
-                   <div className="text-[10px] font-black text-slate-300 uppercase tracking-widest">{tab}</div>
-                   <div className="text-2xl font-black text-slate-800">{(sec / 60).toFixed(0)} <span className="text-xs text-slate-400">MINS</span></div>
-                   <div className="w-full bg-slate-50 h-1 rounded-full overflow-hidden mt-2">
-                      <div className="h-full bg-indigo-600 transition-all duration-1000" style={{ width: `${Math.min(100, (sec/1800)*100)}%` }}></div>
-                   </div>
-                </div>
-             ))}
-             {pulseMetrics.length === 0 && <div className="lg:col-span-4 p-12 text-center text-slate-300 italic text-sm">Waiting for telemetry data...</div>}
-          </div>
        </div>
 
-       {/* FEATURE 6: ACTIVITY MONITORING (VISIBLE OUTREACH TRACE) */}
+       {/* GOVERNANCE FEED */}
        <div className="space-y-6">
           <div className="px-2">
              <h3 className="text-xl font-black text-slate-900 tracking-tight">Governance Feed</h3>
              <p className="text-xs text-slate-400 font-medium uppercase tracking-widest">Real-time audit of advisor interactions and protocol usage.</p>
           </div>
           <div className="bg-white rounded-[2rem] border border-slate-100 shadow-sm overflow-hidden divide-y divide-slate-50">
-             {activities.slice(0, 15).map(a => (
-                <div key={a.id} className="p-5 flex items-start gap-5 hover:bg-slate-50/50 transition-colors">
-                   <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-lg ${a.type === 'outreach' ? 'bg-emerald-50 text-emerald-600' : a.type === 'file' ? 'bg-blue-50 text-blue-600' : 'bg-indigo-50 text-indigo-600'}`}>
-                      {a.type === 'outreach' ? '💬' : a.type === 'file' ? '📁' : '⚡'}
-                   </div>
-                   <div className="flex-1 min-w-0">
-                      <div className="flex justify-between items-start mb-1">
-                         <h4 className="text-sm font-black text-slate-800 truncate">{a.title}</h4>
-                         <span className="text-[9px] font-black text-slate-300 uppercase shrink-0">{fmtTime(a.created_at)}</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                         <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded">{(a as any).profiles?.email?.split('@')[0]}</span>
-                         {a.type === 'outreach' && a.details?.protocol_label && (
-                            <span className="text-[9px] text-slate-400 font-bold bg-slate-100 px-1.5 py-0.5 rounded uppercase tracking-tighter">
-                               Template: {a.details.protocol_label}
-                            </span>
-                         )}
-                         {a.type === 'system_navigation' && (
-                            <span className="text-[9px] text-slate-400 italic">Active for {a.details.duration_sec}s</span>
-                         )}
-                      </div>
-                   </div>
-                </div>
-             ))}
+             {activities.slice(0, 15).map(a => {
+                const advisor = users.find(u => u.id === a.user_id);
+                return (
+                  <div key={a.id} className="p-5 flex items-start gap-5 hover:bg-slate-50/50 transition-colors">
+                     <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-lg ${a.type === 'outreach' ? 'bg-emerald-50 text-emerald-600' : a.type === 'file' ? 'bg-blue-50 text-blue-600' : 'bg-indigo-50 text-indigo-600'}`}>
+                        {a.type === 'outreach' ? '💬' : a.type === 'file' ? '📁' : '⚡'}
+                     </div>
+                     <div className="flex-1 min-w-0">
+                        <div className="flex justify-between items-start mb-1">
+                           <h4 className="text-sm font-black text-slate-800 truncate">{a.title}</h4>
+                           <span className="text-[9px] font-black text-slate-300 uppercase shrink-0">{fmtTime(a.created_at)}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                           <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded">
+                              {advisor ? advisor.email.split('@')[0] : `ID: ${a.user_id?.substring(0,8)}`}
+                           </span>
+                           {a.type === 'outreach' && a.details?.protocol_label && (
+                              <span className="text-[9px] text-slate-400 font-bold bg-slate-100 px-1.5 py-0.5 rounded uppercase tracking-tighter">
+                                 Template: {a.details.protocol_label}
+                              </span>
+                           )}
+                        </div>
+                     </div>
+                  </div>
+                );
+             })}
              {activities.length === 0 && <div className="p-12 text-center text-slate-300 italic text-sm">No recent activity detected.</div>}
           </div>
        </div>
 
-       {/* TEAM ROSTER (Requirement 9) */}
+       {/* AGENT GOVERNANCE */}
        <div className="space-y-6">
           <div className="px-2">
              <h3 className="text-xl font-black text-slate-900 tracking-tight">Agent Governance</h3>
@@ -277,6 +389,43 @@ const AdminTab: React.FC = () => {
                       </label>
                    ))}
                 </div>
+             </div>
+          </div>
+       </Modal>
+
+       {/* MODAL: SQL REPAIR */}
+       <Modal 
+          isOpen={isSqlModalOpen} onClose={() => setIsSqlModalOpen(false)} title="Database Repair Protocol"
+          footer={<Button variant="primary" onClick={() => setIsSqlModalOpen(false)}>Acknowledged</Button>}
+       >
+          <div className="space-y-6">
+             <div className="bg-amber-50 border border-amber-200 p-4 rounded-xl flex gap-4 items-start">
+                <div className="text-xl text-amber-600">⚠️</div>
+                <div>
+                   <h4 className="text-[10px] font-black uppercase text-amber-900 mb-1">Stack Depth Limit Exceeded</h4>
+                   <p className="text-[11px] text-amber-700 leading-relaxed">
+                     Your database has recursive RLS policies. This causes an infinite loop when checking permissions. Run the script below in your <b>Supabase SQL Editor</b> to resolve this immediately.
+                   </p>
+                </div>
+             </div>
+             
+             <div>
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Repair Script (v6.0 FINAL)</label>
+                <div className="relative group">
+                   <pre className="bg-slate-900 text-indigo-300 p-4 rounded-xl text-[10px] font-mono overflow-x-auto max-h-64 custom-scrollbar leading-relaxed">
+                      {repairSql}
+                   </pre>
+                   <button 
+                      onClick={() => { navigator.clipboard.writeText(repairSql); toast.success("Copied to clipboard"); }}
+                      className="absolute top-2 right-2 bg-white/10 hover:bg-white/20 text-white text-[9px] px-2 py-1 rounded font-bold uppercase transition-all"
+                   >
+                      Copy Script
+                   </button>
+                </div>
+             </div>
+
+             <div className="p-4 bg-slate-50 border border-slate-100 rounded-xl text-[10px] text-slate-500 italic">
+                <b>Instructions:</b> Open your Supabase Dashboard &gt; SQL Editor &gt; New Query &gt; Paste &gt; Run. Refresh Sproutly once the query completes.
              </div>
           </div>
        </Modal>

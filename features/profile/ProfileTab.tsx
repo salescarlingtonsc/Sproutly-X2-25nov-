@@ -2,7 +2,7 @@
 import React, { useMemo, useState, useRef, useEffect } from 'react';
 import { useClient } from '../../contexts/ClientContext';
 import { toNum, fmtSGD } from '../../lib/helpers';
-import { computeCpf } from '../../lib/calculators';
+import { computeCpf, reverseComputeCpf } from '../../lib/calculators';
 import { generateClientAudioBriefing, playRawAudio } from '../../lib/gemini';
 import { useAi } from '../../contexts/AiContext';
 import LineChart from '../../components/common/LineChart';
@@ -385,14 +385,23 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
                   </div>
 
                   <div className="group">
-                     <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Monthly Take-Home</label>
+                     <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1 group-focus-within:text-indigo-600 transition-colors">Monthly Take-Home</label>
                      <div className="flex items-baseline">
                         <span className="text-gray-400 mr-1">$</span>
                         <input 
                            type="text" 
                            value={profile.takeHome}
-                           onChange={(e) => setProfile({...profile, takeHome: e.target.value})}
-                           className="w-full pb-2 border-b-2 border-gray-100 bg-transparent text-lg font-medium text-gray-700 focus:border-indigo-600 focus:outline-none"
+                           onChange={(e) => {
+                              const val = e.target.value;
+                              const grossEstimate = reverseComputeCpf(val, age);
+                              setProfile({
+                                 ...profile, 
+                                 takeHome: val, 
+                                 grossSalary: grossEstimate.toFixed(2), 
+                                 monthlyIncome: grossEstimate.toFixed(2)
+                              });
+                           }}
+                           className="w-full pb-2 border-b-2 border-gray-100 bg-transparent text-lg font-bold text-indigo-600 focus:border-indigo-600 focus:outline-none transition-colors"
                            placeholder="Calculated"
                         />
                      </div>

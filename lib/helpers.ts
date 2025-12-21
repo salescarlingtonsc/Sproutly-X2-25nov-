@@ -42,9 +42,6 @@ export const safeArray = <T>(arr: any): T[] => {
   return Array.isArray(arr) ? arr : [];
 };
 
-/**
- * Standardized 12-hour clock formatter (GMT+8/en-SG)
- */
 export const fmtTime = (date: Date | string): string => {
   const d = typeof date === 'string' ? new Date(date) : date;
   return d.toLocaleTimeString('en-SG', {
@@ -54,9 +51,6 @@ export const fmtTime = (date: Date | string): string => {
   });
 };
 
-/**
- * Standardized 12-hour date-time formatter (GMT+8/en-SG)
- */
 export const fmtDateTime = (date: Date | string): string => {
   const d = typeof date === 'string' ? new Date(date) : date;
   return d.toLocaleString('en-SG', {
@@ -69,9 +63,6 @@ export const fmtDateTime = (date: Date | string): string => {
   });
 };
 
-/**
- * Converts 24h "HH:mm" string (from input type="time") to 12h string
- */
 export const convert24to12 = (time24: string): string => {
   if (!time24 || !time24.includes(':')) return time24;
   const [h, m] = time24.split(':');

@@ -9,37 +9,31 @@ export const db = {
   getClients: async (userId?: string): Promise<Client[]> => {
     if (isSupabaseConfigured() && supabase) {
       try {
-        // Step 1: Direct fetch from clients.
         const { data: clients, error: clientError } = await supabase
           .from('clients')
-          .select('*')
+          .select('id, data, user_id, updated_at')
           .order('updated_at', { ascending: false });
           
         if (clientError) {
+          if (clientError.message.includes('stack depth')) {
+             console.error('CRITICAL: Database RLS Recursion detected (Stack Depth). Please run repair script in Admin > Repair Database.');
+             return [];
+          }
           console.error('Data retrieval error (clients):', clientError.message);
           return [];
         }
         
         if (!clients) return [];
 
-        // Step 2: Optimized profile lookup. 
-        const { data: profiles } = await supabase
-          .from('profiles')
-          .select('id, email');
-        
-        const emailMap: Record<string, string> = {};
-        if (profiles) profiles.forEach(p => { emailMap[p.id] = p.email; });
-
         return clients.map((row: any) => {
           const clientData = row.data || {};
           return {
             ...clientData, 
             id: row.id,
-            // Guard: Ensure profile and followUp exist to prevent evaluate errors
             profile: clientData.profile || { ...INITIAL_PROFILE },
             followUp: clientData.followUp || { status: 'new' },
             _ownerId: row.user_id,
-            _ownerEmail: emailMap[row.user_id] || `Advisor (${row.user_id.substring(0,4)})`
+            _ownerEmail: clientData._ownerEmail || `Advisor (${row.user_id.substring(0,4)})`
           } as Client;
         });
       } catch (e: any) {
@@ -56,6 +50,38 @@ export const db = {
     }
   },
 
+  transferOwnership: async (clientId: string, newUserId: string): Promise<void> => {
+    if (!supabase) throw new Error('Supabase not configured');
+
+    const { error: rpcError } = await supabase.rpc('transfer_client_owner', {
+      p_client_id: clientId,
+      p_new_user_id: newUserId,
+    });
+
+    if (rpcError) {
+      console.error("Handover RPC Failed:", rpcError);
+      throw new Error(rpcError.message);
+    }
+
+    const { data: row, error: readError } = await supabase
+      .from('clients')
+      .select('id, user_id')
+      .eq('id', clientId)
+      .single();
+
+    if (readError) {
+      console.error("Handover verification read failed:", readError);
+      throw new Error("Handover executed but status is unverified.");
+    }
+    
+    if (row.user_id !== newUserId) {
+      console.error("Handover inconsistency detected. DB Owner:", row.user_id, "vs Expected:", newUserId);
+      throw new Error(`Transfer did not persist. user_id is still ${row.user_id}`);
+    }
+    
+    console.debug("Handover Protocol Verified: Owner is now", newUserId);
+  },
+
   saveClient: async (client: Client, userId?: string): Promise<Client> => {
     if (!isSupabaseConfigured() || !supabase) {
       const currentClientsStr = localStorage.getItem(LOCAL_STORAGE_KEY);
@@ -69,20 +95,13 @@ export const db = {
     }
 
     const { data: { user: authUser } } = await supabase.auth.getUser();
-    if (!authUser) throw new Error("401: Authentication required.");
+    if (!authUser) throw new Error("Unauthorized");
 
-    let finalOwnerId = client._ownerId || authUser.id;
-
-    const clientToSave = {
-      ...client,
-      _ownerId: finalOwnerId,
-      lastUpdated: new Date().toISOString()
-    };
+    const { _ownerId, _ownerEmail, ...payloadData } = client;
 
     const payload: any = {
       id: client.id,
-      user_id: finalOwnerId, 
-      data: clientToSave,
+      data: { ...payloadData, lastUpdated: new Date().toISOString() },
       updated_at: new Date().toISOString()
     };
     
@@ -90,21 +109,20 @@ export const db = {
       .from('clients')
       .upsert(payload, { onConflict: 'id' })
       .select()
-      .single();
+      .maybeSingle();
 
-    if (error) throw new Error(error.message || 'Sync Permission Denied.');
-    
-    let ownerEmail = 'System User';
-    try {
-      const { data: profile } = await supabase.from('profiles').select('email').eq('id', finalOwnerId).single();
-      if (profile) ownerEmail = profile.email;
-    } catch (e) {}
+    if (error) {
+      if (error.message.includes('stack depth')) {
+         throw new Error("Critical DB Error: Recursion detected. Admin intervention required.");
+      }
+      throw new Error(`Sync Error: ${error.message}`);
+    }
 
     return {
-      ...(data.data || {}),
-      id: data.id,
-      _ownerId: finalOwnerId,
-      _ownerEmail: ownerEmail
+      ...(data?.data || client),
+      id: data?.id || client.id,
+      _ownerId: data?.user_id || client._ownerId,
+      _ownerEmail: client._ownerEmail
     };
   },
 

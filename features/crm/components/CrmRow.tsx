@@ -1,4 +1,3 @@
-
 import React, { memo, useState, useRef, useEffect } from 'react';
 import { Client } from '../../../types';
 import EditableCell from './EditableCell';
@@ -38,6 +37,20 @@ const CrmRow: React.FC<CrmRowProps> = memo(({
   const [showWhatsAppMenu, setShowWhatsAppMenu] = useState(false);
   const [customTemplates, setCustomTemplates] = useState<CrmTemplate[]>([]);
   const menuRef = useRef<HTMLDivElement>(null);
+
+  // Stagnation Logic
+  const isStale = (() => {
+    const terminalStatuses = ['case_closed', 'client', 'not_keen'];
+    if (terminalStatuses.includes(client.followUp.status)) return false;
+    
+    const lastContact = client.followUp.lastContactedAt ? new Date(client.followUp.lastContactedAt).getTime() : 0;
+    const lastUpdated = client.lastUpdated ? new Date(client.lastUpdated).getTime() : 0;
+    const mostRecentActivity = Math.max(lastContact, lastUpdated);
+    
+    if (!mostRecentActivity) return true; // Never touched
+    const hoursSince = (Date.now() - mostRecentActivity) / (1000 * 60 * 60);
+    return hoursSince > 48; // Stale if no activity for 2 days
+  })();
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -98,11 +111,12 @@ const CrmRow: React.FC<CrmRowProps> = memo(({
   };
 
   return (
-    <tr className={`group border-b border-slate-100 transition-colors ${isSelected ? 'bg-indigo-50/10' : 'hover:bg-slate-50/30'}`} style={{ height: rowHeight }}>
+    <tr className={`group border-b border-slate-100 transition-colors ${isSelected ? 'bg-indigo-50/10' : 'hover:bg-slate-50/30'} ${isStale ? 'bg-red-50/20' : ''}`} style={{ height: rowHeight }}>
       <td className="sticky left-0 bg-white group-hover:bg-slate-50 z-10 text-center p-0 border-r border-slate-100">
          <div className="flex items-center justify-center h-full relative w-12">
             <input type="checkbox" checked={isSelected} onChange={() => onToggleSelection(client.id)} className="rounded border-slate-200 text-indigo-600 focus:ring-indigo-500 cursor-pointer w-4 h-4" />
             {isSelected && <div className="absolute left-0 top-0 bottom-0 w-1 bg-indigo-600"></div>}
+            {isStale && !isSelected && <div className="absolute left-0 top-0 bottom-0 w-0.5 bg-red-400"></div>}
          </div>
       </td>
 
@@ -125,15 +139,18 @@ const CrmRow: React.FC<CrmRowProps> = memo(({
             >
                {isName ? (
                   <div className="flex items-center justify-between h-full relative w-full group/name px-3">
-                     <EditableCell 
-                        value={cellValue} type="text" isActive={isActive} isEditing={isEditing}
-                        onEditStart={() => onSetEditing(client.id, col.id)}
-                        onEditStop={onStopEditing}
-                        onChange={(v) => onUpdate(client.id, col.field, v, col.section)} 
-                        className="font-bold text-slate-900"
-                        placeholder="Unnamed"
-                     />
-                     <button onClick={(e) => { e.stopPropagation(); onQuickView(client); }} className="opacity-0 group-hover/name:opacity-100 transition-all p-1 text-slate-300 hover:text-indigo-600">
+                     <div className="flex items-center gap-2 flex-1 min-w-0">
+                        <EditableCell 
+                           value={cellValue} type="text" isActive={isActive} isEditing={isEditing}
+                           onEditStart={() => onSetEditing(client.id, col.id)}
+                           onEditStop={onStopEditing}
+                           onChange={(v) => onUpdate(client.id, col.field, v, col.section)} 
+                           className="font-bold text-slate-900"
+                           placeholder="Unnamed"
+                        />
+                        {isStale && <span title="Stale Lead (>48h stagnation)" className="text-xs">❄️</span>}
+                     </div>
+                     <button onClick={(e) => { e.stopPropagation(); onQuickView(client); }} className="opacity-0 group-hover/name:opacity-100 transition-all p-1 text-slate-300 hover:text-indigo-600 shrink-0">
                         <svg viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5"><path d="M10 12a2 2 0 100-4 2 2 0 000 4z" /><path fillRule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clipRule="evenodd" /></svg>
                      </button>
                   </div>

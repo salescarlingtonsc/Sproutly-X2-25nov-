@@ -25,14 +25,17 @@ export const dbTemplates = {
         .order('created_at', { ascending: true });
       
       if (error) {
-        // Broad check for missing table (code 42P01) or PostgREST schema cache errors
+        if (error.message.includes('stack depth')) {
+          console.error("CRITICAL: message_templates RLS Recursion detected. The database security policies are in an infinite loop. Please run the Repair Script in the Admin tab.");
+          return [];
+        }
+
         const isMissingTable = 
           error.code === '42P01' || 
           error.message?.includes('not find the table') || 
           error.message?.includes('schema cache');
 
         if (isMissingTable) {
-          // Log as warning rather than error to keep console clean for non-configured DBs
           console.warn("Supabase: 'message_templates' table not found. Using default fallback templates.");
           return [];
         }
@@ -42,7 +45,6 @@ export const dbTemplates = {
       }
       return data || [];
     } catch (e: any) {
-      // Handle edge cases where the table check might throw instead of returning an error object
       if (e.message?.includes('message_templates') || e.message?.includes('schema cache')) {
         return [];
       }
@@ -56,14 +58,10 @@ export const dbTemplates = {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) throw new Error("Unauthorized");
 
-    // Ensure the ID is a valid UUID. 
-    // Default templates use IDs like 'default_zoom' which causes database errors.
-    // If invalid, we generate a fresh UUID to ensure it saves as a new custom template.
     const finalId = template.id && isValidUUID(template.id) 
       ? template.id 
       : crypto.randomUUID();
 
-    // Explicitly picking columns to avoid RLS/Schema errors from UI-only properties
     const payload = {
       id: finalId,
       user_id: user.id,
@@ -79,6 +77,9 @@ export const dbTemplates = {
       .single();
 
     if (error) {
+      if (error.message.includes('stack depth')) {
+        throw new Error("Critical DB Error: Template Recursion. Run Repair Protocol in Admin.");
+      }
       if (error.code === '42P01' || error.message?.includes('not find')) {
         throw new Error("Missing Database Table: 'message_templates'. Please run the SQL Setup in the Admin tab.");
       }
@@ -90,7 +91,6 @@ export const dbTemplates = {
 
   deleteTemplate: async (id: string) => {
     if (!supabase) return;
-    // Safety: don't attempt to delete default string IDs from DB
     if (!isValidUUID(id)) return;
     
     const { error } = await supabase

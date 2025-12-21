@@ -39,7 +39,7 @@ import { Client } from './types';
 const AppInner: React.FC = () => {
   const { user, signOut } = useAuth();
   const { 
-    clientRef, profile, loadClient, resetClient, generateClientObject, 
+    profile, loadClient, resetClient, generateClientObject, 
     clientId 
   } = useClient();
   const toast = useToast();
@@ -55,6 +55,9 @@ const AppInner: React.FC = () => {
   const isSavingRef = useRef<boolean>(false);
   const gridSaveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   
+  // Handover Guard: Prevents autosave from reverting ownership changes during handover
+  const [transferringIds, setTransferringIds] = useState<Set<string>>(new Set());
+
   useEffect(() => {
     const heartbeat = setInterval(() => {
       if (document.visibilityState === 'visible' && user && user.status === 'approved') {
@@ -102,25 +105,28 @@ const AppInner: React.FC = () => {
   const handleSaveClient = useCallback(async (isAutoSave = false, overrideClient?: Client) => {
      if (document.hidden && isAutoSave) return;
      if (!user || user.status !== 'approved') return;
-
      if (isSavingRef.current && !isAutoSave) return;
 
      const clientData = overrideClient || generateClientObject();
+     
+     // CRITICAL: Block autosave if this client is currently being handed over
+     if (transferringIds.has(clientData.id)) {
+        console.debug("Autosave Suppressed: Active Handover Lock in place.");
+        return;
+     }
+
      if (!clientData.profile.name) return; 
 
      const { lastUpdated: _ts, ...currentContent } = clientData;
-     
-     if (!overrideClient) {
-       let lastSavedContent = {};
-       try {
-          const parsed = JSON.parse(lastSavedJson.current || '{}');
-          const { lastUpdated: _oldTs, ...rest } = parsed;
-          lastSavedContent = rest;
-       } catch (e) {}
+     let lastSavedContent = {};
+     try {
+        const parsed = JSON.parse(lastSavedJson.current || '{}');
+        const { lastUpdated: _oldTs, ...rest } = parsed;
+        lastSavedContent = rest;
+     } catch (e) {}
 
-       if (isAutoSave && JSON.stringify(currentContent) === JSON.stringify(lastSavedContent)) {
-          return; 
-       }
+     if (JSON.stringify(currentContent) === JSON.stringify(lastSavedContent)) {
+        return; 
      }
 
      if (!isAutoSave) {
@@ -130,11 +136,15 @@ const AppInner: React.FC = () => {
      
      try {
         const saved = await db.saveClient(clientData, user.id);
-        if (!overrideClient || (overrideClient && !clientId)) {
-           lastSavedJson.current = JSON.stringify(saved);
+        
+        // Sync local memory to new DB reality
+        if (!isAutoSave || (isAutoSave && !clientId)) {
            loadClient(saved); 
         }
+        
+        lastSavedJson.current = JSON.stringify(saved);
         setLastSaved(new Date());
+
         if (!isAutoSave) {
            setSaveStatus('saved');
            loadClientsList(); 
@@ -146,12 +156,12 @@ const AppInner: React.FC = () => {
      } catch (e: any) {
         if (!isAutoSave) {
            setSaveStatus('error');
-           toast.error(e.message || "Sync Error: Check permissions");
+           toast.error(e.message || "Sync Error");
         }
      } finally {
         if (!isAutoSave) isSavingRef.current = false;
      }
-  }, [user, clientId, generateClientObject, toast, loadClient]);
+  }, [user, clientId, generateClientObject, toast, loadClient, transferringIds]);
 
   const handleUpdateClientInList = (updatedClient: Client) => {
      setClients(prev => prev.map(c => c.id === updatedClient.id ? updatedClient : c));
@@ -159,6 +169,25 @@ const AppInner: React.FC = () => {
      gridSaveDebounceRef.current = setTimeout(() => {
         handleSaveClient(true, updatedClient);
      }, 1000);
+  };
+
+  const handleDeleteClient = async (id: string) => {
+    const ok = await confirm({
+      title: "Delete Record?",
+      message: "This action is irreversible and will purge the dossier from the vault.",
+      isDestructive: true,
+      confirmText: "Delete Permanently"
+    });
+    if (!ok) return;
+
+    try {
+      await db.deleteClient(id);
+      toast.success("Dossier purged successfully");
+      if (clientId === id) resetClient();
+      loadClientsList();
+    } catch (e: any) {
+      toast.error(e.message);
+    }
   };
 
   useEffect(() => {
@@ -170,14 +199,13 @@ const AppInner: React.FC = () => {
     return () => clearInterval(timer);
   }, [handleSaveClient, user]);
 
-  // ACCESS WALL FOR PENDING USERS
   if (user && user.status !== 'approved' && user.role !== 'admin') {
      return (
         <div className="min-h-screen bg-[#0F172A] flex items-center justify-center p-6 text-white font-sans overflow-hidden relative">
            <div className="absolute top-[-10%] left-[-10%] w-[500px] h-[500px] bg-indigo-600/20 rounded-full blur-[120px] animate-pulse"></div>
            <div className="max-w-md w-full text-center space-y-8 relative z-10">
               <div className="inline-flex items-center justify-center w-24 h-24 rounded-3xl bg-white/5 border border-white/10 shadow-2xl mb-4 relative overflow-hidden group">
-                 <div className="absolute inset-0 bg-gradient-to-br from-indigo-500/20 to-emerald-500/20 opacity-0 group-hover:opacity-100 transition-opacity"></div>
+                 <div className="absolute inset-0 bg-gradient-to-br from-indigo-50/20 to-emerald-500/20 opacity-0 group-hover:opacity-100 transition-opacity"></div>
                  <span className="text-5xl relative z-10">{user.status === 'pending' ? '⏳' : '🚫'}</span>
               </div>
               <div>
@@ -186,7 +214,7 @@ const AppInner: React.FC = () => {
                  </h1>
                  <p className="text-slate-400 leading-relaxed">
                     {user.status === 'pending' 
-                       ? "Welcome to Sproutly Quantum. Your advisor credentials have been submitted for verification. Please contact your Agency Administrator to activate your portal."
+                       ? "Welcome to Sproutly. Your advisor credentials have been submitted for verification. Please contact your Agency Administrator to activate your portal."
                        : "Your access to the Sproutly environment has been restricted. If you believe this is an error, please reach out to the Strategic Operations unit."}
                  </p>
               </div>
@@ -199,7 +227,7 @@ const AppInner: React.FC = () => {
                  <Button variant="ghost" className="text-slate-400" onClick={signOut}>Sign Out of Identity</Button>
               </div>
               <div className="pt-10">
-                 <div className="text-[10px] font-black uppercase tracking-[0.4em] text-slate-600">Quantum Intelligence Protocol v3.0</div>
+                 <div className="text-[10px] font-black uppercase tracking-[0.4em] text-slate-600">Secure Intelligence Protocol v3.0</div>
               </div>
            </div>
         </div>
@@ -213,7 +241,7 @@ const AppInner: React.FC = () => {
         onLoginClick={() => setAuthModalOpen(true)}
         onPricingClick={() => toast.info("Contact Admin for Tier Elevation")}
         onSaveClick={() => handleSaveClient(false)}
-        clientRef={clientRef || undefined} clientName={profile.name}
+        clientRef={profile.name ? 'Strategy Active' : undefined} clientName={profile.name}
         saveStatus={saveStatus} lastSavedTime={lastSaved}
         clients={clients} onLoadClient={(c) => handleLoadClient(c, true)}
      >
@@ -241,9 +269,11 @@ const AppInner: React.FC = () => {
             newClient={handleNewClient} 
             saveClient={() => handleSaveClient(false)} 
             loadClient={handleLoadClient} 
-            deleteClient={() => {}} 
+            deleteClient={handleDeleteClient} 
             onRefresh={loadClientsList}
             onUpdateGlobalClient={handleUpdateClientInList}
+            onTransferStart={(id) => setTransferringIds(prev => new Set(prev).add(id))}
+            onTransferEnd={(id) => setTransferringIds(prev => { const n = new Set(prev); n.delete(id); return n; })}
           />
         )}
         {activeTab === 'admin' && user?.role === 'admin' && <AdminTab />}

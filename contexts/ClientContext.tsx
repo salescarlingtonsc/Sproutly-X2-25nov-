@@ -1,4 +1,3 @@
-
 import React, { createContext, useContext, useState, useMemo, useEffect, ReactNode } from 'react';
 import { 
   Profile, Expenses, CustomExpense, Child, CpfState, CashflowState, 
@@ -33,6 +32,8 @@ interface ClientContextType {
   followUp: any;
   appointments: any;
   documents: any;
+  ownerId: string | null;
+  ownerEmail: string | null;
 
   // Core State
   profile: Profile;
@@ -81,6 +82,8 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const [followUp, setFollowUp] = useState<any>({ status: 'new' });
   const [appointments, setAppointments] = useState<any>({});
   const [documents, setDocuments] = useState<any>([]);
+  const [ownerId, setOwnerId] = useState<string | null>(null);
+  const [ownerEmail, setOwnerEmail] = useState<string | null>(null);
 
   const [profile, setProfile] = useState<Profile>(INITIAL_PROFILE);
   const [expenses, setExpenses] = useState<Expenses>(INITIAL_EXPENSES);
@@ -129,11 +132,13 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     setFollowUp(c.followUp || { status: 'new' });
     setAppointments(c.appointments || {});
     setDocuments(c.documents || []);
+    setOwnerId(c._ownerId || null);
+    setOwnerEmail(c._ownerEmail || null);
 
     setProfile(c.profile || INITIAL_PROFILE);
     setExpenses(c.expenses || INITIAL_EXPENSES);
     setCustomExpenses(c.customExpenses || []);
-    setChildrenState(c.profile?.children || []); // Fix: Added optional chaining to prevent evaluate error
+    setChildrenState(c.profile?.children || []);
     setCpfState(c.cpfState || INITIAL_CPF);
     setCashflowState(c.cashflowState || INITIAL_CASHFLOW);
     setInsuranceState(c.insuranceState || INITIAL_INSURANCE);
@@ -150,6 +155,8 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     setFollowUp({ status: 'new' });
     setAppointments({});
     setDocuments([]);
+    setOwnerId(null);
+    setOwnerEmail(null);
 
     setProfile(INITIAL_PROFILE);
     setExpenses(INITIAL_EXPENSES);
@@ -178,16 +185,19 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       wealthState,
       investorState,
       insuranceState,
-      lastUpdated: new Date().toISOString(), // Always update timestamp on save
+      lastUpdated: new Date().toISOString(),
       followUp,
       appointments,
-      documents
+      documents,
+      _ownerId: ownerId || undefined,
+      _ownerEmail: ownerEmail || undefined
     };
   };
 
   return (
     <ClientContext.Provider value={{
       clientId, clientRef, lastUpdated, followUp, appointments, documents,
+      ownerId, ownerEmail,
       profile, setProfile,
       expenses, setExpenses,
       customExpenses, setCustomExpenses,

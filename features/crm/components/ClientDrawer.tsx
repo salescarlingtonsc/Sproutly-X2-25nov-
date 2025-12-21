@@ -1,8 +1,11 @@
-
 import React, { useState, useEffect } from 'react';
 import { Client, ContactStatus } from '../../../types';
 import { fetchActivities, Activity } from '../../../lib/db/activities';
 import { fetchClientFiles, uploadClientFile } from '../../../lib/db/clientFiles';
+import { supabase } from '../../../lib/supabase';
+import { db } from '../../../lib/db';
+import { useAuth } from '../../../contexts/AuthContext';
+import { useToast } from '../../../contexts/ToastContext';
 import FileUploader from '../../../components/common/FileUploader';
 import StatusDropdown from './StatusDropdown';
 import Button from '../../../components/ui/Button';
@@ -16,6 +19,9 @@ interface ClientDrawerProps {
   onStatusUpdate: (client: Client, newStatus: string) => void;
   onOpenFullProfile: () => void;
   onDelete: () => void;
+  onForceRefresh?: () => void; 
+  onTransferStart?: (id: string) => void;
+  onTransferEnd?: (id: string) => void;
 }
 
 const FILE_CATEGORIES = [
@@ -26,17 +32,39 @@ const FILE_CATEGORIES = [
 ];
 
 const ClientDrawer: React.FC<ClientDrawerProps> = ({ 
-  client, isOpen, onClose, onUpdateField, onStatusUpdate, onOpenFullProfile, onDelete 
+  client, isOpen, onClose, onUpdateField, onStatusUpdate, onOpenFullProfile, onDelete, onForceRefresh,
+  onTransferStart, onTransferEnd
 }) => {
+  const { user: currentUser } = useAuth();
+  const toast = useToast();
   const [activeTab, setActiveTab] = useState<'details' | 'files' | 'activity'>('details');
   const [activities, setActivities] = useState<Activity[]>([]);
   const [files, setFiles] = useState<any[]>([]);
+  const [advisors, setAdvisors] = useState<{id: string, email: string}[]>([]);
   const [selectedUploadCategory, setSelectedUploadCategory] = useState('others');
   const [isUploading, setIsUploading] = useState(false);
+  const [isReassigning, setIsReassigning] = useState(false);
+
+  // Inclusive Admin Check as per analysis
+  const isAdmin = currentUser?.role === 'admin' || currentUser?.is_admin === true;
 
   useEffect(() => {
-    if (isOpen && client.id) loadTabContent();
-  }, [isOpen, client.id, activeTab]);
+    if (isOpen && client.id) {
+        loadTabContent();
+        if (isAdmin) fetchAdvisors();
+    }
+  }, [isOpen, client.id, activeTab, isAdmin]);
+
+  const fetchAdvisors = async () => {
+    if (!supabase) return;
+    try {
+      const { data, error } = await supabase.from('profiles').select('id, email').order('email');
+      if (error) throw error;
+      if (data) setAdvisors(data);
+    } catch (e) {
+      console.error("Advisor directory unavailable");
+    }
+  };
 
   const loadTabContent = async () => {
      if (activeTab === 'activity') setActivities(await fetchActivities(client.id));
@@ -51,9 +79,50 @@ const ClientDrawer: React.FC<ClientDrawerProps> = ({
       }
       await loadTabContent();
     } catch (e) {
-      alert("Vault Sync Error");
+      toast.error("Vault Sync Error");
     } finally {
       setIsUploading(false);
+    }
+  };
+
+  const handleReassign = async (newOwnerId: string) => {
+    if (!newOwnerId || newOwnerId === client._ownerId) return;
+    
+    const selectedAdvisor = advisors.find(a => a.id === newOwnerId);
+    const email = selectedAdvisor?.email || 'New Advisor';
+
+    if (!confirm(`Initialize portfolio handover of ${client.profile.name || 'this dossier'} to ${email}?`)) {
+      return;
+    }
+
+    setIsReassigning(true);
+    
+    // 1. Lock client from auto-save loop
+    if (onTransferStart) onTransferStart(client.id);
+    
+    try {
+        // 2. RPC Execution
+        await db.transferOwnership(client.id, newOwnerId);
+        
+        // 3. UI State Realignment
+        onUpdateField(client.id, '_ownerId', newOwnerId, 'root');
+        onUpdateField(client.id, '_ownerEmail', email, 'root');
+        
+        toast.success(`Handover Protocol Executed: ${email.split('@')[0]} is now custodian.`);
+        
+        // 4. Force global pull and exit drawer
+        if (onForceRefresh) onForceRefresh();
+        
+        setTimeout(() => {
+           if (onTransferEnd) onTransferEnd(client.id);
+           onClose();
+        }, 1200);
+
+    } catch (e: any) {
+        toast.error(`Protocol Breach: ${e.message}`);
+        if (onTransferEnd) onTransferEnd(client.id);
+    } finally {
+        setIsReassigning(false);
     }
   };
 
@@ -89,7 +158,49 @@ const ClientDrawer: React.FC<ClientDrawerProps> = ({
         <div className="flex-1 overflow-y-auto p-8 bg-slate-50/20">
            {activeTab === 'details' && (
               <div className="space-y-6">
-                 {/* Requirement 2: Unified Appointment Box */}
+                 
+                 {/* Portfolio Custodian (Admin Only) */}
+                 {isAdmin && (
+                    <div className="bg-slate-900 rounded-3xl p-6 text-white shadow-2xl relative overflow-hidden group mb-4 border border-indigo-500/20">
+                       <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/10 rounded-full blur-2xl -mr-16 -mt-16"></div>
+                       <div className="relative z-10">
+                          <div className="flex items-center gap-2 mb-4">
+                             <div className="w-8 h-8 rounded-lg bg-indigo-500/20 flex items-center justify-center text-indigo-200">🤝</div>
+                             <div>
+                                <label className="text-[10px] font-black text-indigo-300 uppercase tracking-widest block">Portfolio Custodian</label>
+                                <span className="text-[9px] text-slate-500 font-bold uppercase tracking-tight leading-none">Administrative Handover</span>
+                             </div>
+                          </div>
+                          <div className="space-y-3">
+                             <div className="flex justify-between items-center px-1">
+                                <span className="text-[10px] font-bold text-slate-500 uppercase">Primary Owner</span>
+                                <span className="text-[11px] font-black text-indigo-400 truncate max-w-[180px]">{client._ownerEmail || 'System'}</span>
+                             </div>
+                             <div className="relative group">
+                                <select 
+                                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3.5 text-sm font-bold text-white outline-none focus:bg-white/10 focus:border-indigo-500 transition-all appearance-none cursor-pointer"
+                                    value={client._ownerId || ''}
+                                    onChange={(e) => handleReassign(e.target.value)}
+                                    disabled={isReassigning}
+                                >
+                                    <option value="" className="text-slate-900">Select Advisor...</option>
+                                    {advisors.map(adv => (
+                                       <option key={adv.id} value={adv.id} className="text-slate-900">{adv.email}</option>
+                                    ))}
+                                </select>
+                                <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-slate-500 text-xs">▼</div>
+                             </div>
+                             {isReassigning && (
+                                <div className="flex items-center justify-center gap-2 mt-2">
+                                   <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-ping"></div>
+                                   <p className="text-[9px] text-emerald-400 font-black uppercase">Executing Handover...</p>
+                                </div>
+                             )}
+                          </div>
+                       </div>
+                    </div>
+                 )}
+
                  <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
                     <div className="flex items-center gap-2 mb-4">
                        <div className="w-8 h-8 rounded-lg bg-indigo-50 flex items-center justify-center text-indigo-600">📅</div>
@@ -104,7 +215,6 @@ const ClientDrawer: React.FC<ClientDrawerProps> = ({
                     </div>
                  </div>
 
-                 {/* Requirement 3: Unified Follow Up Box */}
                  <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
                     <div className="flex items-center gap-2 mb-4">
                        <div className="w-8 h-8 rounded-lg bg-amber-50 flex items-center justify-center text-amber-600">🔔</div>

@@ -28,6 +28,28 @@ export const computeCpf = (grossSalary: any, age: number): CpfData => {
   };
 };
 
+/**
+ * REVERSE CALCULATION ENGINE
+ * Estimates Gross Salary from Net (Take-Home) Pay
+ */
+export const reverseComputeCpf = (takeHome: any, age: number): number => {
+  const net = toNum(takeHome, 0);
+  const rates = getCpfRates(age);
+  
+  // The threshold where the wage ceiling kicks in for the employee
+  // For a 20% contributor, this is 7400 * (1 - 0.20) = 5920
+  const netCeilingThreshold = CPF_WAGE_CEILING * (1 - rates.employee);
+  
+  if (net <= netCeilingThreshold) {
+    // Below ceiling: Linear reverse
+    return net / (1 - rates.employee);
+  } else {
+    // Above ceiling: Add the fixed max contribution back to the net
+    const maxEmployeeContrib = CPF_WAGE_CEILING * rates.employee;
+    return net + maxEmployeeContrib;
+  }
+};
+
 export const computeRetirementProjection = (initialAmount: number, monthlyContribution: number, annualReturn: number, yearsToProject: number) => {
   const monthlyRate = annualReturn / 12;
   const months = yearsToProject * 12;

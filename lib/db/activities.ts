@@ -11,11 +11,6 @@ export interface Activity {
   user_id?: string;
 }
 
-/** 
- * GLOBAL TELEMETRY SINK
- * Using a consistent UUID for organizational events ensures they bypass 
- * client-specific RLS ownership filters when queried by an Admin.
- */
 const SYSTEM_PLACEHOLDER_UUID = '00000000-0000-0000-0000-000000000000';
 
 export const logActivity = async (clientId: string | null, type: string, title: string, details: any = {}) => {
@@ -25,7 +20,6 @@ export const logActivity = async (clientId: string | null, type: string, title: 
     const user = session?.user;
     if (!user) return;
 
-    // Use placeholder if no client context to satisfy foreign key requirements
     const { error } = await supabase.from('activities').insert({
       user_id: user.id,
       client_id: clientId || SYSTEM_PLACEHOLDER_UUID,
@@ -63,10 +57,10 @@ export const logTabUsage = async (tabId: string, durationSeconds: number) => {
 export const fetchGlobalActivity = async (): Promise<Activity[]> => {
   if (!supabase) return [];
   try {
-    // Senior Fix: Use a single join to fetch email context for admin audit trail
+    // Removed recursive join on 'profiles' to resolve stack depth limit exceeded.
     const { data, error } = await supabase
       .from('activities')
-      .select('*, profiles(email)')
+      .select('*')
       .order('created_at', { ascending: false })
       .limit(100);
     
