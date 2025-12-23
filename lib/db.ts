@@ -99,8 +99,15 @@ export const db = {
 
     const { _ownerId, _ownerEmail, ...payloadData } = client;
 
+    // Fix: Explicitly include user_id in the upsert payload
+    // If _ownerId exists (existing client), keep it.
+    // If not (new client), assign to current user.
+    // Double fallback to ensure we never send null for user_id on creation
+    const validOwnerId = (_ownerId && _ownerId !== 'undefined') ? _ownerId : authUser.id;
+
     const payload: any = {
       id: client.id,
+      user_id: validOwnerId, 
       data: { ...payloadData, lastUpdated: new Date().toISOString() },
       updated_at: new Date().toISOString()
     };

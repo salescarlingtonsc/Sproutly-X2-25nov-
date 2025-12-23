@@ -133,11 +133,10 @@ const AdminTab: React.FC = () => {
      return Object.entries(tabUsage).sort((a,b) => b[1] - a[1]).slice(0, 4);
   }, [activities]);
 
-  const repairSql = `-- Sproutly Database Repair Script (v6.0 - FINAL)
--- Objective: Absolute destruction of RLS recursion (Stack Depth errors)
+  const repairSql = `-- Sproutly Database Repair Script (v4.0 - GOLD)
+-- Run this in your Supabase SQL Editor to kill RLS recursion
 
--- 1. Create a strictly non-recursive SECURITY DEFINER master-check
--- Using explicit schema 'public' and setting search path for security.
+-- 1. Create a strictly non-recursive SECURITY DEFINER function
 CREATE OR REPLACE FUNCTION public.check_is_admin() 
 RETURNS boolean 
 LANGUAGE plpgsql 
@@ -148,93 +147,59 @@ DECLARE
   v_role text;
   v_is_admin boolean;
 BEGIN
-  -- Direct query bypassing RLS to break the infinite recursion cycle.
+  -- Perform a direct query. Because this is SECURITY DEFINER,
+  -- it does NOT trigger RLS on the profiles table, breaking the recursion.
   SELECT role, is_admin INTO v_role, v_is_admin
   FROM profiles 
   WHERE id = auth.uid();
   
-  RETURN (COALESCE(v_role, '') = 'admin' OR COALESCE(v_is_admin, false) = true);
+  RETURN (v_role = 'admin' OR v_is_admin = true);
 END;
 $$;
 
--- 2. Grant correct execution permissions
+-- 2. Grant permissions
 REVOKE EXECUTE ON FUNCTION public.check_is_admin() FROM public;
 GRANT EXECUTE ON FUNCTION public.check_is_admin() TO authenticated;
 GRANT EXECUTE ON FUNCTION public.check_is_admin() TO service_role;
 
--- 3. Reset RLS and Purge legacy policies for ALL core tables
+-- 3. Reset RLS and Policies
+ALTER TABLE profiles DISABLE ROW LEVEL SECURITY;
+ALTER TABLE clients DISABLE ROW LEVEL SECURITY;
+ALTER TABLE message_templates DISABLE ROW LEVEL SECURITY;
+
+-- Clear all existing problematic policies
 DO $$ 
 DECLARE 
-  t text;
-  tables_to_repair text[] := ARRAY[
-    'profiles', 
-    'clients', 
-    'message_templates', 
-    'activities', 
-    'client_files', 
-    'client_field_values', 
-    'field_definitions', 
-    'crm_views'
-  ];
+  pol record;
 BEGIN
-  FOREACH t IN ARRAY tables_to_repair LOOP
-    -- Disable RLS temporarily to ensure safe drop of all policies
-    EXECUTE 'ALTER TABLE ' || quote_ident(t) || ' DISABLE ROW LEVEL SECURITY';
-    
-    -- Drop EVERY policy currently associated with this table
-    EXECUTE 'DO $pol$ DECLARE p record; BEGIN FOR p IN (SELECT policyname FROM pg_policies WHERE tablename = ' || quote_literal(t) || ') LOOP EXECUTE ''DROP POLICY IF EXISTS '' || quote_ident(p.policyname) || '' ON ' || quote_ident(t) || '''; END LOOP; END $pol$';
+  FOR pol IN (SELECT policyname, tablename FROM pg_policies WHERE schemaname = 'public') LOOP
+    EXECUTE 'DROP POLICY IF EXISTS ' || quote_ident(pol.policyname) || ' ON ' || quote_ident(pol.tablename);
   END LOOP;
 END $$;
 
--- 4. Re-apply Clean, Non-Recursive "Sproutly Standard" Policies
--- Profiles
-CREATE POLICY "Profiles: Self Read" ON profiles FOR SELECT USING ( auth.uid() = id );
-CREATE POLICY "Profiles: Admin Access" ON profiles FOR SELECT USING ( check_is_admin() );
-CREATE POLICY "Profiles: Self Update" ON profiles FOR UPDATE USING ( auth.uid() = id );
+-- 4. Apply Clean, Non-Recursive Policies
+CREATE POLICY "Profiles: Self" ON profiles FOR SELECT USING ( auth.uid() = id );
+CREATE POLICY "Profiles: Admin" ON profiles FOR SELECT USING ( check_is_admin() );
 
--- Clients
-CREATE POLICY "Clients: Owner Access" ON clients FOR ALL USING ( auth.uid() = user_id );
-CREATE POLICY "Clients: Admin Access" ON clients FOR ALL USING ( check_is_admin() );
+CREATE POLICY "Clients: Owner" ON clients FOR ALL USING ( auth.uid() = user_id );
+CREATE POLICY "Clients: Admin" ON clients FOR ALL USING ( check_is_admin() );
 
--- Message Templates
-CREATE POLICY "Templates: Owner Access" ON message_templates FOR ALL USING ( auth.uid() = user_id );
-CREATE POLICY "Templates: Admin Access" ON message_templates FOR ALL USING ( check_is_admin() );
-
--- Activities
-CREATE POLICY "Activities: Owner Access" ON activities FOR ALL USING ( auth.uid() = user_id );
-CREATE POLICY "Activities: Admin Access" ON activities FOR ALL USING ( check_is_admin() );
-
--- CRM Views
-CREATE POLICY "Views: Owner Access" ON crm_views FOR ALL USING ( auth.uid() = user_id );
+CREATE POLICY "Templates: Owner" ON message_templates FOR ALL USING ( auth.uid() = user_id );
+CREATE POLICY "Templates: Admin" ON message_templates FOR ALL USING ( check_is_admin() );
 
 -- 5. Promote Current User to Admin (IMPORTANT)
--- This ensures the user executing the script remains an Admin in the application.
+-- This ensures you can actually access the Admin features
 UPDATE profiles 
 SET role = 'admin', is_admin = true, status = 'approved' 
 WHERE id = auth.uid();
 
--- 6. Final Activation: Re-enable RLS on all repaired tables
-DO $$ 
-DECLARE 
-  t text;
-  tables_to_repair text[] := ARRAY[
-    'profiles', 
-    'clients', 
-    'message_templates', 
-    'activities', 
-    'client_files', 
-    'client_field_values', 
-    'field_definitions', 
-    'crm_views'
-  ];
-BEGIN
-  FOREACH t IN ARRAY tables_to_repair LOOP
-    EXECUTE 'ALTER TABLE ' || quote_ident(t) || ' ENABLE ROW LEVEL SECURITY';
-  END LOOP;
-END $$;
+-- 6. Re-enable RLS
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE clients ENABLE ROW LEVEL SECURITY;
+ALTER TABLE message_templates ENABLE ROW LEVEL SECURITY;
 
--- 7. Verification Results
-SELECT 'Standard Protocol v6.0 Success' as status, check_is_admin() as identity_is_admin;`;
+-- 7. Verification
+SELECT 'Success' as status, check_is_admin() as is_admin_verified;`;
 
   if (loading) return (
     <div className="p-24 text-center space-y-4">
@@ -410,7 +375,7 @@ SELECT 'Standard Protocol v6.0 Success' as status, check_is_admin() as identity_
              </div>
              
              <div>
-                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Repair Script (v6.0 FINAL)</label>
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Repair Script (v4.0 GOLD)</label>
                 <div className="relative group">
                    <pre className="bg-slate-900 text-indigo-300 p-4 rounded-xl text-[10px] font-mono overflow-x-auto max-h-64 custom-scrollbar leading-relaxed">
                       {repairSql}
