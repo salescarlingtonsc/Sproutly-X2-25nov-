@@ -1,31 +1,27 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Client, FieldDefinition, Profile, ContactStatus } from '../../types';
-import { getFieldDefinitions } from '../../lib/db/dynamicFields';
-import { useClient } from '../../contexts/ClientContext';
+
+import React, { useState, useMemo } from 'react';
+import { Client, Product, Advisor, WhatsAppTemplate, AppSettings, Sale } from '../../types';
+import { AnalyticsPanel } from './components/AnalyticsPanel';
+import { ClientCard } from './components/ClientCard';
+import { WhatsAppModal } from './components/WhatsAppModal';
+import { CommentsModal } from './components/CommentsModal';
+import { AddSaleModal } from './components/AddSaleModal';
+import CallSessionModal from './components/CallSessionModal';
+import { TemplateManager } from './components/TemplateManager';
+import Modal from '../../components/ui/Modal';
+import { DEFAULT_SETTINGS } from '../../lib/config';
+import { DEFAULT_TEMPLATES } from '../../lib/templates';
 import { useAuth } from '../../contexts/AuthContext';
-import { calculateLeadScore } from '../../lib/gemini';
-import { fmtSGD, toNum } from '../../lib/helpers';
-import { dbTemplates, DBTemplate } from '../../lib/db/templates';
 
-// UI Components
-import Button from '../../components/ui/Button';
-import SegmentedControl from '../../components/ui/SegmentedControl';
-import CommandBar from '../../components/ui/CommandBar';
-import { useHotkeys } from '../../components/ui/useHotkeys';
-
-// CRM Components
-import ColumnHeader from './components/ColumnHeader';
-import CrmRow from './components/CrmRow';
-import ColumnPicker from './components/ColumnPicker';
-import ClientDrawer from './components/ClientDrawer';
-import ImportModal from './components/ImportModal';
-import BlastModal from './components/BlastModal';
-import ProtocolManagerModal from './components/ProtocolManagerModal';
-import ViewsDropdown, { SavedView } from './components/ViewsDropdown';
+// MOCK DATA FOR PROPS NOT PASSED FROM APP YET
+const MOCK_PRODUCTS: Product[] = [
+    { id: 'p1', name: 'Wealth Sol', provider: 'Pru', type: 'ILP' },
+    { id: 'p2', name: 'Term Protect', provider: 'AIA', type: 'Term' }
+];
 
 interface CrmTabProps {
   clients: Client[];
-  profile: Profile;
+  profile: any;
   selectedClientId: string | null;
   newClient: () => void;
   saveClient: () => void;
@@ -38,290 +34,185 @@ interface CrmTabProps {
 }
 
 const CrmTab: React.FC<CrmTabProps> = ({ 
-  clients: globalClients, 
-  profile: globalProfile,
-  selectedClientId,
-  newClient,
-  saveClient,
-  loadClient, 
-  deleteClient,
-  onRefresh,
-  onUpdateGlobalClient,
-  onTransferStart,
-  onTransferEnd
+    clients, 
+    newClient, 
+    loadClient, 
+    onUpdateGlobalClient
 }) => {
   const { user } = useAuth();
-  const { loadClient: syncToContext } = useClient();
-  const [fields, setFields] = useState<FieldDefinition[]>([]);
-  const [loadingFields, setLoadingFields] = useState(true);
-  const [isImportOpen, setIsImportOpen] = useState(false);
-  const [isBlastOpen, setIsBlastOpen] = useState(false);
-  const [isProtocolOpen, setIsProtocolOpen] = useState(false);
-  const [templateCount, setTemplateCount] = useState(0);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [stageFilter, setStageFilter] = useState<string>('All');
+  const [viewMode, setViewMode] = useState<'cards' | 'list'>('list');
   
-  const [localClients, setLocalClients] = useState<Client[]>(globalClients);
-  const isEditingRef = useRef(false);
-
-  const isReadOnly = user?.role === 'viewer';
-
-  // --- CRITICAL SYNC LOGIC ---
-  useEffect(() => {
-    // Force sync if count changed (transfer-out or deletion)
-    const countChanged = localClients.length !== globalClients.length;
-    if (!isEditingRef.current || countChanged) {
-      setLocalClients(globalClients);
-    }
-  }, [globalClients]);
-
-  useEffect(() => {
-    (async () => {
-      setFields(await getFieldDefinitions());
-      setLoadingFields(false);
-      const tpts = await dbTemplates.getTemplates();
-      setTemplateCount(tpts.length);
-    })();
-  }, []);
-
-  const [isCompact, setIsCompact] = useState(() => localStorage.getItem('crm_density') === 'compact');
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [isCommandOpen, setIsCommandOpen] = useState(false);
+  // Modal States
+  const [activeWhatsAppClient, setActiveWhatsAppClient] = useState<Client | null>(null);
+  const [activeCommentsClient, setActiveCommentsClient] = useState<Client | null>(null);
+  const [activeSaleClient, setActiveSaleClient] = useState<Client | null>(null);
+  const [activeDetailClient, setActiveDetailClient] = useState<Client | null>(null);
+  const [isCallSessionOpen, setIsCallSessionOpen] = useState(false);
+  const [isTemplateManagerOpen, setIsTemplateManagerOpen] = useState(false);
   
-  const [activeCell, setActiveCell] = useState<{ rowId: string; colId: string } | null>(null);
-  const [editingCell, setEditingCell] = useState<{ rowId: string; colId: string } | null>(null);
+  // Local state for templates to simulate DB connection for now
+  const [templates, setTemplates] = useState<WhatsAppTemplate[]>(DEFAULT_TEMPLATES.map(t => ({id: t.id, label: t.label, content: t.content})));
 
-  // Filtering & View
-  const [query, setQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState('all');
-  const [sortCol, setSortCol] = useState('updated_at');
-  const [sortDir, setSortDir] = useState<'asc'|'desc'>('desc');
-  const [visibleColumnIds, setVisibleColumnIds] = useState<Set<string>>(new Set(['name', 'phone', 'next_appt_combined', 'next_follow_up_combined', 'status', 'ai_score', 'expected_revenue', 'owner_email']));
-  const [colWidths, setColWidths] = useState<Record<string, number>>({});
-  const [selectedClientForDrawer, setSelectedClientForDrawer] = useState<Client | null>(null);
-
-  const handleApplyView = (view: SavedView) => {
-    if (view.filters?.query !== undefined) setQuery(view.filters.query);
-    if (view.sort) {
-      setSortCol(view.sort.col);
-      setSortDir(view.sort.dir);
-    }
-    if (view.visible_column_ids) setVisibleColumnIds(new Set(view.visible_column_ids));
-    if (view.col_widths) setColWidths(view.col_widths);
-  };
-
-  const filteredAndSortedClients = useMemo(() => {
-    let result = [...localClients];
-    if (query) {
-      const q = query.toLowerCase();
-      result = result.filter(c => 
-        (c.profile?.name || '').toLowerCase().includes(q) || 
-        (String(c.profile?.phone || '')).includes(q)
-      );
-    }
-    if (statusFilter !== 'all') {
-      result = result.filter(c => (c.followUp?.status || 'new') === statusFilter);
-    }
-    result.sort((a, b) => {
-      let valA: any = '';
-      let valB: any = '';
-      if (sortCol === 'name') { valA = a.profile?.name || ''; valB = b.profile?.name || ''; }
-      else if (sortCol === 'status') { valA = a.followUp?.status || ''; valB = b.followUp?.status || ''; }
-      else if (sortCol === 'ai_score') { valA = toNum(a.followUp?.ai_propensity_score); valB = toNum(b.followUp?.ai_propensity_score); }
-      else if (sortCol === 'expected_revenue') { 
-        valA = toNum(a.followUp?.dealValue) * (toNum(a.followUp?.ai_propensity_score, 50)/100); 
-        valB = toNum(b.followUp?.dealValue) * (toNum(b.followUp?.ai_propensity_score, 50)/100); 
-      }
-      else if (sortCol === 'last_contact') { valA = a.followUp?.lastContactedAt || ''; valB = b.followUp?.lastContactedAt || ''; }
-      else if (sortCol === 'next_follow_up_combined') { valA = a.followUp?.nextFollowUpDate || ''; valB = b.followUp?.nextFollowUpDate || ''; }
-      else if (sortCol === 'next_appt_combined') { valA = a.appointments?.firstApptDate || ''; valB = b.appointments?.firstApptDate || ''; }
-      else if (sortCol === 'updated_at') { valA = a.lastUpdated || ''; valB = b.lastUpdated || ''; }
-      else { valA = a.fieldValues?.[sortCol] || ''; valB = b.fieldValues?.[sortCol] || ''; }
-      if (valA < valB) return sortDir === 'asc' ? -1 : 1;
-      if (valA > valB) return sortDir === 'asc' ? 1 : -1;
-      return 0;
+  const filteredClients = useMemo(() => {
+    return clients.filter(client => {
+      const name = client.name || client.profile?.name || '';
+      const company = client.company || '';
+      
+      const matchesSearch = name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+                            company.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                            (client.tags || []).some(t => t.toLowerCase().includes(searchTerm.toLowerCase()));
+      
+      const matchesStage = stageFilter === 'All' || client.stage === stageFilter;
+      return matchesSearch && matchesStage;
     });
-    return result;
-  }, [localClients, query, statusFilter, sortCol, sortDir]);
+  }, [clients, searchTerm, stageFilter]);
 
-  const columns = useMemo(() => {
-     const base = [
-        { id: 'name', label: 'Client Identity', type: 'text', field: 'name', section: 'profile', minWidth: 200 },
-        { id: 'phone', label: 'Contact (WA)', type: 'phone', field: 'phone', section: 'profile', minWidth: 160 },
-        { id: 'next_appt_combined', label: 'Appointment', type: 'datetime-combined', field: 'firstApptDate', section: 'appointments', minWidth: 180 },
-        { id: 'next_follow_up_combined', label: 'Follow Up', type: 'datetime-combined', field: 'nextFollowUpDate', section: 'followUp', minWidth: 180 },
-        { id: 'status', label: 'Stage', type: 'select', field: 'status', section: 'followUp', minWidth: 160 },
-        { id: 'ai_score', label: 'Propensity %', type: 'number', field: 'ai_propensity_score', section: 'followUp', minWidth: 120 },
-        { id: 'expected_revenue', label: 'Weighted Val', type: 'currency', field: 'dealValue', section: 'followUp', minWidth: 140 },
-        { id: 'last_contact', label: 'Last Touch', type: 'date', field: 'lastContactedAt', section: 'followUp', minWidth: 140 },
-        { id: 'owner_email', label: 'Manager', type: 'text', field: '_ownerEmail', section: 'meta', minWidth: 180 },
-     ];
-     const dynamic = fields.map(f => ({ id: f.id, label: f.label, type: f.type, field: f.key, section: 'dynamic', minWidth: 150 }));
-     return [...base, ...dynamic].filter(c => visibleColumnIds.has(c.id));
-  }, [fields, visibleColumnIds]);
-
-  const handleUpdate = (id: string, field: string, value: any, section?: string) => {
-    if (isReadOnly) return;
-    isEditingRef.current = true;
-    const clientToUpdate = localClients.find(c => c.id === id);
-    if (!clientToUpdate) return;
-    const copy = JSON.parse(JSON.stringify(clientToUpdate));
-    
-    if (section === 'dynamic') {
-       copy.fieldValues = { ...(copy.fieldValues || {}), [field]: value };
-    } else if (section === 'root') {
-       copy[field] = value;
-    } else if (section === 'meta') {
-       copy[field] = value; 
-    } else if (section) {
-       const parts = section.split('.');
-       let target = copy;
-       for (let i = 0; i < parts.length; i++) {
-          const p = parts[i];
-          if (i === parts.length - 1) { target[p] = { ...(target[p] || {}), [field]: value }; }
-          else { target[p] = target[p] || {}; target = target[p]; }
-       }
-    }
-
-    setLocalClients(prev => prev.map(c => c.id === id ? copy : c));
-    
-    if (selectedClientForDrawer?.id === id) {
-       setSelectedClientForDrawer(copy);
-    }
-
-    onUpdateGlobalClient(copy);
-    
-    if (id === selectedClientId) {
-      syncToContext(copy);
-    }
-    
-    setTimeout(() => { isEditingRef.current = false; }, 2000);
+  const handleClientUpdate = (updated: Client) => {
+      onUpdateGlobalClient(updated);
   };
 
-  const toggleSelection = (id: string) => {
-    const next = new Set(selectedIds);
-    if (next.has(id)) next.delete(id); else next.add(id);
-    setSelectedIds(next);
+  const handleManualUpdate = (client: Client, changes: Partial<Client>) => {
+      onUpdateGlobalClient({ ...client, ...changes });
   };
 
-  useHotkeys('k', () => setIsCommandOpen(true), { meta: true });
+  const handleAddNote = (clientId: string, noteContent: string) => {
+      const client = clients.find(c => c.id === clientId);
+      if (!client) return;
+      const newNote = {
+          id: `note_${Date.now()}`,
+          content: noteContent,
+          date: new Date().toISOString(),
+          author: user?.email || 'Me'
+      };
+      onUpdateGlobalClient({ ...client, notes: [newNote, ...(client.notes || [])] });
+  };
 
-  const customStatusOptions: ContactStatus[] = [
-    'new', 'picked_up', 'npu_1', 'npu_2', 'npu_3', 'npu_4', 'npu_5', 'npu_6', 
-    'appt_set', 'appt_met', 'pending_decision', 'case_closed', 'not_keen'
-  ];
+  const handleAddSale = (clientId: string, sale: Sale) => {
+      const client = clients.find(c => c.id === clientId);
+      if(!client) return;
+      onUpdateGlobalClient({
+          ...client,
+          sales: [...(client.sales || []), sale],
+          stage: 'Client',
+          momentumScore: 100
+      });
+  };
+
+  const getMomentumColor = (score: number) => {
+    if (score >= 70) return 'text-emerald-600 bg-emerald-50';
+    if (score >= 40) return 'text-amber-600 bg-amber-50';
+    return 'text-rose-600 bg-rose-50';
+  };
 
   return (
-    <div className={`flex flex-col h-full bg-white overflow-hidden`}>
-      <div className="bg-slate-50 px-6 py-4 border-b border-slate-100 flex items-center gap-10">
-         <div className="flex flex-col">
-            <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Global pipeline</span>
-            <span className="text-xl font-black text-slate-900">{fmtSGD(filteredAndSortedClients.length * 5000).split('.')[0]} <span className="text-[10px] text-slate-300 font-bold uppercase ml-1">Est</span></span>
-         </div>
-         <div className="flex-col hidden md:flex">
-            <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Active Velocity</span>
-            <span className="text-xl font-black text-indigo-600">{((filteredAndSortedClients.filter(c => c.followUp.status !== 'new').length / (localClients.length || 1))*100).toFixed(0)}%</span>
-         </div>
-         <div className="flex-1" />
-         <div className="flex items-center gap-3">
-             <ViewsDropdown currentView={{ filters: { query, statuses: [] }, sort: { col: sortCol, dir: sortDir }, visibleColumnIds, colWidths }} onApply={handleApplyView} />
-         </div>
-      </div>
+    <div className="p-6 md:p-8 animate-fade-in pb-24 md:pb-8">
+      <AnalyticsPanel clients={clients} />
 
-      <div className="h-16 border-b flex items-center justify-between px-6 gap-6 bg-white shrink-0 shadow-sm">
-         <div className="flex items-center gap-4">
-            <div className="flex items-center gap-3">
-              <span className="text-xl">📋</span>
-              <div className="flex flex-col">
-                 <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 leading-none mb-1">Quantum Spreadsheet</h2>
-                 <span className="text-sm font-bold text-slate-900 leading-none">{filteredAndSortedClients.length} Records</span>
-              </div>
-            </div>
-            <div className="h-8 w-px bg-slate-100 mx-2" />
-            <SegmentedControl 
-              options={[{ label: 'All', value: 'all' }, { label: 'Inbound', value: 'new' }, { label: 'Meetings', value: 'appt_set' }]}
-              value={statusFilter} onChange={setStatusFilter}
-            />
+      <div className="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
+         <div className="flex items-center gap-2 w-full md:w-auto">
+             <div className="relative w-full md:w-64">
+                 <input type="text" placeholder="Search clients..." className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 shadow-sm transition-all" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+                 <svg className="w-5 h-5 text-slate-400 absolute left-3 top-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+             </div>
+             
+             <select value={stageFilter} onChange={(e) => setStageFilter(e.target.value)} className="px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 shadow-sm cursor-pointer">
+                 <option value="All">All Stages</option>
+                 {DEFAULT_SETTINGS.statuses.map(s => <option key={s} value={s}>{s}</option>)}
+             </select>
+
+             <div className="hidden md:flex bg-white border border-slate-200 rounded-xl items-center p-1 shadow-sm ml-2">
+                 <button onClick={() => setViewMode('cards')} className={`p-2 rounded-lg transition-all ${viewMode === 'cards' ? 'bg-slate-100 text-slate-900 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`} title="Card View"><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" /></svg></button>
+                 <button onClick={() => setViewMode('list')} className={`p-2 rounded-lg transition-all ${viewMode === 'list' ? 'bg-slate-100 text-slate-900 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`} title="List View"><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg></button>
+             </div>
          </div>
 
-         <div className="flex items-center gap-6 flex-1 justify-end">
-            <div className="relative max-w-xs w-full group">
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-300 text-sm group-focus-within:text-indigo-500 transition-colors">🔍</span>
-              <input className="w-full pl-9 pr-4 py-2 bg-slate-50 border-transparent rounded-xl text-[11px] font-bold focus:bg-white focus:ring-2 focus:ring-indigo-100 transition-all outline-none text-slate-700" placeholder="Airtable-style Search..." value={query} onChange={e => setQuery(e.target.value)} />
-            </div>
-            <div className="flex items-center gap-4">
-              {!isReadOnly && <Button variant="ghost" size="sm" leftIcon="📥" onClick={() => setIsImportOpen(true)}>Import</Button>}
-              <Button variant="ghost" size="sm" leftIcon="💬" onClick={() => setIsProtocolOpen(true)} className="relative">
-                Protocols
-                {templateCount > 0 && (
-                  <span className="absolute -top-1 -right-1 w-4 h-4 bg-indigo-600 text-white text-[8px] rounded-full flex items-center justify-center font-black">
-                    {templateCount}
-                  </span>
-                )}
-              </Button>
-              <ColumnPicker allColumns={columns} visibleColumnIds={visibleColumnIds} onChange={setVisibleColumnIds} onManageFields={onRefresh} />
-              {!isReadOnly && <Button variant="primary" size="sm" leftIcon="＋" onClick={() => loadClient({} as any, true)}>Add</Button>}
-            </div>
+         <div className="flex gap-3 w-full md:w-auto">
+             <button onClick={() => setIsTemplateManagerOpen(true)} className="hidden lg:flex bg-white border border-slate-200 text-slate-600 px-4 py-2 rounded-lg text-xs font-bold hover:bg-slate-50 transition-all items-center gap-2">
+                 <span>📝</span> Templates
+             </button>
+             <button onClick={() => setIsCallSessionOpen(true)} className="flex-1 md:flex-none bg-indigo-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-md hover:bg-indigo-700 transition-all flex items-center justify-center gap-2">
+                 <span>⚡</span> Power Dialer
+             </button>
+             <button onClick={newClient} className="flex-1 md:flex-none bg-slate-900 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-md hover:bg-slate-800 hover:shadow-lg transition-all flex items-center justify-center gap-2">
+                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg> New Client
+             </button>
          </div>
       </div>
 
-      <div className="flex-1 overflow-auto custom-scrollbar bg-slate-50/20" onClick={() => { if(!editingCell) setActiveCell(null); }}>
-         <table className="w-full border-collapse table-fixed">
-            <thead className="sticky top-0 z-30">
-               <tr className="bg-white/95 backdrop-blur-md">
-                  <th className="w-12 border-r border-b border-slate-100 p-0 h-10 flex items-center justify-center">
-                    <input type="checkbox" className="rounded border-slate-200 text-indigo-600 focus:ring-indigo-500" checked={selectedIds.size === filteredAndSortedClients.length && filteredAndSortedClients.length > 0} onChange={(e) => e.target.checked ? setSelectedIds(new Set(filteredAndSortedClients.map(c => c.id))) : setSelectedIds(new Set())} />
-                  </th>
-                  {columns.map(col => (
-                     <th key={col.id} className="p-0 border-r border-b border-slate-100">
-                        <ColumnHeader label={col.label} type={col.type} width={colWidths[col.id] || col.minWidth} isSorted={sortCol === col.id ? sortDir : null} onSort={dir => { setSortCol(col.id); setSortDir(dir || 'desc'); }} onHide={() => { const next = new Set(visibleColumnIds); next.delete(col.id); setVisibleColumnIds(next); }} onResize={(w) => setColWidths(prev => ({...prev, [col.id]: w}))} />
-                     </th>
-                  ))}
-               </tr>
-            </thead>
-            <tbody>
-               {filteredAndSortedClients.map(client => (
-                  <CrmRow 
-                    key={client.id} 
-                    client={client} 
-                    columns={columns} 
-                    colWidths={colWidths} 
-                    selectedRowIds={selectedIds} 
-                    activeCell={activeCell} 
-                    editingCell={editingCell} 
-                    statusOptions={customStatusOptions} 
-                    onToggleSelection={toggleSelection} 
-                    onSetActive={(r, c) => { if(!editingCell) setActiveCell({rowId: r, colId: c}); }} 
-                    onSetEditing={(rowId, colId) => setEditingCell({ rowId, colId })} 
-                    onStopEditing={() => setEditingCell(null)} 
-                    onUpdate={handleUpdate} 
-                    onLoadClient={(c) => loadClient(c, true)} 
-                    onQuickView={setSelectedClientForDrawer} 
-                    rowHeight={isCompact ? 36 : 46} 
-                    renderStatus={() => null} 
-                  />
-               ))}
-            </tbody>
-         </table>
-      </div>
-
-      <CommandBar isOpen={isCommandOpen} onClose={() => setIsCommandOpen(false)} clients={globalClients} onSelectClient={c => loadClient(c, true)} onAction={(action) => { if (action === 'toggle_compact') setIsCompact(prev => !prev); if (action === 'new_client' && !isReadOnly) loadClient({} as any, true); if (action === 'open_blast') setIsBlastOpen(true); if (action === 'import_csv' && !isReadOnly) setIsImportOpen(true); }} />
-
-      {selectedClientForDrawer && (
-        <ClientDrawer 
-           client={selectedClientForDrawer} 
-           isOpen={!!selectedClientForDrawer} 
-           onClose={() => setSelectedClientForDrawer(null)} 
-           onUpdateField={handleUpdate} 
-           onStatusUpdate={(c, s) => handleUpdate(c.id, 'status', s, 'followUp')} 
-           onOpenFullProfile={() => loadClient(selectedClientForDrawer, true)} 
-           onDelete={() => deleteClient(selectedClientForDrawer.id)} 
-           onForceRefresh={onRefresh}
-           onTransferStart={onTransferStart}
-           onTransferEnd={onTransferEnd}
-        />
+      {viewMode === 'cards' ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+            {filteredClients.map(client => (
+                <div key={client.id} className="relative group">
+                    <ClientCard client={client} onUpdate={handleClientUpdate} />
+                    <div className="absolute top-4 right-4 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button onClick={() => loadClient(client, true)} className="bg-indigo-600 text-white p-1.5 rounded-full shadow-lg hover:bg-indigo-700 transition-colors" title="Full Profile"><svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg></button>
+                        <button onClick={() => setActiveSaleClient(client)} className="bg-emerald-500 text-white p-1.5 rounded-full shadow-lg hover:bg-emerald-600 transition-colors" title="Add Sale"><svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg></button>
+                        <button onClick={() => setActiveCommentsClient(client)} className="bg-slate-700 text-white p-1.5 rounded-full shadow-lg hover:bg-slate-800 transition-colors" title="View Logs"><svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" /></svg></button>
+                        <button onClick={() => setActiveWhatsAppClient(client)} className="bg-[#25D366] text-white p-1.5 rounded-full shadow-lg hover:bg-[#128C7E] transition-colors" title="WhatsApp"><svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path d="M.057 24l1.687-6.163c-1.041-1.804-1.588-3.849-1.587-5.946.003-6.556 5.338-11.891 11.893-11.891 3.181.001 6.167 1.24 8.413 3.488 2.245 2.248 3.481 5.236 3.48 8.414-.003 6.557-5.338 11.892-11.893 11.892-1.99-.001-3.951-.5-5.688-1.448l-6.305 1.654zm6.597-3.807c1.676.995 3.276 1.591 5.392 1.592 5.448 0 9.886-4.434 9.889-9.885.002-5.462-4.415-9.89-9.881-9.892-5.452 0-9.887 4.434-9.889 9.884-.001 2.225.651 3.891 1.746 5.634l-.999 3.648 3.742-.981zm11.387-5.464c-.074-.124-.272-.198-.57-.347-.297-.149-1.758-.868-2.031-.967-.272-.099-.47-.149-.669.149-.198.297-.768.967-.941 1.165-.173.198-.347.223-.644.074-.297-.149-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.297-.347.446-.521.151-.172.2-.296.3-.495.099-.198.05-.372-.025-.521-.075-.148-.669-1.611-.916-2.206-.242-.579-.487-.501-.669-.51l-.57-.01c-.198 0-.52.074-.792.372s-1.04 1.016-1.04 2.479 1.065 2.876 1.213 3.074c.149.198 2.095 3.2 5.076 4.487.709.306 1.263.489 1.694.626.712.226 1.36.194 1.872.118.571-.085 1.758-.719 2.006-1.413.248-.695.248-1.29.173-1.414z"/></svg></button>
+                    </div>
+                </div>
+            ))}
+            {filteredClients.length === 0 && <div className="col-span-full py-12 flex flex-col items-center justify-center text-slate-400 border-2 border-dashed border-slate-200 rounded-2xl bg-slate-50"><p className="font-medium">No clients found matching your filters.</p></div>}
+        </div>
+      ) : (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden animate-fade-in">
+           <div className="overflow-x-auto">
+               <table className="w-full text-left text-sm border-collapse">
+                   <thead className="bg-slate-50 border-b border-slate-100 text-xs uppercase text-slate-500 font-bold tracking-wider">
+                       <tr><th className="px-6 py-4">Client Name</th><th className="px-6 py-4">Stage</th><th className="px-6 py-4">Exp. Revenue</th><th className="px-6 py-4">Last Contact</th><th className="px-6 py-4">Momentum</th><th className="px-6 py-4 text-right">Actions</th></tr>
+                   </thead>
+                   <tbody className="divide-y divide-slate-50">
+                       {filteredClients.map(client => (
+                           <tr key={client.id} onClick={() => setActiveDetailClient(client)} className="hover:bg-slate-50/80 cursor-pointer transition-colors group">
+                               <td className="px-6 py-4"><div className="flex items-center gap-3"><div className="w-8 h-8 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center text-xs font-bold border border-indigo-100">{client.name ? client.name.charAt(0) : '?'}</div><div><div className="font-semibold text-slate-900">{client.name || client.profile?.name || 'Unnamed'}</div><div className="text-xs text-slate-500">{client.company}</div></div></div></td>
+                               <td className="px-6 py-4"><span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-800 border border-slate-200">{client.stage}</span></td>
+                               <td className="px-6 py-4 font-mono font-medium text-slate-600">${(client.value || 0).toLocaleString()}</td>
+                               <td className="px-6 py-4 text-slate-500 text-xs">{client.lastContact ? new Date(client.lastContact).toLocaleDateString() : '-'}<div className="text-[10px] text-slate-400 mt-0.5">{client.nextAction || 'No action set'}</div></td>
+                               <td className="px-6 py-4"><div className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-bold border ${getMomentumColor(client.momentumScore || 0)}`}>{client.momentumScore || 0} {client.momentumScore > 50 ? '↑' : '↓'}</div></td>
+                               <td className="px-6 py-4 text-right"><div className="flex items-center justify-end gap-2 opacity-50 group-hover:opacity-100 transition-opacity"><button onClick={(e) => { e.stopPropagation(); loadClient(client, true); }} className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"><svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg></button><button onClick={(e) => { e.stopPropagation(); setActiveWhatsAppClient(client); }} className="p-1.5 text-slate-400 hover:text-[#25D366] hover:bg-emerald-50 rounded-lg transition-colors"><svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M.057 24l1.687-6.163c-1.041-1.804-1.588-3.849-1.587-5.946.003-6.556 5.338-11.891 11.893-11.891 3.181.001 6.167 1.24 8.413 3.488 2.245 2.248 3.481 5.236 3.48 8.414-.003 6.557-5.338 11.892-11.893 11.892-1.99-.001-3.951-.5-5.688-1.448l-6.305 1.654zm6.597-3.807c1.676.995 3.276 1.591 5.392 1.592 5.448 0 9.886-4.434 9.889-9.885.002-5.462-4.415-9.89-9.881-9.892-5.452 0-9.887 4.434-9.889 9.884-.001 2.225.651 3.891 1.746 5.634l-.999 3.648 3.742-.981zm11.387-5.464c-.074-.124-.272-.198-.57-.347-.297-.149-1.758-.868-2.031-.967-.272-.099-.47-.149-.669.149-.198.297-.768.967-.941 1.165-.173.198-.347.223-.644.074-.297-.149-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.297-.347.446-.521.151-.172.2-.296.3-.495.099-.198.05-.372-.025-.521-.075-.148-.669-1.611-.916-2.206-.242-.579-.487-.501-.669-.51l-.57-.01c-.198 0-.52.074-.792.372s-1.04 1.016-1.04 2.479 1.065 2.876 1.213 3.074c.149.198 2.095 3.2 5.076 4.487.709.306 1.263.489 1.694.626.712.226 1.36.194 1.872.118.571-.085 1.758-.719 2.006-1.413.248-.695.248-1.29.173-1.414z"/></svg></button>
+                                   </div>
+                               </td>
+                           </tr>
+                       ))}
+                   </tbody>
+               </table>
+           </div>
+        </div>
       )}
 
-      <ImportModal isOpen={isImportOpen} onClose={() => setIsImportOpen(false)} onComplete={onRefresh} />
-      <ProtocolManagerModal isOpen={isProtocolOpen} onClose={() => { setIsProtocolOpen(false); onRefresh(); }} />
+      {activeWhatsAppClient && <WhatsAppModal client={activeWhatsAppClient} templates={templates} onClose={() => setActiveWhatsAppClient(null)} />}
+      {activeCommentsClient && <CommentsModal client={activeCommentsClient} onClose={() => setActiveCommentsClient(null)} onAddNote={(note) => handleAddNote(activeCommentsClient.id, note)} />}
+      {activeSaleClient && <AddSaleModal clientName={activeSaleClient.name} products={MOCK_PRODUCTS} advisorBanding={user?.bandingPercentage || 50} onClose={() => setActiveSaleClient(null)} onSave={(sale) => handleAddSale(activeSaleClient.id, sale)} />}
+      {activeDetailClient && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[100] flex items-center justify-center p-4 animate-fade-in" onClick={() => setActiveDetailClient(null)}>
+            <div className="w-full max-w-2xl h-[85vh] animate-scale-in flex flex-col" onClick={e => e.stopPropagation()}>
+                 <div className="bg-white rounded-xl shadow-2xl h-full overflow-hidden flex flex-col">
+                    <ClientCard client={activeDetailClient} onUpdate={(c) => { handleClientUpdate(c); setActiveDetailClient(c); }} />
+                 </div>
+            </div>
+        </div>
+      )}
+      
+      <CallSessionModal 
+         isOpen={isCallSessionOpen}
+         onClose={() => setIsCallSessionOpen(false)}
+         clients={clients}
+         onUpdateClient={handleManualUpdate}
+      />
+
+      <Modal
+        isOpen={isTemplateManagerOpen}
+        onClose={() => setIsTemplateManagerOpen(false)}
+        title="Personal Templates"
+        footer={<button onClick={() => setIsTemplateManagerOpen(false)} className="px-4 py-2 text-xs font-bold text-slate-500 hover:bg-slate-100 rounded-lg">Close</button>}
+      >
+         <TemplateManager 
+            templates={templates} 
+            onUpdateTemplates={setTemplates} 
+         />
+      </Modal>
     </div>
   );
 };

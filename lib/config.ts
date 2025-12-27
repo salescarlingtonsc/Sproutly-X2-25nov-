@@ -5,32 +5,34 @@ export const TIER_CONFIG = {
   free: {
     label: 'Free Trial',
     clientLimit: 5,
-    allowedTabs: ['disclaimer', 'dashboard', 'profile', 'crm', 'life_events', 'report'], 
+    allowedTabs: ['disclaimer', 'dashboard', 'profile', 'crm', 'reminders', 'life_events', 'report'], 
     color: 'gray'
   },
   platinum: {
     label: 'Platinum',
     clientLimit: 15, 
-    allowedTabs: ['disclaimer', 'dashboard', 'profile', 'children', 'cashflow', 'insurance', 'crm', 'life_events', 'report'], 
+    allowedTabs: ['disclaimer', 'dashboard', 'profile', 'children', 'cashflow', 'insurance', 'crm', 'reminders', 'life_events', 'report'], 
     color: 'indigo'
   },
   diamond: {
     label: 'Diamond',
     clientLimit: 50, 
-    allowedTabs: ['disclaimer', 'dashboard', 'profile', 'life_events', 'children', 'cpf', 'cashflow', 'insurance', 'retirement', 'investor', 'wealth', 'property', 'vision', 'analytics', 'crm', 'report'],
+    allowedTabs: ['disclaimer', 'dashboard', 'profile', 'life_events', 'children', 'cpf', 'cashflow', 'insurance', 'retirement', 'investor', 'wealth', 'property', 'vision', 'analytics', 'crm', 'reminders', 'report'],
     color: 'emerald'
   },
   organisation: {
     label: 'Organisation',
     clientLimit: 500, 
-    allowedTabs: ['disclaimer', 'dashboard', 'profile', 'life_events', 'children', 'cpf', 'cashflow', 'insurance', 'retirement', 'investor', 'wealth', 'property', 'vision', 'analytics', 'crm', 'report'],
+    allowedTabs: ['disclaimer', 'dashboard', 'profile', 'life_events', 'children', 'cpf', 'cashflow', 'insurance', 'retirement', 'investor', 'wealth', 'property', 'vision', 'analytics', 'crm', 'reminders', 'report'],
     color: 'purple'
   }
 };
 
 export const TAB_DEFINITIONS = [
   { id: 'disclaimer', label: 'Protocol', icon: '⚖️' },
-  { id: 'dashboard', label: 'Command', icon: '🚀' }, 
+  { id: 'dashboard', label: 'Dashboard', icon: '🚀' }, 
+  { id: 'crm', label: 'My Clients', icon: '📋' },
+  { id: 'reminders', label: 'Reminders', icon: '🔔' },
   { id: 'profile', label: 'Profile', icon: '👤' },
   { id: 'life_events', label: 'Life Events', icon: '⚡' },
   { id: 'children', label: 'Children', icon: '👶' },
@@ -44,14 +46,13 @@ export const TAB_DEFINITIONS = [
   { id: 'vision', label: 'Vision Board', icon: '🎥' },
   { id: 'analytics', label: 'Intelligence', icon: '🧠' },
   { id: 'report', label: 'Deliverable', icon: '📄' }, 
-  { id: 'crm', label: 'CRM', icon: '📋' },
   { id: 'admin', label: 'Admin', icon: '🔧' }
 ];
 
 export const TAB_GROUPS = [
   {
-    title: 'Overview',
-    tabs: ['dashboard', 'crm']
+    title: 'Command Center',
+    tabs: ['dashboard', 'crm', 'reminders']
   },
   {
     title: 'Discovery',
@@ -84,30 +85,28 @@ export const EXPENSE_CATEGORIES: { key: keyof Expenses; label: string }[] = [
   { key: 'others', label: 'Others' }
 ];
 
+export const DEFAULT_SETTINGS = {
+  statuses: [
+    'New Lead', 'Contacted', 'Picked Up', 
+    'NPU 1', 'NPU 2', 'NPU 3', 'NPU 4', 'NPU 5', 'NPU 6',
+    'Appt Set', 'Appt Met', 'Proposal', 'Pending Decision', 'Client', 'Lost'
+  ],
+  platforms: ['IG', 'FB', 'LinkedIn', 'Roadshow', 'Referral', 'Cold', 'Personal', 'Other']
+};
+
 export const canAccessTab = (user: UserProfile | null, tabId: string): boolean => {
   if (!user) return false;
-  
-  // CORE GATE: Users who are not approved can ONLY see the Disclaimer/Admin (to see their own status)
-  // or a placeholder. In practice, App.tsx will wall them off, but this is the backup logic.
   if (user.status !== 'approved' && user.role !== 'admin') {
      return tabId === 'disclaimer';
   }
-
-  // Admins see everything
   if (user.role === 'admin') return true;
-
-  // Viewers can see Admin directory but it will be read-only (handled in tab logic)
   if (tabId === 'admin' && user.role === 'viewer') return true;
   if (tabId === 'admin' && user.role !== 'admin') return false;
-
-  // Manual module override check
   if (user.modules && Array.isArray(user.modules) && user.modules.length > 0) {
     if (user.modules.includes(tabId)) return true;
   }
-  
   const currentTier = user.subscriptionTier || 'free';
   const config = TIER_CONFIG[currentTier as keyof typeof TIER_CONFIG] || TIER_CONFIG.free;
-  
   return config.allowedTabs.includes(tabId);
 };
 

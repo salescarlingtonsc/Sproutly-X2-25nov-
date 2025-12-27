@@ -1,0 +1,284 @@
+
+import React, { useState } from 'react';
+import { Client, FamilyMember, Policy } from '../../../types';
+import { analyzeClientMomentum, generateInvestmentReport } from '../../../lib/gemini';
+import { DEFAULT_SETTINGS } from '../../../lib/config';
+import { FinancialTools } from './FinancialTools';
+import { fmtDateTime } from '../../../lib/helpers';
+
+interface ClientCardProps {
+  client: Client;
+  onUpdate: (updatedClient: Client) => void;
+}
+
+const EditableField = ({ label, value, onChange, type = 'text', options = [], className = '', placeholder = '-' }: any) => {
+  const displayValue = type === 'datetime-local' && value && typeof value === 'string' ? (value.length > 16 ? value.substring(0, 16) : value) : (value || '');
+  return (
+    <div className={`space-y-1 ${className}`}>
+      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">{label}</label>
+      {type === 'select' ? (
+        <select value={value || ''} onChange={(e) => onChange(e.target.value)} className="w-full bg-slate-50 border border-slate-200 text-slate-700 text-xs rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:bg-white transition-all">
+          <option value="">Select...</option>
+          {options.map((opt: string) => <option key={opt} value={opt}>{opt}</option>)}
+        </select>
+      ) : type === 'textarea' ? (
+        <textarea value={value || ''} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} rows={3} className="w-full bg-slate-50 border border-slate-200 text-slate-700 text-xs rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:bg-white transition-all resize-none" />
+      ) : (
+        <input type={type} value={displayValue} onChange={(e) => onChange(type === 'number' ? parseFloat(e.target.value) : e.target.value)} placeholder={placeholder} className="w-full bg-slate-50 border border-slate-200 text-slate-700 text-xs rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:bg-white transition-all truncate" />
+      )}
+    </div>
+  );
+};
+
+export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate }) => {
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [activeTab, setActiveTab] = useState<'overview' | 'logs' | 'family' | 'policies' | 'tools'>('overview');
+  const [newMemberName, setNewMemberName] = useState('');
+  const [newMemberRole, setNewMemberRole] = useState<'Father'|'Mother'|'Child'|'Other'>('Child');
+  const [newMemberDob, setNewMemberDob] = useState('');
+  const [newPolicyProvider, setNewPolicyProvider] = useState('');
+  const [newPolicyName, setNewPolicyName] = useState('');
+  const [newPolicyNumber, setNewPolicyNumber] = useState('');
+  const [newPolicyValue, setNewPolicyValue] = useState('');
+  const [newNote, setNewNote] = useState('');
+  
+  const [reportModalOpen, setReportModalOpen] = useState(false);
+  const [reportContent, setReportContent] = useState('');
+  const [isGeneratingReport, setIsGeneratingReport] = useState(false);
+
+  const handleRefreshAnalysis = async (e: React.MouseEvent) => {
+    e.stopPropagation(); 
+    setIsAnalyzing(true);
+    const result = await analyzeClientMomentum(client);
+    onUpdate({ ...client, momentumScore: result.score, nextAction: result.nextAction });
+    setIsAnalyzing(false);
+  };
+
+  const handleUpdateField = (field: keyof Client, val: any) => {
+      onUpdate({ ...client, [field]: val });
+  };
+
+  const handleAddFamilyMember = () => {
+      if (!newMemberName) return;
+      const newMember: FamilyMember = { id: `fam_${Date.now()}`, name: newMemberName, role: newMemberRole, dob: newMemberDob };
+      onUpdate({ ...client, familyMembers: [...(client.familyMembers || []), newMember] });
+      setNewMemberName('');
+      setNewMemberDob('');
+  };
+
+  const handleAddPolicy = () => {
+      if (!newPolicyProvider || !newPolicyName) return;
+      const newPolicy: Policy = { id: `pol_${Date.now()}`, provider: newPolicyProvider, name: newPolicyName, policyNumber: newPolicyNumber || 'N/A', value: parseFloat(newPolicyValue) || 0, startDate: new Date().toISOString() };
+      const newTag = `Insured: ${newPolicyProvider}`;
+      const updatedTags = (client.tags || []).includes(newTag) ? (client.tags || []) : [...(client.tags || []), newTag];
+      onUpdate({ ...client, policies: [...(client.policies || []), newPolicy], tags: updatedTags });
+      setNewPolicyProvider(''); setNewPolicyName(''); setNewPolicyNumber(''); setNewPolicyValue('');
+  };
+
+  const handleAddNote = () => {
+      if (!newNote.trim()) return;
+      const noteEntry = {
+          id: `note_${Date.now()}`,
+          content: newNote,
+          date: new Date().toISOString(),
+          author: 'Me' // In a real app this would be user.name
+      };
+      onUpdate({ ...client, notes: [noteEntry, ...(client.notes || [])] });
+      setNewNote('');
+  };
+
+  const handleGenerateReport = async () => {
+      setReportModalOpen(true); setIsGeneratingReport(true); setReportContent('Generating personalized investment review...');
+      const text = await generateInvestmentReport(client);
+      setReportContent(text); setIsGeneratingReport(false);
+  };
+
+  const handleWhatsApp = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const template = `Hi ${client.name.split(' ')[0]}, it's Sproutly. I found an opportunity that matches your portfolio. Do you have 5 mins?`;
+    window.open(`https://wa.me/?text=${encodeURIComponent(template)}`, '_blank');
+  };
+
+  const handleCalendar = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    let url = '';
+    if (client.firstApptDate) {
+        const startDate = new Date(client.firstApptDate);
+        const endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
+        const fmt = (d: Date) => d.toISOString().replace(/-|:|\.\d\d\d/g, "");
+        url = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=Meeting+with+${encodeURIComponent(client.name)}&details=Sproutly+Client+Review&dates=${fmt(startDate)}/${fmt(endDate)}`;
+    } else {
+        url = `https://calendar.google.com/calendar/u/0/r/eventedit?text=Meeting+with+${encodeURIComponent(client.name)}&details=Review+portfolio+performance`;
+    }
+    window.open(url, '_blank');
+  };
+
+  const getMomentumColor = (score: number) => {
+    if (score >= 70) return 'text-emerald-600 bg-emerald-50 border-emerald-100';
+    if (score >= 40) return 'text-amber-600 bg-amber-50 border-amber-100';
+    return 'text-rose-600 bg-rose-50 border-rose-100';
+  };
+
+  return (
+    <div className="group bg-white rounded-xl border border-slate-200 shadow-sm hover:shadow-md transition-all duration-200 cursor-default mb-3 relative overflow-hidden flex flex-col h-full max-h-[700px]">
+      <div className="p-4 border-b border-slate-100 bg-slate-50/50 flex justify-between items-start">
+         <div className="flex-1 mr-4">
+             <input className="text-lg font-bold text-slate-800 bg-transparent border-b border-transparent hover:border-slate-300 focus:border-emerald-500 focus:outline-none w-full transition-colors" value={client.name} onChange={(e) => handleUpdateField('name', e.target.value)} placeholder="Client Name" />
+             <input className="text-xs text-slate-500 bg-transparent border-b border-transparent hover:border-slate-300 focus:border-emerald-500 focus:outline-none w-full mt-1" value={client.company} onChange={(e) => handleUpdateField('company', e.target.value)} placeholder="Company / Organization" />
+         </div>
+         <div className={`flex flex-col items-end`}>
+            <div className={`text-sm font-bold px-3 py-1 rounded-full border ${getMomentumColor(client.momentumScore || 0)} mb-1`}>Score: {client.momentumScore || 0}</div>
+            <div className="flex gap-2 text-[10px] text-slate-400"><span>{(client.sales?.length || 0)} Sales</span><span>•</span><span>${(client.value || 0).toLocaleString()} Exp. Revenue</span></div>
+         </div>
+      </div>
+      <div className="flex border-b border-slate-100">
+          {['overview', 'logs', 'tools', 'policies', 'family'].map(tab => (
+              <button key={tab} onClick={(e) => { e.stopPropagation(); setActiveTab(tab as any); }} className={`flex-1 py-3 text-xs font-semibold border-b-2 transition-colors capitalize ${activeTab === tab ? 'border-slate-800 text-slate-800' : 'border-transparent text-slate-400 hover:text-slate-600'}`}>
+                  {tab === 'logs' ? `Logs (${client.notes?.length || 0})` : 
+                   tab === 'policies' ? `Policies (${client.policies?.length || 0})` : 
+                   tab === 'family' ? `Family (${client.familyMembers?.length || 0})` : tab}
+              </button>
+          ))}
+      </div>
+      <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
+      {activeTab === 'overview' && (
+      <div className="space-y-6">
+          <div className="grid grid-cols-2 gap-4">
+              <EditableField label="Current Stage" value={client.stage} onChange={(v:any) => handleUpdateField('stage', v)} type="select" options={DEFAULT_SETTINGS.statuses} />
+              <EditableField label="Priority" value={client.priority} onChange={(v:any) => handleUpdateField('priority', v)} type="select" options={['High', 'Medium', 'Low']} className={client.priority === 'High' ? 'text-rose-600 font-semibold' : ''} />
+              <EditableField label="Exp. Revenue ($)" value={client.value} onChange={(v:any) => handleUpdateField('value', v)} type="number" placeholder="Est. Revenue" />
+              <EditableField label="Platform" value={client.platform} onChange={(v:any) => handleUpdateField('platform', v)} type="select" options={DEFAULT_SETTINGS.platforms} />
+          </div>
+          <div className="border-t border-slate-100 my-2"></div>
+          <div className="grid grid-cols-2 gap-4">
+              <EditableField label="First Appt" value={client.firstApptDate} onChange={(v:any) => handleUpdateField('firstApptDate', v)} type="datetime-local" />
+              <EditableField label="Status" value={client.contactStatus} onChange={(v:any) => handleUpdateField('contactStatus', v)} type="select" options={['Uncontacted', 'Attempted', 'Active']} />
+          </div>
+          <div className="border-t border-slate-100 my-2"></div>
+          <div className="grid grid-cols-2 gap-4">
+              <EditableField label="Phone" value={client.phone} onChange={(v:any) => handleUpdateField('phone', v)} type="text" />
+              <EditableField label="Email" value={client.email} onChange={(v:any) => handleUpdateField('email', v)} type="text" />
+              <EditableField label="Job" value={client.jobTitle} onChange={(v:any) => handleUpdateField('jobTitle', v)} type="text" />
+              <EditableField label="DOB" value={client.dob} onChange={(v:any) => handleUpdateField('dob', v)} type="date" />
+          </div>
+          <div className="border-t border-slate-100 my-2"></div>
+          <div className="space-y-4">
+             <div className="grid grid-cols-2 gap-4">
+                <EditableField label="Retire Age" value={client.retirementAge} onChange={(v:any) => handleUpdateField('retirementAge', v)} type="number" placeholder="65" />
+                <EditableField label="Tags" value={client.tags?.join(', ')} onChange={(v:any) => handleUpdateField('tags', v.split(',').map((s:string) => s.trim()))} type="text" placeholder="e.g. VIP" />
+             </div>
+             <EditableField label="Goals / Why" value={client.goals} onChange={(v:any) => handleUpdateField('goals', v)} type="textarea" placeholder="Client goals..." />
+          </div>
+          <div className="bg-gradient-to-br from-slate-50 to-blue-50/50 rounded-lg p-3 border border-slate-100 mt-4">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[10px] font-bold text-blue-400 uppercase tracking-wider flex items-center gap-1">Smart Next Step</span>
+              <button onClick={handleRefreshAnalysis} className={`text-[10px] text-blue-600 hover:text-blue-800 font-medium transition-colors ${isAnalyzing ? 'animate-pulse' : ''}`} disabled={isAnalyzing}>{isAnalyzing ? 'Thinking...' : 'Refresh AI'}</button>
+            </div>
+            <p className="text-xs text-slate-600 leading-relaxed font-medium">{client.nextAction || "Review recent notes to determine next steps."}</p>
+          </div>
+      </div>
+      )}
+      
+      {activeTab === 'logs' && (
+        <div className="flex flex-col h-full" onClick={(e) => e.stopPropagation()}>
+            <div className="flex-1 space-y-3 mb-4 overflow-y-auto max-h-[300px] pr-2 custom-scrollbar">
+                {(client.notes || []).map((note, i) => (
+                    <div key={i} className="bg-slate-50 p-3 rounded-xl border border-slate-100 text-xs">
+                        <div className="flex justify-between items-center mb-1.5">
+                            <span className="font-bold text-slate-700">{note.author || 'Advisor'}</span>
+                            <span className="text-[10px] text-slate-400 font-mono">{fmtDateTime(note.date)}</span>
+                        </div>
+                        <p className="text-slate-600 leading-relaxed whitespace-pre-wrap">{note.content}</p>
+                    </div>
+                ))}
+                {(!client.notes || client.notes.length === 0) && (
+                    <div className="text-center py-8 text-slate-400 text-xs italic">No activity logs recorded.</div>
+                )}
+            </div>
+            <div className="pt-2 border-t border-slate-100">
+                <textarea 
+                    className="w-full p-3 bg-white border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-indigo-100 focus:border-indigo-300 outline-none resize-none transition-all placeholder-slate-300"
+                    rows={3}
+                    placeholder="Type a log entry..."
+                    value={newNote}
+                    onChange={(e) => setNewNote(e.target.value)}
+                    onKeyDown={(e) => { if(e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAddNote(); } }}
+                />
+                <button 
+                    onClick={handleAddNote}
+                    disabled={!newNote.trim()}
+                    className="w-full mt-2 py-2 bg-slate-900 text-white text-xs font-bold rounded-lg hover:bg-slate-800 transition-colors disabled:opacity-50 shadow-sm"
+                >
+                    Add Log Entry
+                </button>
+            </div>
+        </div>
+      )}
+
+      {activeTab === 'tools' && <FinancialTools client={client} onUpdate={onUpdate} />}
+      {activeTab === 'policies' && (
+          <div onClick={(e) => e.stopPropagation()}>
+              <div className="space-y-2 mb-4">
+                  {(!client.policies || client.policies.length === 0) ? <p className="text-xs text-slate-400 italic text-center py-4">No policies added yet.</p> : client.policies.map(p => (
+                      <div key={p.id} className="flex justify-between items-center bg-slate-50 p-2.5 rounded-lg border border-slate-100">
+                          <div className="overflow-hidden"><p className="text-xs font-semibold text-slate-700 truncate">{p.provider} - {p.name}</p><p className="text-[10px] text-slate-400 font-mono">#{p.policyNumber}</p></div>
+                          <span className="text-xs font-bold text-emerald-600">${p.value.toLocaleString()}</span>
+                      </div>
+                  ))}
+              </div>
+              <div className="pt-3 border-t border-slate-100 space-y-2">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Add Policy</p>
+                  <input className="w-full text-xs p-2 border border-slate-200 rounded-lg text-slate-700 focus:ring-1 focus:ring-slate-400 outline-none" placeholder="Provider" value={newPolicyProvider} onChange={e => setNewPolicyProvider(e.target.value)} />
+                  <input className="w-full text-xs p-2 border border-slate-200 rounded-lg text-slate-700 focus:ring-1 focus:ring-slate-400 outline-none" placeholder="Policy Name" value={newPolicyName} onChange={e => setNewPolicyName(e.target.value)} />
+                  <div className="flex gap-2">
+                     <input className="w-1/2 text-xs p-2 border border-slate-200 rounded-lg text-slate-700 focus:ring-1 focus:ring-slate-400 outline-none" placeholder="Policy #" value={newPolicyNumber} onChange={e => setNewPolicyNumber(e.target.value)} />
+                     <input className="w-1/2 text-xs p-2 border border-slate-200 rounded-lg text-slate-700 focus:ring-1 focus:ring-slate-400 outline-none" placeholder="Value ($)" type="number" value={newPolicyValue} onChange={e => setNewPolicyValue(e.target.value)} />
+                  </div>
+                  <button onClick={handleAddPolicy} className="w-full py-2 bg-slate-800 text-white text-xs font-bold rounded-lg hover:bg-slate-700 transition-colors shadow-sm">Add Policy</button>
+                  <button onClick={handleGenerateReport} className="w-full py-2 mt-2 bg-indigo-50 text-indigo-700 border border-indigo-200 text-xs font-bold rounded-lg hover:bg-indigo-100 transition-colors flex items-center justify-center gap-2">Generate Investment Report</button>
+              </div>
+          </div>
+      )}
+      {activeTab === 'family' && (
+      <div onClick={(e) => e.stopPropagation()}>
+          <div className="space-y-2 mb-4">
+              {(!client.familyMembers || client.familyMembers.length === 0) ? <p className="text-xs text-slate-400 italic text-center py-4">No family members listed.</p> : client.familyMembers.map(m => (
+                  <div key={m.id} className="flex justify-between items-center bg-slate-50 p-2.5 rounded-lg border border-slate-100">
+                      <div><p className="text-xs font-semibold text-slate-700">{m.name}</p><p className="text-[10px] text-slate-500">{m.dob ? new Date(m.dob).toLocaleDateString() : 'No DOB'}</p></div>
+                      <span className="text-[10px] font-medium px-2 py-0.5 bg-indigo-50 text-indigo-600 rounded-full">{m.role}</span>
+                  </div>
+              ))}
+          </div>
+          <div className="pt-3 border-t border-slate-100">
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">Add Member</p>
+              <input className="w-full text-xs p-2 border border-slate-200 rounded-lg mb-2 text-slate-700 focus:ring-1 focus:ring-slate-400 outline-none" placeholder="Name" value={newMemberName} onChange={e => setNewMemberName(e.target.value)} />
+              <div className="flex gap-2 mb-2">
+                  <select className="text-xs p-2 border border-slate-200 rounded-lg flex-1 bg-white text-slate-700 focus:ring-1 focus:ring-slate-400 outline-none" value={newMemberRole} onChange={e => setNewMemberRole(e.target.value as any)}>
+                      <option value="Child">Child</option><option value="Father">Father</option><option value="Mother">Mother</option><option value="Other">Other</option>
+                  </select>
+                  <input type="date" className="text-xs p-2 border border-slate-200 rounded-lg flex-1 text-slate-700 focus:ring-1 focus:ring-slate-400 outline-none" value={newMemberDob} onChange={e => setNewMemberDob(e.target.value)} />
+              </div>
+              <button onClick={handleAddFamilyMember} className="w-full py-2 bg-slate-800 text-white text-xs font-bold rounded-lg hover:bg-slate-700 transition-colors shadow-sm">Add Member</button>
+          </div>
+      </div>
+      )}
+      </div>
+      <div className="p-3 border-t border-slate-100 bg-slate-50 flex gap-2 shrink-0">
+            <button onClick={handleWhatsApp} className="flex-1 flex items-center justify-center gap-1.5 py-2 bg-[#25D366] hover:bg-[#128C7E] text-white rounded-lg text-xs font-bold transition-colors shadow-sm">Chat</button>
+            <button onClick={handleCalendar} className="flex-1 flex items-center justify-center gap-1.5 py-2 bg-blue-50 text-blue-600 hover:bg-blue-100 border border-blue-100 rounded-lg text-xs font-bold transition-colors shadow-sm">Book</button>
+      </div>
+      {reportModalOpen && (
+          <div className="absolute inset-0 z-50 bg-white flex flex-col p-4 animate-fade-in" onClick={e => e.stopPropagation()}>
+              <div className="flex justify-between items-center mb-4 border-b border-slate-100 pb-2"><h3 className="font-bold text-sm text-slate-800">Generated Report</h3><button onClick={() => setReportModalOpen(false)} className="text-slate-400 hover:text-slate-600">✕</button></div>
+              <div className="flex-1 bg-slate-50 rounded-lg p-3 text-xs text-slate-700 overflow-y-auto whitespace-pre-wrap font-sans leading-relaxed border border-slate-200">
+                  {isGeneratingReport ? <div className="flex flex-col items-center justify-center h-full gap-2 text-slate-400"><span className="w-6 h-6 border-2 border-slate-300 border-t-emerald-500 rounded-full animate-spin"></span>Writing report...</div> : reportContent}
+              </div>
+              <div className="pt-3 flex gap-2">
+                  <button onClick={() => {navigator.clipboard.writeText(reportContent); alert('Copied to clipboard!');}} className="flex-1 py-1.5 bg-white border border-slate-200 text-slate-700 text-xs font-bold rounded hover:bg-slate-50">Copy Text</button>
+                  <button onClick={() => window.open(`mailto:${client.email}?subject=Investment Review&body=${encodeURIComponent(reportContent)}`)} className="flex-1 py-1.5 bg-indigo-600 text-white text-xs font-bold rounded hover:bg-indigo-700">Email Client</button>
+              </div>
+          </div>
+      )}
+    </div>
+  );
+};

@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from './contexts/AuthContext';
 import { ClientProvider, useClient } from './contexts/ClientContext';
@@ -27,6 +28,7 @@ import AnalyticsTab from './features/analytics/AnalyticsTab';
 import CrmTab from './features/crm/CrmTab';
 import AdminTab from './features/admin/AdminTab';
 import ReportTab from './features/report/ReportTab';
+import RemindersTab from './features/reminders/RemindersTab';
 
 // UI Components
 import Button from './components/ui/Button';
@@ -276,6 +278,7 @@ const AppInner: React.FC = () => {
             onTransferEnd={(id) => setTransferringIds(prev => { const n = new Set(prev); n.delete(id); return n; })}
           />
         )}
+        {activeTab === 'reminders' && <RemindersTab />}
         {activeTab === 'admin' && user?.role === 'admin' && <AdminTab />}
       </AppShell>
       <AiAssistant currentClient={generateClientObject()} />

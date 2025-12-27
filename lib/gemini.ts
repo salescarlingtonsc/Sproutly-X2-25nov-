@@ -3,9 +3,10 @@ import { GoogleGenAI, Type, Modality } from "@google/genai";
 
 const getAI = () => new GoogleGenAI({ apiKey: process.env.API_KEY });
 
+// ... existing code ...
+
 /**
  * STRATEGIC OUTREACH PROTOCOL ENGINE
- * Generates personalized messages based on pipeline stage.
  */
 export const generateAutomatedPitch = async (clientData: any) => {
   const ai = getAI();
@@ -63,8 +64,75 @@ export const generateAutomatedPitch = async (clientData: any) => {
 };
 
 /**
+ * MOMENTUM ANALYSIS ENGINE
+ */
+export const analyzeClientMomentum = async (clientData: any) => {
+  const ai = getAI();
+  const prompt = `
+    ANALYZE CLIENT MOMENTUM.
+    Client: ${JSON.stringify(clientData)}
+    
+    Task: Calculate a Momentum Score (0-100) and identify the Next Best Action.
+    Factors:
+    - Last contact date (Recency)
+    - Deal value (Potential)
+    - Completeness of profile data (Engagement)
+    - Number of family members added (Trust)
+  `;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            score: { type: Type.NUMBER },
+            nextAction: { type: Type.STRING }
+          },
+          required: ['score', 'nextAction']
+        }
+      }
+    });
+    return JSON.parse(response.text || '{"score": 50, "nextAction": "Review profile"}');
+  } catch (e) {
+    return { score: 50, nextAction: 'Manual review required' };
+  }
+};
+
+/**
+ * INVESTMENT REPORT GENERATOR
+ */
+export const generateInvestmentReport = async (clientData: any) => {
+  const ai = getAI();
+  const prompt = `
+    Generate a concise Investment Review Report for ${clientData.name}.
+    Data: ${JSON.stringify(clientData)}
+    
+    Structure:
+    1. Portfolio Summary
+    2. Performance Analysis (Simulated based on profile)
+    3. Recommended Rebalancing
+    
+    Tone: Professional, Encouraging, Advisory.
+    Format: Plain Text.
+  `;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: prompt
+    });
+    return response.text || "Report generation failed.";
+  } catch (e) {
+    return "Service unavailable.";
+  }
+};
+
+/**
  * QUANTUM AUDIT ENGINE
- * Deep structural analysis of financial plans.
  */
 export const runQuantumDeepDive = async (clientData: any) => {
   const ai = getAI();

@@ -2,7 +2,7 @@ import React, { createContext, useContext, useState, useMemo, useEffect, ReactNo
 import { 
   Profile, Expenses, CustomExpense, Child, CpfState, CashflowState, 
   InsuranceState, InvestorState, PropertyState, WealthState, Client, 
-  RetirementSettings, CpfData, CashflowData
+  RetirementSettings, CpfData, CashflowData, Sale, FamilyMember, Policy, Note
 } from '../types';
 import { getAge, toNum } from '../lib/helpers';
 import { computeCpf } from '../lib/calculators';
@@ -23,6 +23,20 @@ export const INITIAL_INVESTOR: InvestorState = { portfolioValue: '', portfolioTy
 export const INITIAL_PROPERTY: PropertyState = { propertyPrice: '', propertyType: 'hdb', annualValue: '', downPaymentPercent: '25', loanTenure: '25', interestRate: '3.5', useCpfOa: false, cpfOaAmount: '' };
 export const INITIAL_WEALTH: WealthState = { annualPremium: '', projectionYears: '20', growthRate: '5' };
 export const INITIAL_RETIREMENT: RetirementSettings = { initialSavings: '', scenario: 'moderate', investmentPercent: '50' };
+
+export const INITIAL_CRM_STATE = {
+  company: '',
+  platform: 'Personal',
+  contactStatus: 'Uncontacted' as 'Uncontacted' | 'Attempted' | 'Active',
+  momentumScore: 50,
+  sales: [] as Sale[],
+  familyMembers: [] as FamilyMember[],
+  policies: [] as Policy[], // CRM policies
+  notes: [] as Note[],
+  goals: '',
+  milestones: { createdAt: new Date().toISOString() },
+  nextAction: ''
+};
 
 interface ClientContextType {
   // Metadata
@@ -47,6 +61,7 @@ interface ClientContextType {
   propertyState: PropertyState;
   wealthState: WealthState;
   retirement: RetirementSettings;
+  crmState: typeof INITIAL_CRM_STATE;
 
   // Setters
   setProfile: (p: Profile) => void;
@@ -60,6 +75,7 @@ interface ClientContextType {
   setPropertyState: (s: PropertyState) => void;
   setWealthState: (s: WealthState) => void;
   setRetirement: (r: RetirementSettings) => void;
+  setCrmState: (s: typeof INITIAL_CRM_STATE) => void;
 
   // Derived Data (Calculated)
   age: number;
@@ -96,6 +112,7 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const [propertyState, setPropertyState] = useState<PropertyState>(INITIAL_PROPERTY);
   const [wealthState, setWealthState] = useState<WealthState>(INITIAL_WEALTH);
   const [retirement, setRetirement] = useState<RetirementSettings>(INITIAL_RETIREMENT);
+  const [crmState, setCrmState] = useState(INITIAL_CRM_STATE);
 
   // Sync profile children with children state
   useEffect(() => {
@@ -146,6 +163,21 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     setPropertyState(c.propertyState || INITIAL_PROPERTY);
     setWealthState(c.wealthState || INITIAL_WEALTH);
     setRetirement(c.retirement || INITIAL_RETIREMENT);
+
+    // Load CRM specific fields
+    setCrmState({
+      company: c.company || '',
+      platform: c.platform || 'Personal',
+      contactStatus: c.contactStatus || 'Uncontacted',
+      momentumScore: c.momentumScore || 50,
+      sales: c.sales || [],
+      familyMembers: c.familyMembers || [],
+      policies: c.policies || [],
+      notes: c.notes || [],
+      goals: c.goals || '',
+      milestones: c.milestones || { createdAt: c.lastUpdated },
+      nextAction: c.nextAction || ''
+    });
   };
 
   const resetClient = () => {
@@ -169,6 +201,7 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     setPropertyState(INITIAL_PROPERTY);
     setWealthState(INITIAL_WEALTH);
     setRetirement(INITIAL_RETIREMENT);
+    setCrmState(INITIAL_CRM_STATE);
   };
 
   const generateClientObject = (): Client => {
@@ -190,7 +223,35 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       appointments,
       documents,
       _ownerId: ownerId || undefined,
-      _ownerEmail: ownerEmail || undefined
+      _ownerEmail: ownerEmail || undefined,
+
+      // CRM Top-Level Shortcuts (Derived)
+      name: profile.name,
+      email: profile.email,
+      phone: profile.phone,
+      jobTitle: profile.jobTitle || '',
+      dob: profile.dob,
+      retirementAge: toNum(profile.retirementAge),
+      tags: profile.tags || [],
+      
+      stage: followUp.status,
+      priority: followUp.priority || 'Medium',
+      value: toNum(followUp.dealValue),
+      lastContact: followUp.lastContactedAt || '',
+      firstApptDate: appointments.firstApptDate,
+
+      // CRM State Fields
+      company: crmState.company,
+      platform: crmState.platform,
+      contactStatus: crmState.contactStatus,
+      momentumScore: crmState.momentumScore,
+      sales: crmState.sales,
+      familyMembers: crmState.familyMembers,
+      policies: crmState.policies,
+      notes: crmState.notes,
+      goals: crmState.goals,
+      milestones: crmState.milestones,
+      nextAction: crmState.nextAction
     };
   };
 
@@ -209,6 +270,7 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       propertyState, setPropertyState,
       wealthState, setWealthState,
       retirement, setRetirement,
+      crmState, setCrmState,
       age, cpfData, cashflowData,
       loadClient, resetClient, generateClientObject
     }}>

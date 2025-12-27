@@ -54,9 +54,9 @@ const AdminTab: React.FC = () => {
         .order('created_at', { ascending: false });
 
       if (error) {
-         if (error.message.includes('stack depth')) {
-            setDiagnosticMsg('RECURSION ERROR: Profiles check failed.');
-            toast.error("Database Recursion Detected. Repair Required.");
+         if (error.message.includes('stack depth') || error.code === '42P01') {
+            setDiagnosticMsg('DATABASE SCHEMA MISSING OR CORRUPT');
+            toast.error("Database structure requires initialization.");
             setIsSqlModalOpen(true); 
          }
          throw error;
@@ -68,7 +68,7 @@ const AdminTab: React.FC = () => {
 
       setDiagnosticMsg(`CLOUD SYNC: ACTIVE`);
     } catch (err: any) { 
-      setDiagnosticMsg(`CRITICAL ERROR: ${err.message}`);
+      setDiagnosticMsg(`SYSTEM ALERT: ${err.message}`);
     } finally { 
       setLoading(false); 
     }
@@ -133,10 +133,105 @@ const AdminTab: React.FC = () => {
      return Object.entries(tabUsage).sort((a,b) => b[1] - a[1]).slice(0, 4);
   }, [activities]);
 
-  const repairSql = `-- Sproutly Database Repair Script (v4.0 - GOLD)
--- Run this in your Supabase SQL Editor to kill RLS recursion
+  const repairSql = `-- SPROUTLY QUANTUM DATABASE RESTORATION PROTOCOL (v5.0)
+-- INSTRUCTIONS: Run this in Supabase SQL Editor to restore full system functionality.
 
--- 1. Create a strictly non-recursive SECURITY DEFINER function
+-- 1. ENABLE EXTENSIONS
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+-- 2. CREATE/RESTORE CORE TABLES
+CREATE TABLE IF NOT EXISTS public.profiles (
+  id UUID REFERENCES auth.users ON DELETE CASCADE PRIMARY KEY,
+  email TEXT,
+  role TEXT DEFAULT 'user',
+  status TEXT DEFAULT 'pending',
+  subscription_tier TEXT DEFAULT 'free',
+  extra_slots INT DEFAULT 0,
+  modules TEXT[] DEFAULT '{}',
+  is_admin BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.clients (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id UUID REFERENCES public.profiles(id),
+  data JSONB DEFAULT '{}',
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.activities (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id UUID REFERENCES public.profiles(id),
+  client_id UUID,
+  type TEXT,
+  title TEXT,
+  details JSONB,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.message_templates (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id UUID REFERENCES public.profiles(id),
+  label TEXT,
+  content TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.crm_views (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id UUID REFERENCES public.profiles(id),
+  name TEXT,
+  filters JSONB,
+  sort JSONB,
+  visible_column_ids TEXT[],
+  col_widths JSONB,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.client_files (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id UUID REFERENCES public.profiles(id),
+  client_id UUID REFERENCES public.clients(id) ON DELETE CASCADE,
+  name TEXT,
+  size_bytes BIGINT,
+  mime_type TEXT,
+  storage_path TEXT,
+  category TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.field_definitions (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id UUID REFERENCES public.profiles(id),
+  key TEXT,
+  label TEXT,
+  type TEXT,
+  section TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.client_field_values (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  client_id UUID REFERENCES public.clients(id) ON DELETE CASCADE,
+  field_id UUID REFERENCES public.field_definitions(id) ON DELETE CASCADE,
+  user_id UUID REFERENCES public.profiles(id),
+  value_text TEXT,
+  value_number NUMERIC,
+  value_bool BOOLEAN,
+  value_date TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(client_id, field_id)
+);
+
+-- 3. STORAGE BUCKETS (If using Supabase Storage)
+INSERT INTO storage.buckets (id, name, public) 
+VALUES ('client-files', 'client-files', FALSE)
+ON CONFLICT (id) DO NOTHING;
+
+-- 4. SECURITY & PERMISSIONS (Prevents Recursion Errors)
 CREATE OR REPLACE FUNCTION public.check_is_admin() 
 RETURNS boolean 
 LANGUAGE plpgsql 
@@ -147,59 +242,66 @@ DECLARE
   v_role text;
   v_is_admin boolean;
 BEGIN
-  -- Perform a direct query. Because this is SECURITY DEFINER,
-  -- it does NOT trigger RLS on the profiles table, breaking the recursion.
   SELECT role, is_admin INTO v_role, v_is_admin
   FROM profiles 
   WHERE id = auth.uid();
-  
   RETURN (v_role = 'admin' OR v_is_admin = true);
 END;
 $$;
 
--- 2. Grant permissions
-REVOKE EXECUTE ON FUNCTION public.check_is_admin() FROM public;
 GRANT EXECUTE ON FUNCTION public.check_is_admin() TO authenticated;
 GRANT EXECUTE ON FUNCTION public.check_is_admin() TO service_role;
 
--- 3. Reset RLS and Policies
-ALTER TABLE profiles DISABLE ROW LEVEL SECURITY;
-ALTER TABLE clients DISABLE ROW LEVEL SECURITY;
-ALTER TABLE message_templates DISABLE ROW LEVEL SECURITY;
+-- 5. ENABLE ROW LEVEL SECURITY
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE clients ENABLE ROW LEVEL SECURITY;
+ALTER TABLE activities ENABLE ROW LEVEL SECURITY;
+ALTER TABLE message_templates ENABLE ROW LEVEL SECURITY;
+ALTER TABLE crm_views ENABLE ROW LEVEL SECURITY;
+ALTER TABLE client_files ENABLE ROW LEVEL SECURITY;
 
--- Clear all existing problematic policies
+-- 6. RESET POLICIES (Clean Slate)
 DO $$ 
 DECLARE 
   pol record;
 BEGIN
   FOR pol IN (SELECT policyname, tablename FROM pg_policies WHERE schemaname = 'public') LOOP
-    EXECUTE 'DROP POLICY IF EXISTS ' || quote_ident(pol.policyname) || ' ON ' || quote_ident(pol.tablename);
+    EXECUTE 'DROP POLICY IF EXISTS "' || pol.policyname || '" ON ' || quote_ident(pol.tablename);
   END LOOP;
 END $$;
 
--- 4. Apply Clean, Non-Recursive Policies
-CREATE POLICY "Profiles: Self" ON profiles FOR SELECT USING ( auth.uid() = id );
-CREATE POLICY "Profiles: Admin" ON profiles FOR SELECT USING ( check_is_admin() );
+-- 7. APPLY NEW POLICIES
+-- Profiles
+CREATE POLICY "Self Profile" ON profiles FOR ALL USING (auth.uid() = id);
+CREATE POLICY "Admin Profile" ON profiles FOR ALL USING (check_is_admin());
 
-CREATE POLICY "Clients: Owner" ON clients FOR ALL USING ( auth.uid() = user_id );
-CREATE POLICY "Clients: Admin" ON clients FOR ALL USING ( check_is_admin() );
+-- Clients
+CREATE POLICY "Owner Clients" ON clients FOR ALL USING (auth.uid() = user_id);
+CREATE POLICY "Admin Clients" ON clients FOR ALL USING (check_is_admin());
 
-CREATE POLICY "Templates: Owner" ON message_templates FOR ALL USING ( auth.uid() = user_id );
-CREATE POLICY "Templates: Admin" ON message_templates FOR ALL USING ( check_is_admin() );
+-- Activities
+CREATE POLICY "Owner Activities" ON activities FOR ALL USING (auth.uid() = user_id);
+CREATE POLICY "Admin Activities" ON activities FOR SELECT USING (check_is_admin());
 
--- 5. Promote Current User to Admin (IMPORTANT)
--- This ensures you can actually access the Admin features
+-- Message Templates
+CREATE POLICY "Owner Templates" ON message_templates FOR ALL USING (auth.uid() = user_id);
+
+-- CRM Views
+CREATE POLICY "Owner Views" ON crm_views FOR ALL USING (auth.uid() = user_id);
+
+-- Files
+CREATE POLICY "Owner Files" ON client_files FOR ALL USING (auth.uid() = user_id);
+
+-- Storage
+CREATE POLICY "Owner Storage Access" ON storage.objects FOR ALL USING ( auth.uid()::text = (storage.foldername(name))[1] );
+
+-- 8. BOOTSTRAP ADMIN (YOU)
 UPDATE profiles 
 SET role = 'admin', is_admin = true, status = 'approved' 
 WHERE id = auth.uid();
 
--- 6. Re-enable RLS
-ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
-ALTER TABLE clients ENABLE ROW LEVEL SECURITY;
-ALTER TABLE message_templates ENABLE ROW LEVEL SECURITY;
-
--- 7. Verification
-SELECT 'Success' as status, check_is_admin() as is_admin_verified;`;
+-- 9. VERIFICATION
+SELECT 'System Restored Successfully' as status, count(*) as profiles_count FROM profiles;`;
 
   if (loading) return (
     <div className="p-24 text-center space-y-4">
@@ -222,7 +324,7 @@ SELECT 'Success' as status, check_is_admin() as is_admin_verified;`;
                 </div>
              </div>
              <div className="flex gap-4">
-                <Button variant="ghost" className="text-white border-white/10" onClick={() => setIsSqlModalOpen(true)}>Repair Database</Button>
+                <Button variant="ghost" className="text-white border-white/10 bg-white/5 hover:bg-white/10" onClick={() => setIsSqlModalOpen(true)}>Restore Database</Button>
                 <Button variant="ghost" className="text-white border-white/10" onClick={handleRunDiagnostics} isLoading={isRunningDiag}>Verify Integrity</Button>
                 <Button variant="primary" className="bg-indigo-600 hover:bg-indigo-700 border-none" onClick={refreshControlPanel}>Sync Pulse</Button>
              </div>
@@ -360,29 +462,29 @@ SELECT 'Success' as status, check_is_admin() as is_admin_verified;`;
 
        {/* MODAL: SQL REPAIR */}
        <Modal 
-          isOpen={isSqlModalOpen} onClose={() => setIsSqlModalOpen(false)} title="Database Repair Protocol"
-          footer={<Button variant="primary" onClick={() => setIsSqlModalOpen(false)}>Acknowledged</Button>}
+          isOpen={isSqlModalOpen} onClose={() => setIsSqlModalOpen(false)} title="Database Restoration Protocol"
+          footer={<Button variant="primary" onClick={() => setIsSqlModalOpen(false)}>I have executed the script</Button>}
        >
           <div className="space-y-6">
-             <div className="bg-amber-50 border border-amber-200 p-4 rounded-xl flex gap-4 items-start">
-                <div className="text-xl text-amber-600">⚠️</div>
+             <div className="bg-emerald-50 border border-emerald-200 p-4 rounded-xl flex gap-4 items-start">
+                <div className="text-xl text-emerald-600">🛠</div>
                 <div>
-                   <h4 className="text-[10px] font-black uppercase text-amber-900 mb-1">Stack Depth Limit Exceeded</h4>
-                   <p className="text-[11px] text-amber-700 leading-relaxed">
-                     Your database has recursive RLS policies. This causes an infinite loop when checking permissions. Run the script below in your <b>Supabase SQL Editor</b> to resolve this immediately.
+                   <h4 className="text-[10px] font-black uppercase text-emerald-900 mb-1">Database Initialization Required</h4>
+                   <p className="text-[11px] text-emerald-700 leading-relaxed">
+                     To bring back your database, you must run this setup script. It will create all necessary tables and restore your admin privileges.
                    </p>
                 </div>
              </div>
              
              <div>
-                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Repair Script (v4.0 GOLD)</label>
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Restoration Script (v5.0)</label>
                 <div className="relative group">
-                   <pre className="bg-slate-900 text-indigo-300 p-4 rounded-xl text-[10px] font-mono overflow-x-auto max-h-64 custom-scrollbar leading-relaxed">
+                   <pre className="bg-slate-900 text-emerald-300 p-4 rounded-xl text-[10px] font-mono overflow-x-auto max-h-64 custom-scrollbar leading-relaxed">
                       {repairSql}
                    </pre>
                    <button 
-                      onClick={() => { navigator.clipboard.writeText(repairSql); toast.success("Copied to clipboard"); }}
-                      className="absolute top-2 right-2 bg-white/10 hover:bg-white/20 text-white text-[9px] px-2 py-1 rounded font-bold uppercase transition-all"
+                      onClick={() => { navigator.clipboard.writeText(repairSql); toast.success("Script Copied to Clipboard"); }}
+                      className="absolute top-2 right-2 bg-white/10 hover:bg-white/20 text-white text-[9px] px-2 py-1 rounded font-bold uppercase transition-all border border-white/20"
                    >
                       Copy Script
                    </button>
@@ -390,7 +492,14 @@ SELECT 'Success' as status, check_is_admin() as is_admin_verified;`;
              </div>
 
              <div className="p-4 bg-slate-50 border border-slate-100 rounded-xl text-[10px] text-slate-500 italic">
-                <b>Instructions:</b> Open your Supabase Dashboard &gt; SQL Editor &gt; New Query &gt; Paste &gt; Run. Refresh Sproutly once the query completes.
+                <b>Instructions:</b>
+                <ol className="list-decimal pl-4 mt-2 space-y-1">
+                   <li>Go to your <b>Supabase Dashboard</b>.</li>
+                   <li>Click <b>SQL Editor</b> (sidebar).</li>
+                   <li>Click <b>New Query</b>.</li>
+                   <li><b>Paste</b> the script above and click <b>Run</b>.</li>
+                   <li>Return here and click "Sync Pulse".</li>
+                </ol>
              </div>
           </div>
        </Modal>

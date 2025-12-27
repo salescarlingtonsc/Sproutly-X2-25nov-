@@ -27,13 +27,22 @@ export const db = {
 
         return clients.map((row: any) => {
           const clientData = row.data || {};
+          const profile = clientData.profile || { ...INITIAL_PROFILE };
+          
+          // CRITICAL: Self-healing data mapping
+          // Ensures clients appear in UI even if they lack top-level fields (e.g. from old imports)
           return {
             ...clientData, 
             id: row.id,
-            profile: clientData.profile || { ...INITIAL_PROFILE },
+            profile,
+            // Backfill top-level keys from profile if missing
+            name: clientData.name || profile.name || 'Unnamed Client',
+            email: clientData.email || profile.email || '',
+            phone: clientData.phone || profile.phone || '',
+            
             followUp: clientData.followUp || { status: 'new' },
             _ownerId: row.user_id,
-            _ownerEmail: clientData._ownerEmail || `Advisor (${row.user_id.substring(0,4)})`
+            _ownerEmail: clientData._ownerEmail || `Advisor (${row.user_id?.substring(0,4)})`
           } as Client;
         });
       } catch (e: any) {
@@ -100,9 +109,6 @@ export const db = {
     const { _ownerId, _ownerEmail, ...payloadData } = client;
 
     // Fix: Explicitly include user_id in the upsert payload
-    // If _ownerId exists (existing client), keep it.
-    // If not (new client), assign to current user.
-    // Double fallback to ensure we never send null for user_id on creation
     const validOwnerId = (_ownerId && _ownerId !== 'undefined') ? _ownerId : authUser.id;
 
     const payload: any = {
@@ -137,12 +143,20 @@ export const db = {
     if (!supabase) return 0;
     const payloads = leads.map(lead => {
       const id = crypto.randomUUID();
+      const name = lead.name || 'Unnamed Lead';
+      const email = lead.email || '';
+      const phone = lead.phone || '';
+      
       return {
         id,
         user_id: targetUserId,
         data: {
           id,
-          profile: { ...INITIAL_PROFILE, name: lead.name || 'Unnamed Lead', email: lead.email || '', phone: lead.phone || '' },
+          // Correctly populate top-level fields for CRM search/filtering
+          name,
+          email,
+          phone,
+          profile: { ...INITIAL_PROFILE, name, email, phone },
           expenses: INITIAL_EXPENSES,
           retirement: INITIAL_RETIREMENT,
           lastUpdated: new Date().toISOString(),

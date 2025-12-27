@@ -1,3 +1,4 @@
+
 export interface Child {
   id: number;
   name: string;
@@ -27,6 +28,39 @@ export type LeadSource = 'IG' | 'FB' | 'LinkedIn' | 'Roadshow' | 'Referral' | 'C
 export type LeadInterest = 'Retirement' | 'Children' | 'Property' | 'Wealth' | 'Protection' | 'Tax';
 
 export type SubscriptionTier = 'free' | 'platinum' | 'diamond' | 'organisation';
+
+// New CRM Types
+export interface Sale {
+  id: string;
+  productId: string;
+  productName: string;
+  premiumAmount: number;
+  date: string;
+  status: 'Pending' | 'In Force' | 'Lapsed';
+}
+
+export interface FamilyMember {
+  id: string;
+  name: string;
+  role: 'Father' | 'Mother' | 'Child' | 'Other';
+  dob: string;
+}
+
+export interface Policy {
+  id: string;
+  provider: string;
+  name: string;
+  policyNumber: string;
+  value: number;
+  startDate: string;
+}
+
+export interface Note {
+  id: string;
+  content: string;
+  date: string;
+  author: string;
+}
 
 export interface Profile {
   name: string;
@@ -175,6 +209,17 @@ export type ContactStatus =
   | 'client'
   | 'not_keen';
 
+// New Stage type for compatibility
+export const Stage = {
+  New: 'New Lead',
+  Contacted: 'Contacted',
+  ApptSet: 'Appt Set',
+  ApptMet: 'Appt Met',
+  Proposal: 'Proposal',
+  Client: 'Client',
+  Dead: 'Lost'
+};
+
 export interface FollowUp {
   status: ContactStatus;
   notes?: string;
@@ -208,6 +253,41 @@ export interface Client {
   fieldValues?: Record<string, any>; 
   _ownerId?: string;
   _ownerEmail?: string;
+
+  // Expanded CRM Fields (Top-Level Shortcuts for UI)
+  name: string; // Synced with profile.name
+  company: string;
+  stage: string; // Synced with followUp.status (mapped)
+  priority: 'High' | 'Medium' | 'Low';
+  value: number; // Synced with followUp.dealValue
+  platform: string;
+  
+  firstApptDate?: string; // Synced with appointments
+  contactStatus: 'Uncontacted' | 'Attempted' | 'Active';
+  lastContact: string; // Synced with followUp.lastContactedAt
+  nextAction?: string;
+  momentumScore: number;
+  
+  phone: string;
+  email: string;
+  jobTitle: string;
+  dob: string;
+  retirementAge: number;
+  tags: string[];
+  goals: string;
+  
+  sales: Sale[];
+  familyMembers: FamilyMember[];
+  policies: Policy[];
+  notes: Note[];
+  
+  milestones: {
+    createdAt: string;
+    contactedAt?: string;
+    appointmentSetAt?: string;
+    appointmentMetAt?: string;
+    clientConvertedAt?: string;
+  };
 }
 
 export interface UserProfile {
@@ -219,6 +299,7 @@ export interface UserProfile {
   extraSlots: number;
   modules?: string[];
   is_admin?: boolean;
+  bandingPercentage?: number; // 0-100
 }
 
 export interface FieldDefinition {
@@ -237,4 +318,34 @@ export interface AuditLog {
   title: string;
   details: any;
   created_at: string;
+}
+
+export interface Product {
+  id: string;
+  name: string;
+  provider: string;
+  type: string;
+  tiers?: { min: number, max: number, rate: number, dollarUp: number }[];
+}
+
+export interface Advisor {
+  id: string;
+  name: string;
+  bandingPercentage: number;
+}
+
+export interface WhatsAppTemplate {
+  id: string;
+  label: string;
+  content: string;
+}
+
+export interface AppSettings {
+  statuses: string[];
+  platforms: string[];
+}
+
+export interface Benchmarks {
+  callsPerWeek: number;
+  apptsPerWeek: number;
 }

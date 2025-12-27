@@ -22,6 +22,22 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLogin }) => {
         
         {/* LEFT: The Pitch */}
         <div className="flex-1 text-center md:text-left space-y-8">
+          
+          {/* LOGO */}
+          <div className="flex items-center justify-center md:justify-start gap-3 mb-6 animate-fade-in-up">
+            <div className="flex items-center justify-center bg-emerald-500 p-2.5 rounded-xl shadow-[0_0_20px_rgba(16,185,129,0.3)] border border-emerald-400/30">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="w-6 h-6 text-white">
+                <path d="M7 20h10" />
+                <path d="M10 20c5.5-2.5.8-6.4 3-10" />
+                <path d="M9.5 9.4c1.1.8 1.8 2.2 2.3 3.7-2 .4-3.5.4-4.8-.3-1.2-.6-2.3-1.9-3-4.2 2.8-.5 4.4 0 5.5.8z" />
+                <path d="M14.1 6a7 7 0 0 0-1.1 4c1.9-.1 3.3-.6 4.3-1.4 1-1 1.6-2.3 1.7-4.6-2.7.1-4 1-4.9 2z" />
+              </svg>
+            </div>
+            <div className="text-3xl font-extrabold tracking-tight text-white leading-none">
+              Sproutly<span className="text-emerald-400">Quantum</span>
+            </div>
+          </div>
+
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs font-bold uppercase tracking-widest backdrop-blur-md shadow-[0_0_15px_rgba(245,158,11,0.2)]">
             <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
             Version 3.0 • Gold Release

@@ -35,7 +35,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, user, isOpen
       `}>
         {/* Logo Header */}
         <div className="h-16 flex items-center px-6 border-b border-gray-100">
-          <div className="flex items-center justify-center bg-indigo-600 p-1.5 rounded-lg shadow-md mr-3">
+          <div className="flex items-center justify-center bg-emerald-600 p-1.5 rounded-lg shadow-md mr-3 shadow-emerald-200">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4 text-white">
               <path d="M7 20h10" />
               <path d="M10 20c5.5-2.5.8-6.4 3-10" />
@@ -43,8 +43,8 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, user, isOpen
               <path d="M14.1 6a7 7 0 0 0-1.1 4c1.9-.1 3.3-.6 4.3-1.4 1-1 1.6-2.3 1.7-4.6-2.7.1-4 1-4.9 2z" />
             </svg>
           </div>
-          <div className="font-extrabold text-slate-800 tracking-tight leading-none">
-            Sproutly<span className="text-indigo-600">Quantum</span>
+          <div className="font-extrabold text-slate-800 tracking-tight leading-none text-lg">
+            Sproutly<span className="text-emerald-600">Quantum</span>
           </div>
         </div>
 
@@ -82,7 +82,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, user, isOpen
                         className={`
                           w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-bold transition-all group
                           ${isActive 
-                            ? 'bg-indigo-50 text-indigo-700 shadow-sm ring-1 ring-indigo-200' 
+                            ? 'bg-emerald-50 text-emerald-700 shadow-sm ring-1 ring-emerald-200' 
                             : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'
                           }
                           ${isLocked ? 'opacity-50 cursor-not-allowed grayscale' : ''}
@@ -95,7 +95,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, user, isOpen
                           <span>{def.label}</span>
                         </div>
                         {isLocked && <span className="text-[9px] bg-gray-100 text-gray-400 px-1.5 py-0.5 rounded uppercase tracking-wider">Lock</span>}
-                        {isActive && <div className="w-1.5 h-1.5 rounded-full bg-indigo-600"></div>}
+                        {isActive && <div className="w-1.5 h-1.5 rounded-full bg-emerald-600"></div>}
                       </button>
                     );
                   })}
