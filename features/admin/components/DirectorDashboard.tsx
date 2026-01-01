@@ -42,7 +42,8 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
       if (timeFilter === 'All Time') return managedClients;
       const now = new Date();
       return managedClients.filter(c => {
-          if (!c.milestones.createdAt) return false;
+          // Safeguard: Check if milestones exist before accessing properties
+          if (!c.milestones?.createdAt) return false;
           const d = new Date(c.milestones.createdAt);
           const diffDays = (now.getTime() - d.getTime()) / (1000 * 3600 * 24);
           if (timeFilter === 'Monthly') return diffDays <= 30;
@@ -54,10 +55,11 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
 
   // --- Analytics Logic ---
   const leads = filteredClients.length;
-  const contacted = filteredClients.filter(c => c.milestones.contactedAt || ([Stage.PICKED_UP, Stage.APPT_SET, Stage.APPT_MET, Stage.PENDING, Stage.CLOSED] as string[]).includes(c.stage)).length;
-  const apptSet = filteredClients.filter(c => c.milestones.appointmentSetAt || ([Stage.APPT_SET, Stage.APPT_MET, Stage.PENDING, Stage.CLOSED] as string[]).includes(c.stage)).length;
-  const apptMet = filteredClients.filter(c => c.milestones.appointmentMetAt || ([Stage.APPT_MET, Stage.PENDING, Stage.CLOSED] as string[]).includes(c.stage)).length;
-  const closed = filteredClients.filter(c => c.stage === Stage.CLOSED || c.milestones.closedAt).length;
+  // Added safeguards (?.milestones)
+  const contacted = filteredClients.filter(c => c.milestones?.contactedAt || ([Stage.PICKED_UP, Stage.APPT_SET, Stage.APPT_MET, Stage.PENDING, Stage.CLOSED] as string[]).includes(c.stage)).length;
+  const apptSet = filteredClients.filter(c => c.milestones?.appointmentSetAt || ([Stage.APPT_SET, Stage.APPT_MET, Stage.PENDING, Stage.CLOSED] as string[]).includes(c.stage)).length;
+  const apptMet = filteredClients.filter(c => c.milestones?.appointmentMetAt || ([Stage.APPT_MET, Stage.PENDING, Stage.CLOSED] as string[]).includes(c.stage)).length;
+  const closed = filteredClients.filter(c => c.stage === Stage.CLOSED || c.milestones?.closedAt).length;
 
   const funnelData = [
     { name: 'Leads', value: leads, fill: '#64748b' },
