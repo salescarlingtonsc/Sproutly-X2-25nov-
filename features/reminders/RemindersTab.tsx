@@ -1,10 +1,30 @@
 
 import React, { useState, useEffect } from 'react';
 import { db } from '../../lib/db';
-import { Client } from '../../types';
+import { Client, ContactStatus } from '../../types';
 import { useAuth } from '../../contexts/AuthContext';
 import ClientDrawer from '../crm/components/ClientDrawer';
 import { useToast } from '../../contexts/ToastContext';
+import { logActivity } from '../../lib/db/activities';
+
+const REVERSE_STATUS_MAP: Record<string, string> = {
+  'New Lead': 'new',
+  'Contacted': 'contacted',
+  'Picked Up': 'picked_up',
+  'NPU 1': 'npu_1',
+  'NPU 2': 'npu_2',
+  'NPU 3': 'npu_3',
+  'NPU 4': 'npu_4',
+  'NPU 5': 'npu_5',
+  'NPU 6': 'npu_6',
+  'Appt Set': 'appt_set',
+  'Appt Met': 'appt_met',
+  'Proposal': 'proposal',
+  'Pending Decision': 'pending_decision',
+  'Client': 'client',
+  'Case Closed': 'case_closed',
+  'Lost': 'not_keen',
+};
 
 const RemindersTab: React.FC = () => {
   const { user } = useAuth();
@@ -33,16 +53,56 @@ const RemindersTab: React.FC = () => {
   const handleUpdateClient = async (id: string, field: string, value: any, section: string = 'root') => {
     if (!selectedClient) return;
     
-    const updatedClient = { ...selectedClient };
+    let updatedClient = { ...selectedClient };
     
-    if (section === 'root') {
-        (updatedClient as any)[field] = value;
-    } else if (section === 'profile') {
-        updatedClient.profile = { ...updatedClient.profile, [field]: value };
-    } else if (section === 'followUp') {
-        updatedClient.followUp = { ...updatedClient.followUp, [field]: value };
-    } else if (section === 'appointments') {
-        updatedClient.appointments = { ...updatedClient.appointments, [field]: value };
+    // Logic similar to ClientCard to ensure history tracking
+    if (field === 'status' && section === 'followUp') {
+        const newStatus = value as ContactStatus;
+        const newStageName = newStatus === 'new' ? 'New Lead' : 
+                 newStatus === 'picked_up' ? 'Picked Up' :
+                 newStatus === 'client' ? 'Client' : 
+                 newStatus === 'case_closed' ? 'Case Closed' :
+                 newStatus === 'proposal' ? 'Proposal' :
+                 newStatus === 'appt_set' ? 'Appt Set' : 
+                 newStatus === 'appt_met' ? 'Appt Met' :
+                 newStatus.includes('npu') ? newStatus.toUpperCase().replace('_', ' ') : 
+                 selectedClient.stage;
+                 
+        const now = new Date().toISOString();
+        const logEntry = {
+            id: `sys_${Date.now()}`,
+            content: `Status updated: ${selectedClient.stage || 'New'} ➔ ${newStageName}`,
+            date: now,
+            author: 'System'
+        };
+
+        updatedClient = {
+            ...updatedClient,
+            stage: newStageName,
+            lastContact: now,
+            lastUpdated: now,
+            followUp: {
+                ...updatedClient.followUp,
+                status: newStatus,
+                lastContactedAt: now
+            },
+            stageHistory: [...(updatedClient.stageHistory || []), { stage: newStageName, date: now }],
+            notes: [logEntry, ...(updatedClient.notes || [])]
+        };
+        
+        logActivity(updatedClient.id, 'status_change', `Status changed to ${newStageName} via Reminders`);
+        
+    } else {
+        // Standard field update
+        if (section === 'root') {
+            (updatedClient as any)[field] = value;
+        } else if (section === 'profile') {
+            updatedClient.profile = { ...updatedClient.profile, [field]: value };
+        } else if (section === 'followUp') {
+            updatedClient.followUp = { ...updatedClient.followUp, [field]: value };
+        } else if (section === 'appointments') {
+            updatedClient.appointments = { ...updatedClient.appointments, [field]: value };
+        }
     }
 
     // Optimistic Update

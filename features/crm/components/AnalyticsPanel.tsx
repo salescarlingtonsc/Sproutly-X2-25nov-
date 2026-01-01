@@ -37,8 +37,9 @@ export const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ clients }) => {
   }, [isCollapsed]);
 
   const pipelineData = Object.values(Stage).map((stage) => {
-    const value = clients.filter(c => c.stage === stage).reduce((sum, c) => sum + (c.value || 0), 0);
-    return { name: stage.split(' ')[0], fullName: stage, value };
+    const stageStr = stage as string;
+    const value = clients.filter(c => c.stage === stageStr).reduce((sum, c) => sum + (c.value || 0), 0);
+    return { name: stageStr.split(' ')[0], fullName: stageStr, value };
   });
 
   const momentumData = [

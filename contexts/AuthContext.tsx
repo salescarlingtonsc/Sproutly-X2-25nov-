@@ -115,7 +115,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const finalRole = (isHardcodedAdmin || isAdminByData) ? 'admin' : (data?.role || 'user');
       
       const finalTier = finalRole === 'admin' ? 'diamond' : ((data?.subscription_tier as SubscriptionTier) || 'free');
-      const finalStatus = (isHardcodedAdmin || data?.status === 'approved') ? 'approved' : (data?.status || 'pending');
+      
+      // STATUS NORMALIZATION FIX
+      // Treat 'active' same as 'approved' to prevent lockouts
+      let dbStatus = data?.status || 'pending';
+      if (dbStatus === 'active') dbStatus = 'approved'; 
+      const finalStatus = (isHardcodedAdmin || dbStatus === 'approved') ? 'approved' : dbStatus;
+
       const finalSlots = data?.extra_slots || 0;
       const finalModules = data?.modules || [];
         

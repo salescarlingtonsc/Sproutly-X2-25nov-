@@ -96,12 +96,22 @@ export const DEFAULT_SETTINGS = {
 
 export const canAccessTab = (user: UserProfile | null, tabId: string): boolean => {
   if (!user) return false;
-  if (user.status !== 'approved' && user.role !== 'admin') {
+  // Check for 'active' OR 'approved' status
+  const isApproved = user.status === 'approved' || user.status === 'active';
+  
+  // Cast role to string to avoid type overlap errors if UserRole definition is narrowed elsewhere
+  const role = user.role as string;
+  const isAdmin = role === 'admin' || user.is_admin === true;
+
+  if (!isApproved && !isAdmin) {
      return tabId === 'disclaimer';
   }
-  if (user.role === 'admin') return true;
-  if (tabId === 'admin' && user.role === 'viewer') return true;
-  if (tabId === 'admin' && user.role !== 'admin') return false;
+  
+  if (isAdmin) return true;
+  
+  if (tabId === 'admin' && role === 'viewer') return true;
+  if (tabId === 'admin' && !isAdmin) return false;
+  
   if (user.modules && Array.isArray(user.modules) && user.modules.length > 0) {
     if (user.modules.includes(tabId)) return true;
   }

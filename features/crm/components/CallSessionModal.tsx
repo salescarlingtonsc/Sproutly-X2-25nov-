@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Client, ContactStatus } from '../../../types';
 import { STATUS_CONFIG } from './StatusDropdown';
 import Button from '../../../components/ui/Button';
+import { logActivity } from '../../../lib/db/activities';
 
 interface CallSessionModalProps {
   isOpen: boolean;
@@ -53,36 +54,46 @@ const CallSessionModal: React.FC<CallSessionModalProps> = ({ isOpen, onClose, cl
     if (!currentClient) return;
 
     let newStatus: ContactStatus = currentClient.followUp.status;
+    let newStageName: string = currentClient.stage || 'New Lead';
     let noteContent = `Call Session: ${outcome}. Duration: ${formatTime(timer)}.`;
 
     if (outcome === 'answered') {
        newStatus = 'picked_up';
+       newStageName = 'Picked Up';
     } else if (outcome === 'no_answer') {
        // Smart NPU Logic
-       if (newStatus === 'new') newStatus = 'npu_1';
-       else if (newStatus === 'npu_1') newStatus = 'npu_2';
-       else if (newStatus === 'npu_2') newStatus = 'npu_3';
-       else if (newStatus === 'npu_3') newStatus = 'npu_4';
-       else if (newStatus === 'npu_4') newStatus = 'npu_5';
-       else if (newStatus === 'npu_5') newStatus = 'npu_6';
+       if (newStatus === 'new') { newStatus = 'npu_1'; newStageName = 'NPU 1'; }
+       else if (newStatus === 'npu_1') { newStatus = 'npu_2'; newStageName = 'NPU 2'; }
+       else if (newStatus === 'npu_2') { newStatus = 'npu_3'; newStageName = 'NPU 3'; }
+       else if (newStatus === 'npu_3') { newStatus = 'npu_4'; newStageName = 'NPU 4'; }
+       else if (newStatus === 'npu_4') { newStatus = 'npu_5'; newStageName = 'NPU 5'; }
+       else if (newStatus === 'npu_5') { newStatus = 'npu_6'; newStageName = 'NPU 6'; }
        // Cap at NPU 6
     } else if (outcome === 'bad_number') {
        newStatus = 'not_keen';
+       newStageName = 'Lost';
        noteContent += " Marked as Dead Lead.";
     }
 
     if (outcome !== 'skip') {
+        const now = new Date().toISOString();
         const newNote = {
             id: `call_${Date.now()}`,
             content: noteContent,
-            date: new Date().toISOString(),
+            date: now,
             author: 'Power Dialer'
         };
         
         onUpdateClient(currentClient, {
-            followUp: { ...currentClient.followUp, status: newStatus, lastContactedAt: new Date().toISOString() },
-            notes: [newNote, ...(currentClient.notes || [])]
+            stage: newStageName,
+            followUp: { ...currentClient.followUp, status: newStatus, lastContactedAt: now },
+            notes: [newNote, ...(currentClient.notes || [])],
+            lastContact: now,
+            // CRITICAL: Append to history for analytics
+            stageHistory: [...(currentClient.stageHistory || []), { stage: newStageName, date: now }]
         });
+        
+        logActivity(currentClient.id, 'call_outcome', `Call Result: ${outcome} (${newStageName})`);
 
         setSessionLog(prev => [...prev, { name: currentClient.profile.name, duration: formatTime(timer), outcome: newStatus }]);
     }

@@ -1,6 +1,7 @@
 
 import React, { useState } from 'react';
 import { Advisor, Team, UserRole } from '../../../types';
+import { TAB_DEFINITIONS } from '../../../lib/config';
 
 interface UserManagementProps {
   advisors: Advisor[];
@@ -11,6 +12,10 @@ interface UserManagementProps {
   onUpdateTeams: (teams: Team[]) => void;
   onAddAdvisor: (advisor: Advisor) => void;
 }
+
+const AVAILABLE_MODULES = TAB_DEFINITIONS.filter(t => 
+    !['disclaimer', 'dashboard', 'crm', 'reminders', 'report', 'admin'].includes(t.id)
+);
 
 export const UserManagement: React.FC<UserManagementProps> = ({ advisors, teams, currentUser, onUpdateAdvisor, onDeleteAdvisor, onUpdateTeams, onAddAdvisor }) => {
   const [activeTab, setActiveTab] = useState<'users' | 'teams'>('users');
@@ -32,25 +37,34 @@ export const UserManagement: React.FC<UserManagementProps> = ({ advisors, teams,
   const [formTeamId, setFormTeamId] = useState('');
   const [formStatus, setFormStatus] = useState<'active' | 'pending' | 'rejected'>('active');
   const [formBanding, setFormBanding] = useState<string>('50');
+  const [formTier, setFormTier] = useState<string>('free');
+  const [formModules, setFormModules] = useState<string[]>([]);
+
+  // Modal Tab State
+  const [modalTab, setModalTab] = useState<'details' | 'access'>('details');
 
   const pendingUsers = advisors.filter(a => a.status === 'pending');
-  const activeUsers = advisors.filter(a => a.status === 'active');
+  const activeUsers = advisors.filter(a => a.status === 'active' || a.status === 'approved');
   const rejectedUsers = advisors.filter(a => a.status === 'rejected');
 
-  const directors = advisors.filter(a => a.role === 'director' && a.status === 'active');
+  const directors = advisors.filter(a => a.role === 'director' && (a.status === 'active' || a.status === 'approved'));
 
   const openInviteModal = () => {
       setModalType('invite');
+      setModalTab('details');
       setFormName('');
       setFormEmail('');
       setFormRole('advisor');
       setFormTeamId('');
-      setFormStatus('active'); // Default to immediate active
+      setFormStatus('active');
       setFormBanding('50');
+      setFormTier('free');
+      setFormModules([]);
   };
 
   const openEditModal = (user: Advisor) => {
       setModalType('edit');
+      setModalTab('details');
       setEditingUser(user);
       setFormName(user.name);
       setFormEmail(user.email);
@@ -58,6 +72,8 @@ export const UserManagement: React.FC<UserManagementProps> = ({ advisors, teams,
       setFormTeamId(user.teamId || '');
       setFormStatus(user.status);
       setFormBanding(user.bandingPercentage.toString());
+      setFormTier(user.subscriptionTier || 'free');
+      setFormModules(user.modules || []);
   };
 
   const closeModal = () => {
@@ -74,8 +90,10 @@ export const UserManagement: React.FC<UserManagementProps> = ({ advisors, teams,
           email: formEmail,
           role: formRole,
           teamId: formTeamId || undefined,
-          status: formStatus,
+          status: formStatus === 'active' ? 'approved' : formStatus, // Normalize on save
           bandingPercentage: parseFloat(formBanding) || 0,
+          subscriptionTier: formTier,
+          modules: formModules
       };
 
       if (modalType === 'edit' && editingUser) {
@@ -94,6 +112,14 @@ export const UserManagement: React.FC<UserManagementProps> = ({ advisors, teams,
           alert(`Invitation sent to ${formEmail}. User activated.`);
       }
       closeModal();
+  };
+
+  const toggleModule = (modId: string) => {
+      if (formModules.includes(modId)) {
+          setFormModules(formModules.filter(m => m !== modId));
+      } else {
+          setFormModules([...formModules, modId]);
+      }
   };
 
   const handleQuickCreateTeam = () => {
@@ -115,7 +141,8 @@ export const UserManagement: React.FC<UserManagementProps> = ({ advisors, teams,
         alert("Please enter a valid Banding % before approving.");
         return;
     }
-    onUpdateAdvisor({ ...user, status: 'active', bandingPercentage: banding });
+    // Set to 'approved' to align with AuthContext checks
+    onUpdateAdvisor({ ...user, status: 'approved', bandingPercentage: banding });
     const newInputs = { ...bandingInputs };
     delete newInputs[user.id];
     setBandingInputs(newInputs);
@@ -271,7 +298,7 @@ export const UserManagement: React.FC<UserManagementProps> = ({ advisors, teams,
                                 <tr>
                                     <th className="px-6 py-3 font-semibold text-slate-600">Advisor</th>
                                     <th className="px-6 py-3 font-semibold text-slate-600">Email</th>
-                                    <th className="px-6 py-3 font-semibold text-slate-600">Team</th>
+                                    <th className="px-6 py-3 font-semibold text-slate-600">Tier</th>
                                     <th className="px-6 py-3 font-semibold text-slate-600">Banding</th>
                                     <th className="px-6 py-3 font-semibold text-slate-600 text-right">Actions</th>
                                 </tr>
@@ -296,22 +323,9 @@ export const UserManagement: React.FC<UserManagementProps> = ({ advisors, teams,
                                             </td>
                                             <td className="px-6 py-3 text-slate-600">{user.email}</td>
                                             <td className="px-6 py-3">
-                                                {currentUser.isAgencyAdmin ? (
-                                                    <select 
-                                                        value={user.teamId || ''}
-                                                        onChange={(e) => onUpdateAdvisor({ ...user, teamId: e.target.value })}
-                                                        className="bg-white border border-slate-200 text-slate-900 text-xs rounded-lg px-2 py-1.5 focus:ring-2 focus:ring-emerald-500 outline-none"
-                                                    >
-                                                        <option value="">Unassigned</option>
-                                                        {teams.map(t => (
-                                                            <option key={t.id} value={t.id}>{t.name}</option>
-                                                        ))}
-                                                    </select>
-                                                ) : (
-                                                    <span className="text-slate-500 text-xs">
-                                                        {teams.find(t => t.id === user.teamId)?.name || '-'}
-                                                    </span>
-                                                )}
+                                                <span className={`text-[10px] uppercase font-bold px-2 py-1 rounded border ${user.subscriptionTier === 'diamond' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : user.subscriptionTier === 'platinum' ? 'bg-indigo-50 text-indigo-600 border-indigo-100' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>
+                                                    {user.subscriptionTier || 'free'}
+                                                </span>
                                             </td>
                                             <td className="px-6 py-3">
                                                 <div className="flex items-center gap-2 group">
@@ -330,7 +344,7 @@ export const UserManagement: React.FC<UserManagementProps> = ({ advisors, teams,
                                                     onClick={() => openEditModal(user)}
                                                     className="text-xs text-slate-500 hover:text-slate-800 font-medium bg-slate-50 hover:bg-slate-100 px-3 py-1.5 rounded transition-colors"
                                                 >
-                                                    Edit / Overwrite
+                                                    Edit / Access
                                                 </button>
                                             </td>
                                         </tr>
@@ -443,117 +457,132 @@ export const UserManagement: React.FC<UserManagementProps> = ({ advisors, teams,
             <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[60] flex items-center justify-center p-4 animate-fade-in" onClick={closeModal}>
                 <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl overflow-hidden animate-scale-in" onClick={e => e.stopPropagation()}>
                     <div className="bg-slate-900 px-6 py-4 flex justify-between items-center">
-                        <h3 className="text-white font-bold text-lg">{modalType === 'invite' ? 'Invite Advisor' : 'Edit Advisor Details'}</h3>
+                        <h3 className="text-white font-bold text-lg">{modalType === 'invite' ? 'Invite Advisor' : 'Edit Advisor'}</h3>
                         <button onClick={closeModal} className="text-slate-400 hover:text-white"><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg></button>
                     </div>
+                    
+                    {/* Tabs */}
+                    <div className="flex bg-slate-50 border-b border-slate-100">
+                        <button onClick={() => setModalTab('details')} className={`flex-1 py-3 text-xs font-bold uppercase tracking-wider ${modalTab === 'details' ? 'bg-white border-t-2 border-t-slate-900 text-slate-900' : 'text-slate-400 hover:text-slate-600'}`}>Profile</button>
+                        <button onClick={() => setModalTab('access')} className={`flex-1 py-3 text-xs font-bold uppercase tracking-wider ${modalTab === 'access' ? 'bg-white border-t-2 border-t-slate-900 text-slate-900' : 'text-slate-400 hover:text-slate-600'}`}>Access Control</button>
+                    </div>
+
                     <div className="p-6 space-y-4">
-                        <div>
-                            <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Full Name</label>
-                            <input 
-                                className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 focus:ring-2 focus:ring-emerald-500 outline-none"
-                                value={formName}
-                                onChange={e => setFormName(e.target.value)}
-                                placeholder="e.g. John Doe"
-                            />
-                        </div>
-                        <div>
-                            <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Email Address</label>
-                            <input 
-                                className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 focus:ring-2 focus:ring-emerald-500 outline-none"
-                                value={formEmail}
-                                onChange={e => setFormEmail(e.target.value)}
-                                placeholder="e.g. john@agency.com"
-                            />
-                        </div>
-                        <div className="grid grid-cols-2 gap-4">
-                            <div>
-                                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Role</label>
-                                <select 
-                                    className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 focus:ring-2 focus:ring-emerald-500 outline-none"
-                                    value={formRole}
-                                    onChange={e => setFormRole(e.target.value as UserRole)}
-                                >
-                                    <option value="advisor">Advisor</option>
-                                    <option value="director">Director</option>
-                                </select>
-                            </div>
-                            <div>
-                                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Status</label>
-                                <select 
-                                    className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 focus:ring-2 focus:ring-emerald-500 outline-none"
-                                    value={formStatus}
-                                    onChange={e => setFormStatus(e.target.value as any)}
-                                >
-                                    <option value="active">Active</option>
-                                    <option value="pending">Pending</option>
-                                    <option value="rejected">Rejected/Inactive</option>
-                                </select>
-                            </div>
-                        </div>
-                        <div className="grid grid-cols-2 gap-4">
-                            <div>
-                                <div className="flex justify-between items-center mb-1">
-                                    <label className="block text-xs font-bold text-slate-500 uppercase">Team</label>
-                                    {!isCreatingTeam && (
-                                        <button 
-                                            onClick={() => setIsCreatingTeam(true)}
-                                            className="text-[10px] text-emerald-600 hover:underline font-bold"
-                                        >
-                                            + Create New
-                                        </button>
-                                    )}
-                                </div>
-                                {isCreatingTeam ? (
-                                    <div className="flex gap-1">
-                                        <input 
-                                            autoFocus
-                                            className="w-full bg-slate-50 border border-emerald-500 rounded-lg px-2 py-2 text-sm text-slate-900 focus:outline-none"
-                                            placeholder="Team Name"
-                                            value={newTeamName}
-                                            onChange={e => setNewTeamName(e.target.value)}
-                                            onKeyDown={e => e.key === 'Enter' && handleQuickCreateTeam()}
-                                        />
-                                        <button 
-                                            onClick={handleQuickCreateTeam} 
-                                            className="bg-emerald-600 text-white p-2 rounded-lg"
-                                            title="Save Team"
-                                        >
-                                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
-                                        </button>
-                                    </div>
-                                ) : (
-                                    <select 
+                        {modalTab === 'details' ? (
+                            <>
+                                <div>
+                                    <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Full Name</label>
+                                    <input 
                                         className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 focus:ring-2 focus:ring-emerald-500 outline-none"
-                                        value={formTeamId}
-                                        onChange={e => setFormTeamId(e.target.value)}
-                                    >
-                                        <option value="">Unassigned</option>
-                                        {teams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                                    </select>
-                                )}
-                            </div>
-                            <div>
-                                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Banding %</label>
-                                <input 
-                                    type="number"
-                                    className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 focus:ring-2 focus:ring-emerald-500 outline-none"
-                                    value={formBanding}
-                                    onChange={e => setFormBanding(e.target.value)}
-                                />
-                            </div>
-                        </div>
-                        <div className="pt-4">
+                                        value={formName}
+                                        onChange={e => setFormName(e.target.value)}
+                                        placeholder="e.g. John Doe"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Email Address</label>
+                                    <input 
+                                        className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 focus:ring-2 focus:ring-emerald-500 outline-none"
+                                        value={formEmail}
+                                        onChange={e => setFormEmail(e.target.value)}
+                                        placeholder="e.g. john@agency.com"
+                                    />
+                                </div>
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Role</label>
+                                        <select 
+                                            className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 focus:ring-2 focus:ring-emerald-500 outline-none"
+                                            value={formRole}
+                                            onChange={e => setFormRole(e.target.value as UserRole)}
+                                        >
+                                            <option value="advisor">Advisor</option>
+                                            <option value="director">Director</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Status</label>
+                                        <select 
+                                            className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 focus:ring-2 focus:ring-emerald-500 outline-none"
+                                            value={formStatus}
+                                            onChange={e => setFormStatus(e.target.value as any)}
+                                        >
+                                            <option value="active">Active</option>
+                                            <option value="pending">Pending</option>
+                                            <option value="rejected">Rejected</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Team</label>
+                                        <select 
+                                            className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 focus:ring-2 focus:ring-emerald-500 outline-none"
+                                            value={formTeamId}
+                                            onChange={e => setFormTeamId(e.target.value)}
+                                        >
+                                            <option value="">Unassigned</option>
+                                            {teams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Banding %</label>
+                                        <input 
+                                            type="number"
+                                            className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 focus:ring-2 focus:ring-emerald-500 outline-none"
+                                            value={formBanding}
+                                            onChange={e => setFormBanding(e.target.value)}
+                                        />
+                                    </div>
+                                </div>
+                            </>
+                        ) : (
+                            <>
+                                <div>
+                                    <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Subscription Tier (Client Limits)</label>
+                                    <div className="grid grid-cols-3 gap-2">
+                                        {['free', 'platinum', 'diamond'].map(tier => (
+                                            <button 
+                                                key={tier}
+                                                onClick={() => setFormTier(tier)}
+                                                className={`py-2 rounded-lg text-xs font-bold uppercase border-2 transition-all ${formTier === tier ? 'border-indigo-600 bg-indigo-50 text-indigo-700' : 'border-slate-100 bg-white text-slate-500 hover:border-slate-300'}`}
+                                            >
+                                                {tier}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                                
+                                <div className="pt-2 border-t border-slate-100">
+                                    <label className="block text-xs font-bold text-slate-500 uppercase mb-3">Module Overrides</label>
+                                    <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto custom-scrollbar p-1">
+                                        {AVAILABLE_MODULES.map(module => (
+                                            <label key={module.id} className="flex items-center gap-3 p-2 bg-slate-50 rounded-lg cursor-pointer hover:bg-slate-100">
+                                                <input 
+                                                    type="checkbox" 
+                                                    className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                                                    checked={formModules.includes(module.id)}
+                                                    onChange={() => toggleModule(module.id)}
+                                                />
+                                                <div className="flex items-center gap-2">
+                                                    <span className="text-sm">{module.icon}</span>
+                                                    <span className="text-xs font-semibold text-slate-700">{module.label}</span>
+                                                </div>
+                                            </label>
+                                        ))}
+                                    </div>
+                                    <p className="text-[10px] text-slate-400 mt-2 italic">Selected modules will be accessible regardless of Tier limits.</p>
+                                </div>
+                            </>
+                        )}
+
+                        <div className="pt-4 border-t border-slate-100">
                             <button 
                                 onClick={handleSaveUser}
                                 className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 rounded-xl shadow-lg shadow-emerald-500/30 transition-all"
                             >
                                 {modalType === 'invite' ? 'Send Invitation & Activate' : 'Save Changes'}
                             </button>
-                            {modalType === 'invite' && (
-                                <p className="text-[10px] text-center text-slate-400 mt-2">
-                                    This will send an email to {formEmail || 'the user'} and instantly active the account.
-                                </p>
-                            )}
                         </div>
                     </div>
                 </div>

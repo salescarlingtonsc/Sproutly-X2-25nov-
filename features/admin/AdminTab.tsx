@@ -1,9 +1,10 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { db } from '../../lib/db';
+import { adminDb } from '../../lib/db/admin';
 import { Advisor, Client, Product, Team, AppSettings, Subscription } from '../../types';
 import { DirectorDashboard } from './components/DirectorDashboard';
 import { UserManagement } from './components/UserManagement';
@@ -11,6 +12,99 @@ import { AdminSettings } from './components/AdminSettings';
 import { SubscriptionManager } from './components/SubscriptionManager';
 import Button from '../../components/ui/Button';
 import Modal from '../../components/ui/Modal';
+
+// --- SQL REPAIR SCRIPT (THE FIX) ---
+const REPAIR_SQL = `
+-- RUN THIS IN SUPABASE SQL EDITOR TO FIX "FAILED TO UPDATE" & PERMISSIONS
+
+-- 1. FIX PROFILES TABLE
+alter table profiles add column if not exists role text default 'advisor';
+alter table profiles add column if not exists status text default 'pending';
+alter table profiles add column if not exists banding_percentage numeric default 50;
+alter table profiles add column if not exists subscription_tier text default 'free';
+alter table profiles add column if not exists is_admin boolean default false;
+alter table profiles add column if not exists modules text[] default '{}';
+alter table profiles add column if not exists organization_id text;
+alter table profiles add column if not exists reporting_to uuid;
+
+-- 2. FIX PERMISSIONS (RLS)
+alter table profiles enable row level security;
+
+drop policy if exists "Public profiles" on profiles;
+drop policy if exists "Admins can update any profile" on profiles;
+drop policy if exists "Users can update own profile" on profiles;
+
+create policy "Public profiles" on profiles for select using (true);
+create policy "Users can update own profile" on profiles for update using (auth.uid() = id);
+create policy "Admins can update any profile" on profiles for update using (
+  exists (
+    select 1 from profiles
+    where id = auth.uid() and (role = 'admin' or is_admin = true)
+  )
+);
+
+-- 3. FIX CLIENTS TABLE
+create table if not exists clients (
+  id text primary key,
+  user_id uuid not null,
+  data jsonb,
+  created_at timestamp with time zone default now(),
+  updated_at timestamp with time zone default now()
+);
+alter table clients enable row level security;
+
+drop policy if exists "Users view own clients" on clients;
+drop policy if exists "Users manage own clients" on clients;
+drop policy if exists "Admins view all clients" on clients;
+drop policy if exists "Admins manage all clients" on clients;
+
+create policy "Users view own clients" on clients for select using (auth.uid() = user_id);
+create policy "Users manage own clients" on clients for all using (auth.uid() = user_id);
+
+create policy "Admins view all clients" on clients for select using (
+  exists (
+    select 1 from profiles
+    where id = auth.uid() and (role = 'admin' or is_admin = true)
+  )
+);
+
+create policy "Admins manage all clients" on clients for all using (
+  exists (
+    select 1 from profiles
+    where id = auth.uid() and (role = 'admin' or is_admin = true)
+  )
+);
+
+-- 4. ORGANIZATION SETTINGS TABLE (NEW)
+create table if not exists organization_settings (
+  id text primary key,
+  updated_by uuid references auth.users,
+  updated_at timestamp with time zone,
+  data jsonb
+);
+alter table organization_settings enable row level security;
+
+drop policy if exists "Everyone can read settings" on organization_settings;
+drop policy if exists "Admins can update settings" on organization_settings;
+
+create policy "Everyone can read settings" on organization_settings for select using (true);
+create policy "Admins can update settings" on organization_settings for insert with check (
+  exists (
+    select 1 from profiles
+    where id = auth.uid() and (role = 'admin' or is_admin = true)
+  )
+);
+create policy "Admins can update settings update" on organization_settings for update using (
+  exists (
+    select 1 from profiles
+    where id = auth.uid() and (role = 'admin' or is_admin = true)
+  )
+);
+
+-- 5. FORCE PROMOTE YOU TO ADMIN (Safety Hatch)
+update profiles 
+set role = 'admin', is_admin = true, status = 'active', subscription_tier = 'diamond';
+`;
 
 // --- MOCK DATA FOR DEMO PURPOSES ---
 const MOCK_PRODUCTS: Product[] = [
@@ -44,15 +138,20 @@ const AdminTab: React.FC = () => {
   // Data State
   const [advisors, setAdvisors] = useState<Advisor[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
+  
+  // Config State (Auto-Saved)
   const [products, setProducts] = useState<Product[]>(MOCK_PRODUCTS);
   const [teams, setTeams] = useState<Team[]>(MOCK_TEAMS);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [subscription, setSubscription] = useState<Subscription>(MOCK_SUBSCRIPTION);
   
-  // Loading State
+  // Status State
   const [loading, setLoading] = useState(true);
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [isRepairOpen, setIsRepairOpen] = useState(false);
+  const isInitialMount = useRef(true);
 
+  // --- 1. INITIAL FETCH ---
   useEffect(() => {
     fetchData();
   }, [user]);
@@ -61,73 +160,98 @@ const AdminTab: React.FC = () => {
     if (!supabase || !user) return;
     setLoading(true);
     try {
-        // 1. Fetch Profiles (Advisors)
+        // A. Load Advisors & Clients (Existing logic)
         const { data: profiles } = await supabase.from('profiles').select('*');
         if (profiles) {
             const mappedAdvisors: Advisor[] = profiles.map(p => ({
                 id: p.id,
-                name: p.email?.split('@')[0] || 'Unknown', // Derive name from email if name not in DB
+                name: p.email?.split('@')[0] || 'Unknown',
                 email: p.email,
                 role: p.role || 'advisor',
-                status: p.status || 'pending',
-                bandingPercentage: p.bandingPercentage || 50,
+                status: (p.status === 'approved' ? 'active' : p.status) || 'pending',
+                bandingPercentage: p.banding_percentage || 50,
                 avatar: (p.email?.[0] || 'U').toUpperCase(),
                 joinedAt: p.created_at,
-                organizationId: 'org_default', // Mock org
-                teamId: p.reporting_to, // Map reporting_to to team logic if needed, or maintain separate
-                isAgencyAdmin: p.role === 'admin' || p.is_admin
+                organizationId: 'org_default',
+                teamId: p.reporting_to,
+                isAgencyAdmin: p.role === 'admin' || p.is_admin,
+                subscriptionTier: p.subscription_tier || 'free',
+                modules: p.modules || []
             }));
             setAdvisors(mappedAdvisors);
         }
 
-        // 2. Fetch Clients (Global)
-        const allClients = await db.getClients(); // Admin fetches all
-        // Map clients to ensure advisorId is set (using _ownerId)
+        const allClients = await db.getClients(); 
         const mappedClients = allClients.map(c => ({
             ...c,
             advisorId: c._ownerId || c.advisorId || 'unassigned'
         }));
         setClients(mappedClients);
 
-        // 3. Teams (Mocked for now, or fetch if table exists)
-        // In a real scenario, we'd fetch from 'teams' table.
-        // setTeams(fetchedTeams); 
+        // B. Load Admin Config (New Logic)
+        const sysSettings = await adminDb.getSystemSettings();
+        if (sysSettings) {
+            setProducts(sysSettings.products || MOCK_PRODUCTS);
+            setTeams(sysSettings.teams || MOCK_TEAMS);
+            setSettings(sysSettings.appSettings || DEFAULT_SETTINGS);
+            if (sysSettings.subscription) setSubscription(sysSettings.subscription);
+        }
 
     } catch (e: any) {
-        toast.error("Data sync failed: " + e.message);
+        console.error("Sync Error:", e);
+        toast.error("Data sync failed. Check console.");
     } finally {
         setLoading(false);
+        // Important: allow auto-save only after initial fetch is done
+        setTimeout(() => { isInitialMount.current = false; }, 1000);
     }
   };
 
+  // --- 2. AUTO SAVE EFFECT ---
+  useEffect(() => {
+      if (isInitialMount.current || loading) return;
+
+      const timer = setTimeout(async () => {
+          setSaveStatus('saving');
+          try {
+              await adminDb.saveSystemSettings({
+                  products,
+                  teams,
+                  appSettings: settings,
+                  subscription
+              });
+              setSaveStatus('saved');
+              setTimeout(() => setSaveStatus('idle'), 2000);
+          } catch (e) {
+              setSaveStatus('error');
+              console.error("Auto-save failed", e);
+          }
+      }, 1500); // 1.5s debounce
+
+      return () => clearTimeout(timer);
+  }, [products, teams, settings, subscription, loading]);
+
   const handleUpdateAdvisor = async (updatedAdvisor: Advisor) => {
-      // Optimistic update
       setAdvisors(prev => prev.map(a => a.id === updatedAdvisor.id ? updatedAdvisor : a));
-      
-      // DB Sync
       if (supabase) {
           const { error } = await supabase.from('profiles').update({
               role: updatedAdvisor.role,
               status: updatedAdvisor.status,
-              // Map back to DB schema
-              // teamId logic would go here if columns exist
+              banding_percentage: updatedAdvisor.bandingPercentage,
+              subscription_tier: updatedAdvisor.subscriptionTier,
+              modules: updatedAdvisor.modules,
+              is_admin: updatedAdvisor.role === 'admin'
           }).eq('id', updatedAdvisor.id);
           
-          if (error) toast.error("Failed to update advisor in cloud.");
+          if (error) toast.error(`Update failed: ${error.message}`);
           else toast.success("Advisor updated.");
       }
   };
 
   const handleUpdateClient = async (updatedClient: Client) => {
-      // Optimistic
       setClients(prev => prev.map(c => c.id === updatedClient.id ? updatedClient : c));
-      
-      // DB Sync
       try {
-          // If reassigned, ensure _ownerId is updated
-          if (updatedClient.advisorId) {
-              updatedClient._ownerId = updatedClient.advisorId;
-          }
+          if (updatedClient.advisorId) updatedClient._ownerId = updatedClient.advisorId;
           await db.saveClient(updatedClient, user?.id);
           toast.success("Client updated.");
       } catch (e) {
@@ -136,21 +260,17 @@ const AdminTab: React.FC = () => {
   };
 
   const handleImportLeads = async (newClients: Client[]) => {
-      // Bulk create in DB
       try {
           if (!supabase) throw new Error("No DB connection");
-          // Transform for DB insertion
-          // Note: createClientsBulk in db.ts expects specific format, may need adjustment or use existing
-          // We will use existing bulk create which handles basic fields
           const count = await db.createClientsBulk(newClients, newClients[0].advisorId || user?.id || '');
           toast.success(`Successfully imported ${count} leads.`);
-          fetchData(); // Refresh to get full objects with IDs
+          fetchData(); 
       } catch (e: any) {
           toast.error("Import failed: " + e.message);
       }
   };
 
-  if (loading) return <div className="p-20 text-center"><div className="animate-spin w-10 h-10 border-4 border-indigo-600 border-t-transparent rounded-full mx-auto"></div></div>;
+  if (loading) return <div className="p-20 text-center"><div className="animate-spin w-10 h-10 border-4 border-indigo-600 border-t-transparent rounded-full mx-auto"></div><p className="mt-4 text-slate-400 text-sm animate-pulse">Syncing Admin Core...</p></div>;
 
   const currentUserAdvisor = advisors.find(a => a.id === user?.id) || {
       id: user?.id || '',
@@ -173,11 +293,20 @@ const AdminTab: React.FC = () => {
                 <button onClick={() => setActiveTab('settings')} className={`px-4 py-2 text-xs font-bold rounded-lg transition-all ${activeTab === 'settings' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-900'}`}>Config</button>
                 <button onClick={() => setActiveTab('billing')} className={`px-4 py-2 text-xs font-bold rounded-lg transition-all ${activeTab === 'billing' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-900'}`}>Billing</button>
             </div>
-            <div className="flex gap-3">
-               <button onClick={() => setIsRepairOpen(true)} className="text-xs text-slate-400 font-bold hover:text-slate-600">DB Repair</button>
-               <div className="text-xs font-bold text-slate-500 bg-slate-100 px-3 py-2 rounded-lg">
-                   Agency Mode
+            
+            <div className="flex items-center gap-4">
+               {/* Auto-Save Indicator */}
+               <div className="flex items-center gap-2">
+                  {saveStatus === 'saving' && <span className="text-[10px] text-indigo-500 font-bold animate-pulse">☁️ Syncing...</span>}
+                  {saveStatus === 'saved' && <span className="text-[10px] text-emerald-600 font-bold">✓ Saved</span>}
+                  {saveStatus === 'error' && <span className="text-[10px] text-red-500 font-bold">⚠️ Sync Failed</span>}
                </div>
+
+               <div className="h-6 w-px bg-slate-200"></div>
+
+               <button onClick={() => setIsRepairOpen(true)} className="text-xs text-white bg-rose-600 font-bold hover:bg-rose-700 px-3 py-1.5 rounded-lg flex items-center gap-1 shadow-sm">
+                  <span>🛠</span> DB Repair
+               </button>
             </div>
         </div>
 
@@ -189,7 +318,7 @@ const AdminTab: React.FC = () => {
                     advisors={advisors} 
                     teams={teams} 
                     currentUser={currentUserAdvisor} 
-                    activeSeconds={124000} // Mock activity metric
+                    activeSeconds={124000} 
                     products={products}
                     onUpdateClient={handleUpdateClient}
                     onImport={handleImportLeads}
@@ -217,7 +346,6 @@ const AdminTab: React.FC = () => {
                     onUpdateSettings={setSettings} 
                     onUpdateAdvisors={(updated) => {
                         setAdvisors(updated);
-                        // Trigger individual updates if needed
                     }}
                 />
             )}
@@ -232,23 +360,33 @@ const AdminTab: React.FC = () => {
             )}
         </div>
 
-        {/* Repair Modal (Legacy Support) */}
+        {/* Repair Modal */}
         <Modal 
             isOpen={isRepairOpen} 
             onClose={() => setIsRepairOpen(false)} 
-            title="System Diagnostics"
+            title="System Diagnostics & Repair"
             footer={<Button variant="ghost" onClick={() => setIsRepairOpen(false)}>Close</Button>}
         >
             <div className="p-4 bg-slate-900 rounded-xl text-white font-mono text-xs overflow-auto max-h-96">
-                <p className="text-emerald-400 mb-2">// System Status: ONLINE</p>
-                <p className="mb-4">Database connection verified. RLS policies active.</p>
+                <p className="text-emerald-400 mb-2">// Database Connection: ACTIVE</p>
+                <p className="mb-4 text-slate-300">
+                   If Admin Settings (Products/Teams) are not saving, your database is missing the config table.
+                </p>
                 <div className="border-t border-slate-700 pt-4">
-                    <p className="mb-2">Run SQL Repair Script if tables are missing:</p>
+                    <p className="mb-2 font-bold text-white">Action Required:</p>
+                    <ol className="list-decimal list-inside mb-4 text-slate-400 space-y-1">
+                       <li>Click "Copy Repair SQL" below</li>
+                       <li>Go to Supabase Dashboard {'>'} SQL Editor</li>
+                       <li>Paste and Run the script</li>
+                    </ol>
                     <button 
-                        onClick={() => navigator.clipboard.writeText("/* Paste SQL Repair Script Here */")}
-                        className="bg-white/10 hover:bg-white/20 px-3 py-1 rounded text-[10px] uppercase font-bold"
+                        onClick={() => {
+                            navigator.clipboard.writeText(REPAIR_SQL);
+                            toast.success("SQL Copied! Run in Supabase SQL Editor.");
+                        }}
+                        className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-xs uppercase font-bold w-full"
                     >
-                        Copy SQL
+                        Copy Repair SQL
                     </button>
                 </div>
             </div>

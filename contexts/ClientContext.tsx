@@ -39,6 +39,27 @@ export const INITIAL_CRM_STATE = {
   nextAction: ''
 };
 
+// Status Mapping for Readable UI
+const STATUS_TO_STAGE: Record<string, string> = {
+  'new': 'New Lead',
+  'contacted': 'Contacted',
+  'picked_up': 'Picked Up',
+  'appt_set': 'Appt Set',
+  'appt_met': 'Appt Met',
+  'proposal': 'Proposal',
+  'pending_decision': 'Pending Decision',
+  'client': 'Client',
+  'case_closed': 'Case Closed',
+  'not_keen': 'Lost',
+  // NPU Stages - Explicitly Mapped now
+  'npu_1': 'NPU 1', 
+  'npu_2': 'NPU 2',
+  'npu_3': 'NPU 3',
+  'npu_4': 'NPU 4',
+  'npu_5': 'NPU 5',
+  'npu_6': 'NPU 6'
+};
+
 interface ClientContextType {
   // Metadata
   clientId: string | null;
@@ -207,6 +228,10 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   };
 
   const generateClientObject = (): Client => {
+    // Derive the human-readable stage from the system status
+    // This prevents "new" overwriting "New Lead" on save if mismatched
+    const derivedStage = STATUS_TO_STAGE[followUp.status] || followUp.status || 'New Lead';
+
     return {
       id: clientId || crypto.randomUUID(),
       referenceCode: clientRef || `REF-${Math.floor(Math.random()*10000)}`,
@@ -236,7 +261,7 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       retirementAge: toNum(profile.retirementAge),
       tags: profile.tags || [],
       
-      stage: followUp.status,
+      stage: derivedStage, // Use mapped value
       priority: followUp.priority || 'Medium',
       value: toNum(followUp.dealValue),
       lastContact: followUp.lastContactedAt || '',

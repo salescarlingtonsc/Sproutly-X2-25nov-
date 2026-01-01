@@ -39,10 +39,14 @@ import { logTabUsage } from './lib/db/activities';
 import { Client } from './types';
 
 const AppInner: React.FC = () => {
-  const { user, signOut } = useAuth();
+  const { user, signOut, refreshProfile, isLoading } = useAuth();
   const { 
     profile, loadClient, resetClient, generateClientObject, 
-    clientId 
+    clientId, 
+    // Data States for Auto-Save
+    expenses, customExpenses,
+    cashflowState, investorState, insuranceState,
+    cpfState, propertyState, wealthState, retirement
   } = useClient();
   const toast = useToast();
   const { confirm } = useDialog();
@@ -52,17 +56,28 @@ const AppInner: React.FC = () => {
   const [clients, setClients] = useState<Client[]>([]);
   const [saveStatus, setSaveStatus] = useState<'idle'|'saving'|'saved'|'error'>('idle');
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
-
+  
   const lastSavedJson = useRef<string>('');
   const isSavingRef = useRef<boolean>(false);
   const gridSaveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   
-  // Handover Guard: Prevents autosave from reverting ownership changes during handover
+  // Handover Guard
   const [transferringIds, setTransferringIds] = useState<Set<string>>(new Set());
+
+  // --- AUTO POLL FOR APPROVAL ---
+  useEffect(() => {
+    let interval: any;
+    if (user && (user.status === 'pending' || user.status === 'rejected')) {
+        interval = setInterval(() => {
+            refreshProfile();
+        }, 3000);
+    }
+    return () => clearInterval(interval);
+  }, [user, refreshProfile]);
 
   useEffect(() => {
     const heartbeat = setInterval(() => {
-      if (document.visibilityState === 'visible' && user && user.status === 'approved') {
+      if (document.visibilityState === 'visible' && user && (user.status === 'approved' || user.status === 'active')) {
         logTabUsage(activeTab, 60);
       }
     }, 60000);
@@ -70,7 +85,7 @@ const AppInner: React.FC = () => {
   }, [activeTab, user]);
 
   useEffect(() => {
-     if (user && user.status === 'approved') loadClientsList();
+     if (user && (user.status === 'approved' || user.status === 'active')) loadClientsList();
   }, [user]);
 
   const loadClientsList = async () => {
@@ -106,12 +121,11 @@ const AppInner: React.FC = () => {
 
   const handleSaveClient = useCallback(async (isAutoSave = false, overrideClient?: Client) => {
      if (document.hidden && isAutoSave) return;
-     if (!user || user.status !== 'approved') return;
+     if (!user || (user.status !== 'approved' && user.status !== 'active')) return;
      if (isSavingRef.current && !isAutoSave) return;
 
      const clientData = overrideClient || generateClientObject();
      
-     // CRITICAL: Block autosave if this client is currently being handed over
      if (transferringIds.has(clientData.id)) {
         console.debug("Autosave Suppressed: Active Handover Lock in place.");
         return;
@@ -132,166 +146,218 @@ const AppInner: React.FC = () => {
      }
 
      if (!isAutoSave) {
-        isSavingRef.current = true;
         setSaveStatus('saving');
+        isSavingRef.current = true;
      }
-     
+
      try {
         const saved = await db.saveClient(clientData, user.id);
         
-        // Sync local memory to new DB reality
-        if (!isAutoSave || (isAutoSave && !clientId)) {
-           loadClient(saved); 
-        }
-        
+        setClients(prev => {
+            const exists = prev.find(c => c.id === saved.id);
+            if (exists) return prev.map(c => c.id === saved.id ? saved : c);
+            return [...prev, saved];
+        });
+
         lastSavedJson.current = JSON.stringify(saved);
         setLastSaved(new Date());
-
         if (!isAutoSave) {
            setSaveStatus('saved');
-           loadClientsList(); 
-           toast.success("Intelligence Cloud Synced");
-           setTimeout(() => setSaveStatus(prev => prev === 'saved' ? 'idle' : prev), 3000);
-        } else if (overrideClient) {
-           loadClientsList();
+           setTimeout(() => setSaveStatus('idle'), 2000);
         }
-     } catch (e: any) {
-        if (!isAutoSave) {
-           setSaveStatus('error');
-           toast.error(e.message || "Sync Error");
-        }
+     } catch (e) {
+        console.error(e);
+        if (!isAutoSave) setSaveStatus('error');
      } finally {
-        if (!isAutoSave) isSavingRef.current = false;
+        isSavingRef.current = false;
      }
-  }, [user, clientId, generateClientObject, toast, loadClient, transferringIds]);
+  }, [user, generateClientObject, transferringIds]);
 
-  const handleUpdateClientInList = (updatedClient: Client) => {
-     setClients(prev => prev.map(c => c.id === updatedClient.id ? updatedClient : c));
-     if (gridSaveDebounceRef.current) clearTimeout(gridSaveDebounceRef.current);
-     gridSaveDebounceRef.current = setTimeout(() => {
-        handleSaveClient(true, updatedClient);
-     }, 1000);
-  };
-
-  const handleDeleteClient = async (id: string) => {
-    const ok = await confirm({
-      title: "Delete Record?",
-      message: "This action is irreversible and will purge the dossier from the vault.",
-      isDestructive: true,
-      confirmText: "Delete Permanently"
-    });
-    if (!ok) return;
-
-    try {
-      await db.deleteClient(id);
-      toast.success("Dossier purged successfully");
-      if (clientId === id) resetClient();
-      loadClientsList();
-    } catch (e: any) {
-      toast.error(e.message);
-    }
-  };
-
+  // --- UNIVERSAL AUTO-SAVE LOOP ---
+  // Listens to ALL client context state changes
   useEffect(() => {
-    const timer = setInterval(() => {
-       if (document.visibilityState === 'visible' && user?.status === 'approved') {
-          handleSaveClient(true);
-       }
-    }, 15000); 
-    return () => clearInterval(timer);
-  }, [handleSaveClient, user]);
+     const timer = setTimeout(() => {
+        handleSaveClient(true);
+     }, 2000);
+     return () => clearTimeout(timer);
+  }, [
+    profile, 
+    expenses, 
+    customExpenses, 
+    cashflowState, 
+    investorState, 
+    insuranceState, 
+    cpfState, 
+    propertyState, 
+    wealthState, 
+    retirement, 
+    handleSaveClient
+  ]);
 
-  if (user && user.status !== 'approved' && user.role !== 'admin') {
-     return (
-        <div className="min-h-screen bg-[#0F172A] flex items-center justify-center p-6 text-white font-sans overflow-hidden relative">
-           <div className="absolute top-[-10%] left-[-10%] w-[500px] h-[500px] bg-indigo-600/20 rounded-full blur-[120px] animate-pulse"></div>
-           <div className="max-w-md w-full text-center space-y-8 relative z-10">
-              <div className="inline-flex items-center justify-center w-24 h-24 rounded-3xl bg-white/5 border border-white/10 shadow-2xl mb-4 relative overflow-hidden group">
-                 <div className="absolute inset-0 bg-gradient-to-br from-indigo-50/20 to-emerald-500/20 opacity-0 group-hover:opacity-100 transition-opacity"></div>
-                 <span className="text-5xl relative z-10">{user.status === 'pending' ? '⏳' : '🚫'}</span>
-              </div>
-              <div>
-                 <h1 className="text-3xl font-black tracking-tight mb-3">
-                    {user.status === 'pending' ? 'Activation Required' : 'Access Restricted'}
-                 </h1>
-                 <p className="text-slate-400 leading-relaxed">
-                    {user.status === 'pending' 
-                       ? "Welcome to Sproutly. Your advisor credentials have been submitted for verification. Please contact your Agency Administrator to activate your portal."
-                       : "Your access to the Sproutly environment has been restricted. If you believe this is an error, please reach out to the Strategic Operations unit."}
-                 </p>
-              </div>
-              <div className="flex flex-col gap-4">
-                 <div className="p-4 bg-white/5 border border-white/10 rounded-2xl text-left">
-                    <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">Identity</div>
-                    <div className="text-sm font-bold text-slate-200">{user.email}</div>
-                    <div className="text-[10px] font-mono text-indigo-400 mt-1 uppercase tracking-tighter">Status: {user.status}</div>
-                 </div>
-                 <Button variant="ghost" className="text-slate-400" onClick={signOut}>Sign Out of Identity</Button>
-              </div>
-              <div className="pt-10">
-                 <div className="text-[10px] font-black uppercase tracking-[0.4em] text-slate-600">Secure Intelligence Protocol v3.0</div>
-              </div>
-           </div>
+  const handleUpdateGlobalClient = useCallback((updatedClient: Client) => {
+      setClients(prev => prev.map(c => c.id === updatedClient.id ? updatedClient : c));
+      if (updatedClient.id === clientId) {
+          loadClient(updatedClient);
+      }
+      if (gridSaveDebounceRef.current) clearTimeout(gridSaveDebounceRef.current);
+      gridSaveDebounceRef.current = setTimeout(async () => {
+          try {
+              await db.saveClient(updatedClient, user?.id);
+          } catch (e) {
+              console.error("Background sync failed", e);
+          }
+      }, 800);
+  }, [clientId, loadClient, user]);
+
+  const handleTransferStart = (id: string) => {
+      setTransferringIds(prev => new Set(prev).add(id));
+  };
+
+  const handleTransferEnd = (id: string) => {
+      setTransferringIds(prev => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+      });
+      loadClientsList();
+  };
+
+  // --- AUTH GATE ---
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
+          <p className="text-sm font-bold text-slate-400 uppercase tracking-widest">Initializing Quantum Core...</p>
         </div>
-     );
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <>
+        <LandingPage onLogin={() => setAuthModalOpen(true)} />
+        <AuthModal isOpen={isAuthModalOpen} onClose={() => setAuthModalOpen(false)} />
+      </>
+    );
+  }
+
+  // --- RESTRICTION GATE ---
+  // Blocks access if user is logged in but not approved/active
+  if (user && (user.status === 'pending' || user.status === 'rejected')) {
+    return (
+      <div className="min-h-screen bg-[#0B1120] flex flex-col items-center justify-center p-6 text-white relative overflow-hidden">
+        <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-20"></div>
+        <div className="absolute top-[-20%] left-[-10%] w-[600px] h-[600px] bg-red-600/10 rounded-full blur-[100px]"></div>
+        
+        <div className="relative z-10 text-center max-w-lg">
+          <div className="w-20 h-20 bg-red-500/10 rounded-3xl flex items-center justify-center mx-auto mb-8 border border-red-500/30 shadow-[0_0_30px_rgba(239,68,68,0.2)]">
+            <svg className="w-10 h-10 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m0-8v4m0 8h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          </div>
+          
+          <h1 className="text-3xl font-black mb-4 tracking-tight">Access Restricted</h1>
+          <p className="text-slate-400 text-sm leading-relaxed mb-8">
+            Your access to the Sproutly environment has been restricted or is pending approval.
+            If you believe this is an error, please reach out to the Strategic Operations unit.
+          </p>
+
+          <div className="bg-white/5 border border-white/10 rounded-2xl p-6 mb-8 text-left">
+            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">Identity</p>
+            <p className="text-white font-mono text-sm font-bold mb-2">{user.email}</p>
+            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">Status</p>
+            <div className="inline-flex items-center gap-2">
+               <span className={`w-2 h-2 rounded-full ${user.status === 'pending' ? 'bg-amber-500 animate-pulse' : 'bg-red-500'}`}></span>
+               <span className="text-white font-bold text-xs uppercase">{user.status}</span>
+            </div>
+          </div>
+
+          <button 
+            onClick={() => signOut()}
+            className="text-slate-500 hover:text-white text-xs font-bold uppercase tracking-widest transition-colors"
+          >
+            Sign Out of Identity
+          </button>
+          
+          <div className="mt-12 text-[10px] font-black text-slate-600 uppercase tracking-[0.3em]">
+            Secure Intelligence Protocol v3.0
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
-    <>
-     <AppShell
-        activeTab={activeTab} setActiveTab={setActiveTab}
-        onLoginClick={() => setAuthModalOpen(true)}
-        onPricingClick={() => toast.info("Contact Admin for Tier Elevation")}
-        onSaveClick={() => handleSaveClient(false)}
-        clientRef={profile.name ? 'Strategy Active' : undefined} clientName={profile.name}
-        saveStatus={saveStatus} lastSavedTime={lastSaved}
-        clients={clients} onLoadClient={(c) => handleLoadClient(c, true)}
-     >
-        <AuthModal isOpen={isAuthModalOpen} onClose={() => setAuthModalOpen(false)} />
-        {activeTab === 'disclaimer' && <DisclaimerTab />}
-        {activeTab === 'dashboard' && <DashboardTab user={user!} clients={clients} setActiveTab={setActiveTab} onLoadClient={handleLoadClient} onNewClient={handleNewClient} />}
-        {activeTab === 'profile' && <ProfileTab clients={clients} onLoadClient={handleLoadClient} onNewProfile={handleNewClient} />}
-        {activeTab === 'life_events' && <LifeEventsTab />}
-        {activeTab === 'children' && <ChildrenTab />}
-        {activeTab === 'cpf' && <CpfTab />}
-        {activeTab === 'cashflow' && <CashflowTab />}
-        {activeTab === 'insurance' && <InsuranceTab />}
-        {activeTab === 'retirement' && <RetirementTab />}
-        {activeTab === 'investor' && <InvestorTab />}
-        {activeTab === 'wealth' && <WealthToolTab />}
-        {activeTab === 'property' && <PropertyCalculatorTab />}
-        {activeTab === 'vision' && <VisionBoardTab />}
-        {activeTab === 'analytics' && <AnalyticsTab clients={clients} />}
-        {activeTab === 'report' && <ReportTab />}
-        {activeTab === 'crm' && (
+    <AppShell 
+      activeTab={activeTab} 
+      setActiveTab={setActiveTab} 
+      onLoginClick={() => setAuthModalOpen(true)}
+      onPricingClick={() => alert("Contact Sales for Upgrades")}
+      onSaveClick={() => handleSaveClient(false)}
+      clientRef={clientId ? profile.name : undefined}
+      clientName={profile.name}
+      saveStatus={saveStatus}
+      lastSavedTime={lastSaved}
+      clients={clients}
+      onLoadClient={handleLoadClient}
+    >
+      {activeTab === 'disclaimer' && <DisclaimerTab />}
+      {activeTab === 'dashboard' && <DashboardTab user={user} clients={clients} setActiveTab={setActiveTab} onLoadClient={handleLoadClient} onNewClient={handleNewClient} />}
+      {activeTab === 'profile' && <ProfileTab clients={clients} onLoadClient={handleLoadClient} onNewProfile={handleNewClient} />}
+      {activeTab === 'life_events' && <LifeEventsTab />}
+      {activeTab === 'children' && <ChildrenTab />}
+      {activeTab === 'cpf' && <CpfTab />}
+      {activeTab === 'cashflow' && <CashflowTab />}
+      {activeTab === 'insurance' && <InsuranceTab />}
+      {activeTab === 'retirement' && <RetirementTab />}
+      {activeTab === 'investor' && <InvestorTab />}
+      {activeTab === 'wealth' && <WealthToolTab />}
+      {activeTab === 'property' && <PropertyCalculatorTab />}
+      {activeTab === 'vision' && <VisionBoardTab />}
+      {activeTab === 'analytics' && <AnalyticsTab clients={clients} />}
+      {activeTab === 'crm' && (
           <CrmTab 
             clients={clients} 
             profile={profile} 
-            selectedClientId={clientId} 
-            newClient={handleNewClient} 
-            saveClient={() => handleSaveClient(false)} 
-            loadClient={handleLoadClient} 
-            deleteClient={handleDeleteClient} 
+            selectedClientId={clientId}
+            newClient={handleNewClient}
+            saveClient={() => handleSaveClient(false)}
+            loadClient={handleLoadClient}
+            deleteClient={async (id) => {
+                await db.deleteClient(id);
+                setClients(prev => prev.filter(c => c.id !== id));
+                if (id === clientId) resetClient();
+            }}
             onRefresh={loadClientsList}
-            onUpdateGlobalClient={handleUpdateClientInList}
-            onTransferStart={(id) => setTransferringIds(prev => new Set(prev).add(id))}
-            onTransferEnd={(id) => setTransferringIds(prev => { const n = new Set(prev); n.delete(id); return n; })}
+            onUpdateGlobalClient={handleUpdateGlobalClient}
+            onTransferStart={handleTransferStart}
+            onTransferEnd={handleTransferEnd}
           />
-        )}
-        {activeTab === 'reminders' && <RemindersTab />}
-        {activeTab === 'admin' && user?.role === 'admin' && <AdminTab />}
-      </AppShell>
-      <AiAssistant currentClient={generateClientObject()} />
-    </>
+      )}
+      {activeTab === 'reminders' && <RemindersTab />}
+      {activeTab === 'report' && <ReportTab />}
+      {activeTab === 'admin' && <AdminTab />}
+
+      <AiAssistant currentClient={clientId ? generateClientObject() : null} />
+      <AuthModal isOpen={isAuthModalOpen} onClose={() => setAuthModalOpen(false)} />
+    </AppShell>
   );
 };
 
 const App: React.FC = () => {
-  const { user, isLoading } = useAuth();
-  const [isAuthModalOpen, setAuthModalOpen] = useState(false);
-  if (isLoading) return <div className="min-h-screen flex items-center justify-center bg-[#0F172A]"><div className="w-16 h-16 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div></div>;
-  if (!user) return <ToastProvider><LandingPage onLogin={() => setAuthModalOpen(true)} /><AuthModal isOpen={isAuthModalOpen} onClose={() => setAuthModalOpen(false)} /></ToastProvider>;
-  return <ToastProvider><DialogProvider><ClientProvider><AiProvider><AppInner /></AiProvider></ClientProvider></DialogProvider></ToastProvider>;
+  return (
+    <ToastProvider>
+      <DialogProvider>
+        <ClientProvider>
+          <AiProvider>
+            <AppInner />
+          </AiProvider>
+        </ClientProvider>
+      </DialogProvider>
+    </ToastProvider>
+  );
 };
 
 export default App;

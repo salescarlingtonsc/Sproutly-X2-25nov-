@@ -16,6 +16,7 @@ const ProtocolManagerModal: React.FC<ProtocolManagerModalProps> = ({ isOpen, onC
   const [templates, setTemplates] = useState<DBTemplate[]>([]);
   const [editingTemplate, setEditingTemplate] = useState<Partial<DBTemplate> | null>(null);
   const [loading, setLoading] = useState(false);
+  const [showGuide, setShowGuide] = useState(false);
 
   useEffect(() => {
     if (isOpen) loadTemplates();
@@ -32,8 +33,9 @@ const ProtocolManagerModal: React.FC<ProtocolManagerModalProps> = ({ isOpen, onC
     if (!editingTemplate?.label || !editingTemplate?.content) return;
     try {
       await dbTemplates.saveTemplate(editingTemplate);
-      toast.success("Outreach protocol updated.");
+      toast.success("Outreach protocol saved successfully.");
       setEditingTemplate(null);
+      setShowGuide(false);
       loadTemplates();
     } catch (e: any) {
       toast.error(e.message);
@@ -51,6 +53,10 @@ const ProtocolManagerModal: React.FC<ProtocolManagerModalProps> = ({ isOpen, onC
     }
   };
 
+  const insertExample = (text: string) => {
+      setEditingTemplate(prev => ({...prev, content: text}));
+  };
+
   return (
     <Modal 
       isOpen={isOpen} 
@@ -61,6 +67,47 @@ const ProtocolManagerModal: React.FC<ProtocolManagerModalProps> = ({ isOpen, onC
       <div className="space-y-6">
         {editingTemplate ? (
           <div className="space-y-6 animate-in slide-in-from-bottom-2 duration-300">
+            <div className="flex justify-between items-start">
+               <h4 className="font-bold text-slate-800 text-sm">Editor</h4>
+               <button 
+                  onClick={() => setShowGuide(!showGuide)}
+                  className={`text-[10px] font-bold px-3 py-1.5 rounded-lg border transition-all flex items-center gap-2 ${showGuide ? 'bg-indigo-50 border-indigo-200 text-indigo-700' : 'bg-white border-slate-200 text-slate-500 hover:text-slate-700'}`}
+               >
+                  <span>💡</span> {showGuide ? 'Hide Guide' : 'Template Architect Guide'}
+               </button>
+            </div>
+
+            {/* GUIDE PANEL */}
+            {showGuide && (
+               <div className="bg-indigo-50/50 rounded-xl p-4 border border-indigo-100 space-y-4 animate-in fade-in slide-in-from-top-2">
+                  <div>
+                     <h5 className="text-[10px] font-black text-indigo-400 uppercase tracking-widest mb-2">Dynamic Variables</h5>
+                     <div className="flex flex-wrap gap-2">
+                        {['{name}', '{date}', '{time}', '{formatted_appt}', '{advisor}'].map(v => (
+                           <code key={v} className="text-[10px] bg-white border border-indigo-100 px-1.5 py-0.5 rounded text-indigo-600 font-mono">{v}</code>
+                        ))}
+                     </div>
+                  </div>
+                  <div>
+                     <h5 className="text-[10px] font-black text-indigo-400 uppercase tracking-widest mb-2">Psychological Hooks (Click to Use)</h5>
+                     <div className="space-y-2">
+                        <button onClick={() => insertExample("Hi {name}, are you still interested in optimizing your portfolio, or should I close this file?")} className="block w-full text-left p-2 bg-white border border-indigo-100 rounded-lg hover:border-indigo-300 transition-all group">
+                           <div className="text-[10px] font-bold text-slate-700 group-hover:text-indigo-700">The "Negative Reverse"</div>
+                           <div className="text-[10px] text-slate-400 italic">"Are you still interested... or should I close this?"</div>
+                        </button>
+                        <button onClick={() => insertExample("Hi {name}, confirming our chat on {formatted_appt}. Here is the Zoom link: [Link]. Looking forward to showing you the projection.")} className="block w-full text-left p-2 bg-white border border-indigo-100 rounded-lg hover:border-indigo-300 transition-all group">
+                           <div className="text-[10px] font-bold text-slate-700 group-hover:text-indigo-700">The "Value Bridge" Confirmation</div>
+                           <div className="text-[10px] text-slate-400 italic">Confirm time + tease the value outcome.</div>
+                        </button>
+                        <button onClick={() => insertExample("Hi {name}, I saw the market shifted today and thought of our conversation. Do you have 2 mins for a quick update?")} className="block w-full text-left p-2 bg-white border border-indigo-100 rounded-lg hover:border-indigo-300 transition-all group">
+                           <div className="text-[10px] font-bold text-slate-700 group-hover:text-indigo-700">The "Recency" Hook</div>
+                           <div className="text-[10px] text-slate-400 italic"> leverage news/events to re-engage.</div>
+                        </button>
+                     </div>
+                  </div>
+               </div>
+            )}
+
             <div>
               <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Internal Label</label>
               <input 

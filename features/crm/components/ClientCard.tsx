@@ -5,11 +5,31 @@ import { analyzeClientMomentum, generateInvestmentReport } from '../../../lib/ge
 import { DEFAULT_SETTINGS } from '../../../lib/config';
 import { FinancialTools } from './FinancialTools';
 import { fmtDateTime } from '../../../lib/helpers';
+import { logActivity } from '../../../lib/db/activities';
 
 interface ClientCardProps {
   client: Client;
   onUpdate: (updatedClient: Client) => void;
 }
+
+const REVERSE_STATUS_MAP: Record<string, string> = {
+  'New Lead': 'new',
+  'Contacted': 'contacted',
+  'Picked Up': 'picked_up',
+  'NPU 1': 'npu_1',
+  'NPU 2': 'npu_2',
+  'NPU 3': 'npu_3',
+  'NPU 4': 'npu_4',
+  'NPU 5': 'npu_5',
+  'NPU 6': 'npu_6',
+  'Appt Set': 'appt_set',
+  'Appt Met': 'appt_met',
+  'Proposal': 'proposal',
+  'Pending Decision': 'pending_decision',
+  'Client': 'client',
+  'Case Closed': 'case_closed',
+  'Lost': 'not_keen',
+};
 
 const EditableField = ({ label, value, onChange, type = 'text', options = [], className = '', placeholder = '-' }: any) => {
   const displayValue = type === 'datetime-local' && value && typeof value === 'string' ? (value.length > 16 ? value.substring(0, 16) : value) : (value || '');
@@ -55,15 +75,34 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate }) => {
   };
 
   const handleUpdateField = (field: keyof Client, val: any) => {
-      // Auto-log stage changes
+      const now = new Date().toISOString();
+      const statusKey = REVERSE_STATUS_MAP[val] || val;
+
       if (field === 'stage' && val !== client.stage) {
-          const logEntry = {
-              id: `sys_log_${Date.now()}`,
-              content: `Stage updated: ${client.stage || 'New'} ➔ ${val}`,
-              date: new Date().toISOString(),
-              author: 'System'
-          };
-          onUpdate({ ...client, [field]: val, notes: [logEntry, ...(client.notes || [])] });
+          // Manual Stage Change
+          const logEntry = { id: `sys_${Date.now()}`, content: `Stage updated: ${client.stage || 'New'} ➔ ${val}`, date: now, author: 'System' };
+          
+          onUpdate({ 
+             ...client, 
+             [field]: val,
+             followUp: { ...client.followUp, status: statusKey, lastContactedAt: now },
+             notes: [logEntry, ...(client.notes || [])],
+             lastUpdated: now,
+             stageHistory: [...(client.stageHistory || []), { stage: val, date: now }] 
+          });
+          logActivity(client.id, 'status_change', `Manual stage change to ${val}`);
+
+      } else if (field === 'contactStatus' && val !== client.contactStatus) {
+          // Manual Contact Status Change
+          const logEntry = { id: `sys_${Date.now()}`, content: `Status updated: ${client.contactStatus || '-'} ➔ ${val}`, date: now, author: 'System' };
+          
+          onUpdate({
+              ...client,
+              [field]: val,
+              notes: [logEntry, ...(client.notes || [])],
+              lastUpdated: now
+          });
+      
       } else {
           onUpdate({ ...client, [field]: val });
       }
@@ -96,6 +135,13 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate }) => {
       };
       onUpdate({ ...client, notes: [noteEntry, ...(client.notes || [])] });
       setNewNote('');
+  };
+
+  const handleDeleteNote = (noteId: string) => {
+      if (confirm("Delete this log entry? This cannot be undone.")) {
+          const updatedNotes = (client.notes || []).filter(n => n.id !== noteId);
+          onUpdate({ ...client, notes: updatedNotes });
+      }
   };
 
   const handleGenerateReport = async () => {
@@ -200,10 +246,19 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate }) => {
         <div className="flex flex-col h-full" onClick={(e) => e.stopPropagation()}>
             <div className="flex-1 space-y-3 mb-4 overflow-y-auto max-h-[300px] pr-2 custom-scrollbar">
                 {(client.notes || []).map((note, i) => (
-                    <div key={i} className="bg-slate-50 p-3 rounded-xl border border-slate-100 text-xs">
-                        <div className="flex justify-between items-center mb-1.5">
-                            <span className="font-bold text-slate-700">{note.author || 'Advisor'}</span>
-                            <span className="text-[10px] text-slate-400 font-mono">{fmtDateTime(note.date)}</span>
+                    <div key={note.id || i} className="bg-slate-50 p-3 rounded-xl border border-slate-100 text-xs relative group">
+                        <div className="flex justify-between items-start mb-1.5">
+                            <div>
+                                <span className="font-bold text-slate-700 block">{note.author || 'Advisor'}</span>
+                                <span className="text-[10px] text-slate-400 font-mono">{fmtDateTime(note.date)}</span>
+                            </div>
+                            <button 
+                                onClick={(e) => { e.stopPropagation(); handleDeleteNote(note.id); }}
+                                className="text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all p-1"
+                                title="Delete Log"
+                            >
+                                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                            </button>
                         </div>
                         <p className="text-slate-600 leading-relaxed whitespace-pre-wrap">{note.content}</p>
                     </div>

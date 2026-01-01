@@ -4,7 +4,11 @@ import { logActivity } from './activities';
 
 export const uploadClientFile = async (clientId: string, file: File, category: string = 'others') => {
   if (!supabase) return;
-  const { data: { user } } = await supabase.auth.getUser();
+  
+  // FIX: Use getSession for consistency
+  const { data: { session } } = await supabase.auth.getSession();
+  const user = session?.user;
+  
   if (!user) throw new Error("Unauthorized");
 
   const path = `${user.id}/${clientId}/${Date.now()}-${file.name}`;

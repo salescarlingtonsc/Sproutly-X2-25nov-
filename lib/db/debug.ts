@@ -10,7 +10,9 @@ export const runDiagnostics = async () => {
   };
 
   try {
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { session } } = await supabase.auth.getSession();
+    const user = session?.user;
+    
     results.auth = { uid: user?.id, email: user?.email, isAuthenticated: !!user };
 
     // 1. Check Profile Role

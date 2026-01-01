@@ -61,7 +61,10 @@ export const fetchClients = async (params: FetchClientsParams) => {
 export const saveClientUpdate = async (id: string, data: Partial<Client>) => {
   if (!supabase) return;
   
-  const { data: { user } } = await supabase.auth.getUser();
+  // FIX: Use getSession instead of getUser to prevent "Unauthorized" on network lag
+  const { data: { session } } = await supabase.auth.getSession();
+  const user = session?.user;
+  
   if (!user) throw new Error("Unauthorized: Session required for data updates.");
 
   try {

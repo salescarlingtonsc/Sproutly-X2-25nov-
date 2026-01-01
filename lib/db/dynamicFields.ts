@@ -10,7 +10,10 @@ export const getFieldDefinitions = async (): Promise<FieldDefinition[]> => {
 
 export const createFieldDefinition = async (field: Omit<FieldDefinition, 'id'>) => {
   if (!supabase) return;
-  const { data: { user } } = await supabase.auth.getUser();
+  
+  const { data: { session } } = await supabase.auth.getSession();
+  const user = session?.user;
+  
   const { data, error } = await supabase
     .from('field_definitions')
     .insert({ ...field, user_id: user?.id })
@@ -22,7 +25,9 @@ export const createFieldDefinition = async (field: Omit<FieldDefinition, 'id'>) 
 
 export const upsertFieldValue = async (clientId: string, fieldId: string, type: string, value: any) => {
   if (!supabase) return;
-  const { data: { user } } = await supabase.auth.getUser();
+  
+  const { data: { session } } = await supabase.auth.getSession();
+  const user = session?.user;
 
   const payload: any = {
     client_id: clientId,

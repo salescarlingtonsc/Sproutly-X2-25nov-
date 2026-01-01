@@ -9,7 +9,10 @@ export const db = {
   getClients: async (userId?: string): Promise<Client[]> => {
     if (isSupabaseConfigured() && supabase) {
       try {
-        const { data: { user } } = await supabase.auth.getUser();
+        // Use getSession for faster, local-first auth check. RLS handles security.
+        const { data: { session } } = await supabase.auth.getSession();
+        const user = session?.user;
+        
         if (!user) return [];
 
         // 1. Fetch User Profile to determine role and hierarchy
@@ -163,7 +166,12 @@ export const db = {
       return clientToSave;
     }
 
-    const { data: { user: authUser } } = await supabase.auth.getUser();
+    // CHANGE: Use getSession instead of getUser. 
+    // getUser() verifies against the server and can fail/timeout during rapid syncs.
+    // getSession() retrieves the local cached token which is sufficient for RLS to validate.
+    const { data: { session } } = await supabase.auth.getSession();
+    const authUser = session?.user;
+    
     if (!authUser) throw new Error("Unauthorized");
 
     const { _ownerId, _ownerEmail, ...payloadData } = client;
