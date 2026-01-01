@@ -91,8 +91,11 @@ const CashflowTab: React.FC = () => {
       });
       if (isCareerPaused) { pauseMonthsRemaining--; if (pauseMonthsRemaining <= 0) isCareerPaused = false; }
 
-      const interestEarned = balance * monthlyInterestRate;
+      // Interest only earns on positive balance, usually banks don't pay interest on debt (they charge it).
+      // For simplicity in this projection, we only apply interest if balance > 0.
+      const interestEarned = balance > 0 ? balance * monthlyInterestRate : 0;
       balance += interestEarned;
+      
       const isRetired = ageAtMonth >= fiAge;
       
       let monthIncome = (!isRetired && !isCareerPaused) ? currentActiveIncome : 0;
@@ -153,7 +156,7 @@ const CashflowTab: React.FC = () => {
          withdrawal: withdrawalAmount,
          interestEarned,
          netCashflow: net,
-         balance: Math.max(0, balance),
+         balance: balance, // Allow negative to show debt
          isCareerPaused
       });
     }
@@ -179,6 +182,13 @@ const CashflowTab: React.FC = () => {
 
   if (!cashflowData) return <div className="p-10 text-center text-gray-400">Loading Cashflow Engine...</div>;
 
+  const firstMonth = monthlyProjection[0];
+  const startNet = firstMonth ? firstMonth.netCashflow : 0;
+  const projectedOneYear = monthlyProjection[11] ? monthlyProjection[11].balance : toNum(currentSavings);
+  const startBal = toNum(currentSavings);
+  // Calculate runway in months (if burning cash)
+  const runwayMonths = (startNet < 0 && startBal > 0) ? (startBal / Math.abs(startNet)) : 0;
+
   const headerAction = (
     <button 
       onClick={() => openAiWithPrompt("Analyze this cashflow data. Identify potential liquidity risks or surplus opportunities based on the income, expenses, and savings rate.")}
@@ -199,9 +209,9 @@ const CashflowTab: React.FC = () => {
       />
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-         {/* 1. INITIALIZATION PANEL */}
-         <SectionCard title="Initialization" className="lg:col-span-1">
-            <div className="space-y-4">
+         {/* 1. INITIALIZATION PANEL (UPDATED) */}
+         <SectionCard title="Initialization" className="lg:col-span-1 flex flex-col h-full">
+            <div className="space-y-4 flex-1">
                <LabeledText 
                   label="Starting Bank Balance ($)" 
                   value={currentSavings} 
@@ -223,6 +233,32 @@ const CashflowTab: React.FC = () => {
                   type="number"
                   placeholder="100"
                />
+            </div>
+            
+            {/* FORECAST SNAPSHOT (NEW) */}
+            <div className={`mt-6 p-4 rounded-xl border border-dashed transition-colors ${startNet < 0 ? 'bg-red-50 border-red-200' : 'bg-emerald-50 border-emerald-200'}`}>
+                <div className="text-[10px] font-bold uppercase tracking-widest mb-2 text-gray-500">12-Month Outlook</div>
+                <div className="flex justify-between items-end">
+                    <div>
+                        <div className={`text-xl font-black ${projectedOneYear < 0 ? 'text-red-600' : 'text-slate-800'}`}>
+                            {fmtSGD(projectedOneYear)}
+                        </div>
+                        <div className="text-[10px] text-gray-400 font-medium">
+                            {projectedOneYear < 0 ? 'Projected Overdraft' : 'Projected Balance'}
+                        </div>
+                    </div>
+                    {startNet < 0 && startBal > 0 && (
+                        <div className="text-right">
+                            <div className="text-lg font-black text-red-500">{runwayMonths < 12 ? runwayMonths.toFixed(1) : '12+'}</div>
+                            <div className="text-[10px] text-red-400 font-bold uppercase">Mths Runway</div>
+                        </div>
+                    )}
+                </div>
+                {startNet < 0 && startBal <= 0 && (
+                    <div className="mt-2 text-[10px] font-bold text-red-600 bg-white px-2 py-1 rounded border border-red-100 text-center">
+                        ⚠️ Immediate Deficit
+                    </div>
+                )}
             </div>
          </SectionCard>
 
@@ -474,8 +510,8 @@ const CashflowTab: React.FC = () => {
                         </td>
                         <td className="p-4 text-right text-emerald-600">{fmtSGD(row.totalIncome)}</td>
                         <td className="p-4 text-right text-red-500">{fmtSGD(Math.abs(row.withdrawal))}</td>
-                        <td className="p-4 text-right font-bold text-indigo-600">{fmtSGD(row.netCashflow)}</td>
-                        <td className="p-4 text-right font-mono font-bold text-slate-700">{fmtSGD(row.balance)}</td>
+                        <td className={`p-4 text-right font-bold ${row.netCashflow < 0 ? 'text-red-500' : 'text-indigo-600'}`}>{fmtSGD(row.netCashflow)}</td>
+                        <td className={`p-4 text-right font-mono font-bold ${row.balance < 0 ? 'text-red-600' : 'text-slate-700'}`}>{fmtSGD(row.balance)}</td>
                      </tr>
                   ))}
                </tbody>

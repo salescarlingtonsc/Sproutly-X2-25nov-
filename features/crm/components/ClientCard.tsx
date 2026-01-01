@@ -55,7 +55,18 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate }) => {
   };
 
   const handleUpdateField = (field: keyof Client, val: any) => {
-      onUpdate({ ...client, [field]: val });
+      // Auto-log stage changes
+      if (field === 'stage' && val !== client.stage) {
+          const logEntry = {
+              id: `sys_log_${Date.now()}`,
+              content: `Stage updated: ${client.stage || 'New'} ➔ ${val}`,
+              date: new Date().toISOString(),
+              author: 'System'
+          };
+          onUpdate({ ...client, [field]: val, notes: [logEntry, ...(client.notes || [])] });
+      } else {
+          onUpdate({ ...client, [field]: val });
+      }
   };
 
   const handleAddFamilyMember = () => {
@@ -143,6 +154,12 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate }) => {
       <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
       {activeTab === 'overview' && (
       <div className="space-y-6">
+          {/* Owner Display */}
+          <div className="bg-slate-50 p-2 rounded-lg border border-slate-100 flex justify-between items-center">
+             <span className="text-[10px] font-bold text-slate-400 uppercase">Portfolio Custodian</span>
+             <span className="text-xs font-bold text-indigo-600">{client._ownerEmail || 'System/Me'}</span>
+          </div>
+
           <div className="grid grid-cols-2 gap-4">
               <EditableField label="Current Stage" value={client.stage} onChange={(v:any) => handleUpdateField('stage', v)} type="select" options={DEFAULT_SETTINGS.statuses} />
               <EditableField label="Priority" value={client.priority} onChange={(v:any) => handleUpdateField('priority', v)} type="select" options={['High', 'Medium', 'Low']} className={client.priority === 'High' ? 'text-rose-600 font-semibold' : ''} />

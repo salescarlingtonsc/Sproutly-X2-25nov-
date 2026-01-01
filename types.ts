@@ -209,16 +209,36 @@ export type ContactStatus =
   | 'client'
   | 'not_keen';
 
-// New Stage type for compatibility
+// Enhanced Stage Constant for Compatibility
 export const Stage = {
   New: 'New Lead',
+  NEW: 'New Lead',
   Contacted: 'Contacted',
+  CONTACTED: 'Contacted',
+  PickedUp: 'Picked Up',
+  PICKED_UP: 'Picked Up',
   ApptSet: 'Appt Set',
+  APPT_SET: 'Appt Set',
   ApptMet: 'Appt Met',
+  APPT_MET: 'Appt Met',
   Proposal: 'Proposal',
+  PROPOSAL: 'Proposal',
+  Pending: 'Pending Decision',
+  PENDING: 'Pending Decision',
   Client: 'Client',
-  Dead: 'Lost'
+  CLIENT: 'Client',
+  Closed: 'Client', // Map Closed to Client for funnel
+  CLOSED: 'Client',
+  Dead: 'Lost',
+  DEAD: 'Lost'
 };
+
+export enum Sentiment {
+  UNKNOWN = 'unknown',
+  POSITIVE = 'positive',
+  NEUTRAL = 'neutral',
+  NEGATIVE = 'negative'
+}
 
 export interface FollowUp {
   status: ContactStatus;
@@ -253,6 +273,7 @@ export interface Client {
   fieldValues?: Record<string, any>; 
   _ownerId?: string;
   _ownerEmail?: string;
+  advisorId?: string; // Mapped to _ownerId
 
   // Expanded CRM Fields (Top-Level Shortcuts for UI)
   name: string; // Synced with profile.name
@@ -267,6 +288,7 @@ export interface Client {
   lastContact: string; // Synced with followUp.lastContactedAt
   nextAction?: string;
   momentumScore: number;
+  sentiment?: Sentiment;
   
   phone: string;
   email: string;
@@ -287,8 +309,13 @@ export interface Client {
     appointmentSetAt?: string;
     appointmentMetAt?: string;
     clientConvertedAt?: string;
+    closedAt?: string;
   };
+  
+  stageHistory?: { stage: string; date: string }[];
 }
+
+export type UserRole = 'admin' | 'director' | 'advisor' | 'user' | 'viewer';
 
 export interface UserProfile {
   id: string;
@@ -300,6 +327,9 @@ export interface UserProfile {
   modules?: string[];
   is_admin?: boolean;
   bandingPercentage?: number; // 0-100
+  // New Hierarchy Fields
+  reporting_to?: string; // ID of the Director
+  team_name?: string; // If Director, name of team
 }
 
 export interface FieldDefinition {
@@ -320,18 +350,46 @@ export interface AuditLog {
   created_at: string;
 }
 
+export interface ProductTier {
+  min: number;
+  max: number;
+  rate: number;
+  dollarUp: number;
+}
+
 export interface Product {
   id: string;
   name: string;
   provider: string;
-  type: string;
-  tiers?: { min: number, max: number, rate: number, dollarUp: number }[];
+  type?: string;
+  tiers: ProductTier[];
 }
 
 export interface Advisor {
   id: string;
   name: string;
+  email: string;
+  role: UserRole;
+  status: 'active' | 'pending' | 'rejected';
   bandingPercentage: number;
+  avatar?: string;
+  joinedAt: string;
+  organizationId?: string;
+  teamId?: string;
+  isAgencyAdmin?: boolean;
+}
+
+export interface Team {
+  id: string;
+  name: string;
+  leaderId: string;
+}
+
+export interface Subscription {
+  planId: string;
+  status: string;
+  seats: number;
+  nextBillingDate: string;
 }
 
 export interface WhatsAppTemplate {
@@ -343,6 +401,10 @@ export interface WhatsAppTemplate {
 export interface AppSettings {
   statuses: string[];
   platforms: string[];
+  benchmarks?: {
+    callsPerWeek: number;
+    apptsPerWeek: number;
+  };
 }
 
 export interface Benchmarks {

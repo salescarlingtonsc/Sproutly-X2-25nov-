@@ -231,7 +231,7 @@ const WealthToolTab: React.FC = () => {
             </div>
 
             {projectionData ? (
-               <div className="flex-1 min-h-[400px]">
+               <div className="h-[400px]">
                   <ResponsiveContainer width="100%" height="100%">
                      <AreaChart data={projectionData.data} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                         <defs>
@@ -277,7 +277,7 @@ const WealthToolTab: React.FC = () => {
                   </ResponsiveContainer>
                </div>
             ) : (
-               <div className="flex-1 flex items-center justify-center text-gray-400 text-sm italic">
+               <div className="flex-1 flex items-center justify-center text-gray-400 text-sm italic min-h-[300px]">
                   Enter an annual investment amount to visualize.
                </div>
             )}
@@ -288,3 +288,4 @@ const WealthToolTab: React.FC = () => {
 };
 
 export default WealthToolTab;
+    

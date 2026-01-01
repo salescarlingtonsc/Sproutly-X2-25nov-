@@ -1,5 +1,5 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, PieChart, Pie } from 'recharts';
 import { Client, Stage } from '../../../types';
 
@@ -11,6 +11,30 @@ const COLORS = ['#94a3b8', '#64748b', '#475569', '#334155', '#1e293b', '#0f172a'
 
 export const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ clients }) => {
   const [isCollapsed, setIsCollapsed] = useState(false);
+  
+  // FIX: Use specific state to gate the chart rendering based on real DOM measurements
+  const [canRenderCharts, setCanRenderCharts] = useState(false);
+  const contentRef = useRef<HTMLDivElement>(null);
+
+  // OBSERVER PATTERN: Monitors the container size in real-time.
+  // Only allows charts to mount once the container has physical dimensions (>0).
+  useEffect(() => {
+    if (isCollapsed || !contentRef.current) return;
+
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        // We ensure both width and height are substantial before rendering
+        if (entry.contentRect.width > 10 && entry.contentRect.height > 10) {
+          setCanRenderCharts(true);
+          observer.disconnect(); // Lock it in once ready
+        }
+      }
+    });
+
+    observer.observe(contentRef.current);
+
+    return () => observer.disconnect();
+  }, [isCollapsed]);
 
   const pipelineData = Object.values(Stage).map((stage) => {
     const value = clients.filter(c => c.stage === stage).reduce((sum, c) => sum + (c.value || 0), 0);
@@ -28,7 +52,7 @@ export const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ clients }) => {
   const avgDeal = totalClients > 0 ? totalPipeline / totalClients : 0;
 
   return (
-    <div className={`bg-white rounded-2xl shadow-sm border border-slate-100 mb-6 animate-fade-in-up transition-all duration-300 overflow-hidden ${isCollapsed ? 'p-4' : 'p-6'}`}>
+    <div className={`bg-white rounded-2xl shadow-sm border border-slate-100 mb-6 transition-all duration-300 overflow-hidden ${isCollapsed ? 'p-4' : 'p-6'}`}>
       <div className="flex justify-between items-center">
         <div className="flex items-center gap-4">
             <h2 className="text-xl font-semibold text-slate-800">Performance Pulse</h2>
@@ -48,8 +72,9 @@ export const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ clients }) => {
       </div>
 
       {!isCollapsed && (
-          <div className="animate-fade-in mt-6">
+          <div ref={contentRef} className="animate-fade-in mt-6">
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 lg:gap-6 mb-8">
+                {/* KPIs */}
                 <div className="p-4 bg-slate-50 rounded-xl border border-slate-100">
                     <p className="text-xs lg:text-sm text-slate-500 mb-1">Total Exp. Revenue</p>
                     <p className="text-xl lg:text-2xl font-bold text-slate-900">${totalPipeline.toLocaleString()}</p>
@@ -69,35 +94,55 @@ export const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ clients }) => {
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                <div className="h-64">
-                    <h3 className="text-sm font-medium text-slate-600 mb-4">Pipeline Distribution</h3>
-                    <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={pipelineData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
-                            <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#64748b' }} />
-                            <YAxis hide />
-                            <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} cursor={{fill: '#f1f5f9'}} />
-                            <Bar dataKey="value" radius={[4, 4, 0, 0]}>{pipelineData.map((entry, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />)}</Bar>
-                        </BarChart>
-                    </ResponsiveContainer>
+                {/* Pipeline Chart */}
+                <div className="flex flex-col">
+                    <h3 className="text-sm font-medium text-slate-600 mb-4 shrink-0">Pipeline Distribution</h3>
+                    
+                    <div className="w-full h-[250px] relative min-w-0 bg-white" style={{ minHeight: '250px' }}>
+                        {canRenderCharts ? (
+                            <ResponsiveContainer width="99%" height="100%">
+                                <BarChart data={pipelineData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+                                    <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#64748b' }} />
+                                    <YAxis hide />
+                                    <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} cursor={{fill: '#f1f5f9'}} />
+                                    <Bar dataKey="value" radius={[4, 4, 0, 0]}>{pipelineData.map((entry, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />)}</Bar>
+                                </BarChart>
+                            </ResponsiveContainer>
+                        ) : (
+                            <div className="w-full h-full bg-slate-50 animate-pulse rounded-xl border border-slate-100 flex items-center justify-center">
+                                <span className="text-slate-300 text-xs font-medium">Loading Analytics...</span>
+                            </div>
+                        )}
+                    </div>
                 </div>
-                <div className="h-64 flex flex-col items-center">
-                    <h3 className="text-sm font-medium text-slate-600 mb-4 w-full text-left">Momentum Health</h3>
-                    <div className="flex items-center justify-center w-full h-full">
-                        <ResponsiveContainer width="100%" height="100%">
-                            <PieChart>
-                                <Pie data={momentumData} cx="50%" cy="50%" innerRadius={60} outerRadius={80} paddingAngle={5} dataKey="value">
-                                    {momentumData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} />)}
-                                </Pie>
-                                <Tooltip />
-                            </PieChart>
-                        </ResponsiveContainer>
-                        <div className="ml-6 space-y-2">
-                            {momentumData.map((item, idx) => (
-                                <div key={idx} className="flex items-center text-sm">
-                                    <span className="w-3 h-3 rounded-full mr-2" style={{ backgroundColor: item.color }}></span>
-                                    <span className="text-slate-600">{item.name}: <span className="font-semibold">{item.value}</span></span>
-                                </div>
-                            ))}
+
+                {/* Momentum Chart */}
+                <div className="flex flex-col">
+                    <h3 className="text-sm font-medium text-slate-600 mb-4 shrink-0">Momentum Health</h3>
+                    <div className="w-full h-[250px] relative flex items-center justify-center min-w-0" style={{ minHeight: '250px' }}>
+                        <div className="w-full h-full flex items-center">
+                            <div className="flex-1 h-full">
+                                {canRenderCharts ? (
+                                    <ResponsiveContainer width="99%" height="100%">
+                                        <PieChart>
+                                            <Pie data={momentumData} cx="50%" cy="50%" innerRadius={60} outerRadius={80} paddingAngle={5} dataKey="value">
+                                                {momentumData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} />)}
+                                            </Pie>
+                                            <Tooltip />
+                                        </PieChart>
+                                    </ResponsiveContainer>
+                                ) : (
+                                    <div className="w-full h-full bg-slate-50 animate-pulse rounded-full opacity-50 border-4 border-slate-100" />
+                                )}
+                            </div>
+                            <div className="ml-6 space-y-2 shrink-0">
+                                {momentumData.map((item, idx) => (
+                                    <div key={idx} className="flex items-center text-sm">
+                                        <span className="w-3 h-3 rounded-full mr-2" style={{ backgroundColor: item.color }}></span>
+                                        <span className="text-slate-600">{item.name}: <span className="font-semibold">{item.value}</span></span>
+                                    </div>
+                                ))}
+                            </div>
                         </div>
                     </div>
                 </div>

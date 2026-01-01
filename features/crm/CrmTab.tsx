@@ -1,5 +1,5 @@
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Client, Product, Advisor, WhatsAppTemplate, AppSettings, Sale } from '../../types';
 import { AnalyticsPanel } from './components/AnalyticsPanel';
 import { ClientCard } from './components/ClientCard';
@@ -12,11 +12,12 @@ import Modal from '../../components/ui/Modal';
 import { DEFAULT_SETTINGS } from '../../lib/config';
 import { DEFAULT_TEMPLATES } from '../../lib/templates';
 import { useAuth } from '../../contexts/AuthContext';
+import { supabase } from '../../lib/supabase';
 
 // MOCK DATA FOR PROPS NOT PASSED FROM APP YET
 const MOCK_PRODUCTS: Product[] = [
-    { id: 'p1', name: 'Wealth Sol', provider: 'Pru', type: 'ILP' },
-    { id: 'p2', name: 'Term Protect', provider: 'AIA', type: 'Term' }
+    { id: 'p1', name: 'Wealth Sol', provider: 'Pru', type: 'ILP', tiers: [{ min: 0, max: Infinity, rate: 0.5, dollarUp: 0 }] },
+    { id: 'p2', name: 'Term Protect', provider: 'AIA', type: 'Term', tiers: [{ min: 0, max: Infinity, rate: 0.5, dollarUp: 0 }] }
 ];
 
 interface CrmTabProps {
@@ -42,6 +43,7 @@ const CrmTab: React.FC<CrmTabProps> = ({
   const { user } = useAuth();
   const [searchTerm, setSearchTerm] = useState('');
   const [stageFilter, setStageFilter] = useState<string>('All');
+  const [advisorFilter, setAdvisorFilter] = useState<string>('All');
   const [viewMode, setViewMode] = useState<'cards' | 'list'>('list');
   
   // Modal States
@@ -52,8 +54,43 @@ const CrmTab: React.FC<CrmTabProps> = ({
   const [isCallSessionOpen, setIsCallSessionOpen] = useState(false);
   const [isTemplateManagerOpen, setIsTemplateManagerOpen] = useState(false);
   
+  // All Advisors List (For Filter)
+  const [allAdvisors, setAllAdvisors] = useState<{id: string, name: string}[]>([]);
+  
   // Local state for templates to simulate DB connection for now
   const [templates, setTemplates] = useState<WhatsAppTemplate[]>(DEFAULT_TEMPLATES.map(t => ({id: t.id, label: t.label, content: t.content})));
+
+  const isAdmin = user?.role === 'admin' || user?.is_admin === true;
+
+  // Fetch all advisors if Admin to populate filter fully
+  useEffect(() => {
+    if (isAdmin && supabase) {
+        const fetchAllProfiles = async () => {
+            const { data } = await supabase.from('profiles').select('id, email').order('email');
+            if (data) {
+                setAllAdvisors(data.map(p => ({ id: p.id, name: p.email })));
+            }
+        };
+        fetchAllProfiles();
+    }
+  }, [isAdmin]);
+
+  // Combined Advisor List: 
+  // If Admin: Use fetched list from DB (shows everyone).
+  // If User: Use derived list from clients (shows only those with data visible to user).
+  const availableAdvisors = useMemo(() => {
+    if (isAdmin && allAdvisors.length > 0) return allAdvisors;
+
+    const map = new Map<string, string>();
+    clients.forEach(c => {
+      if (c._ownerId) {
+         // Display the email directly if available (now populated by db.ts), otherwise fallback
+         const label = c._ownerEmail || `Advisor (${c._ownerId.substring(0, 5)}...)`;
+         map.set(c._ownerId, label);
+      }
+    });
+    return Array.from(map.entries()).map(([id, name]) => ({ id, name })).sort((a,b) => a.name.localeCompare(b.name));
+  }, [clients, allAdvisors, isAdmin]);
 
   const filteredClients = useMemo(() => {
     return clients.filter(client => {
@@ -65,9 +102,11 @@ const CrmTab: React.FC<CrmTabProps> = ({
                             (client.tags || []).some(t => t.toLowerCase().includes(searchTerm.toLowerCase()));
       
       const matchesStage = stageFilter === 'All' || client.stage === stageFilter;
-      return matchesSearch && matchesStage;
+      const matchesAdvisor = advisorFilter === 'All' || client._ownerId === advisorFilter;
+
+      return matchesSearch && matchesStage && matchesAdvisor;
     });
-  }, [clients, searchTerm, stageFilter]);
+  }, [clients, searchTerm, stageFilter, advisorFilter]);
 
   const handleClientUpdate = (updated: Client) => {
       onUpdateGlobalClient(updated);
@@ -111,18 +150,26 @@ const CrmTab: React.FC<CrmTabProps> = ({
       <AnalyticsPanel clients={clients} />
 
       <div className="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
-         <div className="flex items-center gap-2 w-full md:w-auto">
-             <div className="relative w-full md:w-64">
+         <div className="flex items-center gap-2 w-full md:w-auto overflow-x-auto pb-2 md:pb-0">
+             <div className="relative w-full md:w-64 shrink-0">
                  <input type="text" placeholder="Search clients..." className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 shadow-sm transition-all" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
                  <svg className="w-5 h-5 text-slate-400 absolute left-3 top-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
              </div>
              
-             <select value={stageFilter} onChange={(e) => setStageFilter(e.target.value)} className="px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 shadow-sm cursor-pointer">
+             <select value={stageFilter} onChange={(e) => setStageFilter(e.target.value)} className="px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 shadow-sm cursor-pointer shrink-0">
                  <option value="All">All Stages</option>
                  {DEFAULT_SETTINGS.statuses.map(s => <option key={s} value={s}>{s}</option>)}
              </select>
 
-             <div className="hidden md:flex bg-white border border-slate-200 rounded-xl items-center p-1 shadow-sm ml-2">
+             {/* Dynamic Advisor Filter */}
+             {availableAdvisors.length > 1 && (
+                <select value={advisorFilter} onChange={(e) => setAdvisorFilter(e.target.value)} className="px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 shadow-sm cursor-pointer shrink-0 min-w-[200px]">
+                    <option value="All">All Advisors ({availableAdvisors.length})</option>
+                    {availableAdvisors.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                </select>
+             )}
+
+             <div className="hidden md:flex bg-white border border-slate-200 rounded-xl items-center p-1 shadow-sm ml-2 shrink-0">
                  <button onClick={() => setViewMode('cards')} className={`p-2 rounded-lg transition-all ${viewMode === 'cards' ? 'bg-slate-100 text-slate-900 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`} title="Card View"><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" /></svg></button>
                  <button onClick={() => setViewMode('list')} className={`p-2 rounded-lg transition-all ${viewMode === 'list' ? 'bg-slate-100 text-slate-900 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`} title="List View"><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg></button>
              </div>
@@ -154,14 +201,26 @@ const CrmTab: React.FC<CrmTabProps> = ({
                     </div>
                 </div>
             ))}
-            {filteredClients.length === 0 && <div className="col-span-full py-12 flex flex-col items-center justify-center text-slate-400 border-2 border-dashed border-slate-200 rounded-2xl bg-slate-50"><p className="font-medium">No clients found matching your filters.</p></div>}
+            {filteredClients.length === 0 && (
+                <div className="col-span-full py-12 flex flex-col items-center justify-center text-slate-400 border-2 border-dashed border-slate-200 rounded-2xl bg-slate-50">
+                    <p className="font-medium">No clients found matching your filters.</p>
+                    {(searchTerm || stageFilter !== 'All' || advisorFilter !== 'All') && (
+                        <button 
+                            onClick={() => { setSearchTerm(''); setStageFilter('All'); setAdvisorFilter('All'); }} 
+                            className="mt-2 text-xs font-bold text-indigo-600 hover:underline"
+                        >
+                            Clear all filters
+                        </button>
+                    )}
+                </div>
+            )}
         </div>
       ) : (
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden animate-fade-in">
            <div className="overflow-x-auto">
                <table className="w-full text-left text-sm border-collapse">
                    <thead className="bg-slate-50 border-b border-slate-100 text-xs uppercase text-slate-500 font-bold tracking-wider">
-                       <tr><th className="px-6 py-4">Client Name</th><th className="px-6 py-4">Stage</th><th className="px-6 py-4">Exp. Revenue</th><th className="px-6 py-4">Last Contact</th><th className="px-6 py-4">Momentum</th><th className="px-6 py-4 text-right">Actions</th></tr>
+                       <tr><th className="px-6 py-4">Client Name</th><th className="px-6 py-4">Stage</th><th className="px-6 py-4">Exp. Revenue</th><th className="px-6 py-4">Advisor</th><th className="px-6 py-4">Last Contact</th><th className="px-6 py-4">Momentum</th><th className="px-6 py-4 text-right">Actions</th></tr>
                    </thead>
                    <tbody className="divide-y divide-slate-50">
                        {filteredClients.map(client => (
@@ -169,6 +228,7 @@ const CrmTab: React.FC<CrmTabProps> = ({
                                <td className="px-6 py-4"><div className="flex items-center gap-3"><div className="w-8 h-8 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center text-xs font-bold border border-indigo-100">{client.name ? client.name.charAt(0) : '?'}</div><div><div className="font-semibold text-slate-900">{client.name || client.profile?.name || 'Unnamed'}</div><div className="text-xs text-slate-500">{client.company}</div></div></div></td>
                                <td className="px-6 py-4"><span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-800 border border-slate-200">{client.stage}</span></td>
                                <td className="px-6 py-4 font-mono font-medium text-slate-600">${(client.value || 0).toLocaleString()}</td>
+                               <td className="px-6 py-4 text-xs font-bold text-indigo-600 truncate max-w-[150px]">{client._ownerEmail || client._ownerId?.substring(0,6)}</td>
                                <td className="px-6 py-4 text-slate-500 text-xs">{client.lastContact ? new Date(client.lastContact).toLocaleDateString() : '-'}<div className="text-[10px] text-slate-400 mt-0.5">{client.nextAction || 'No action set'}</div></td>
                                <td className="px-6 py-4"><div className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-bold border ${getMomentumColor(client.momentumScore || 0)}`}>{client.momentumScore || 0} {client.momentumScore > 50 ? '↑' : '↓'}</div></td>
                                <td className="px-6 py-4 text-right"><div className="flex items-center justify-end gap-2 opacity-50 group-hover:opacity-100 transition-opacity"><button onClick={(e) => { e.stopPropagation(); loadClient(client, true); }} className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"><svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg></button><button onClick={(e) => { e.stopPropagation(); setActiveWhatsAppClient(client); }} className="p-1.5 text-slate-400 hover:text-[#25D366] hover:bg-emerald-50 rounded-lg transition-colors"><svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M.057 24l1.687-6.163c-1.041-1.804-1.588-3.849-1.587-5.946.003-6.556 5.338-11.891 11.893-11.891 3.181.001 6.167 1.24 8.413 3.488 2.245 2.248 3.481 5.236 3.48 8.414-.003 6.557-5.338 11.892-11.893 11.892-1.99-.001-3.951-.5-5.688-1.448l-6.305 1.654zm6.597-3.807c1.676.995 3.276 1.591 5.392 1.592 5.448 0 9.886-4.434 9.889-9.885.002-5.462-4.415-9.89-9.881-9.892-5.452 0-9.887 4.434-9.889 9.884-.001 2.225.651 3.891 1.746 5.634l-.999 3.648 3.742-.981zm11.387-5.464c-.074-.124-.272-.198-.57-.347-.297-.149-1.758-.868-2.031-.967-.272-.099-.47-.149-.669.149-.198.297-.768.967-.941 1.165-.173.198-.347.223-.644.074-.297-.149-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.297-.347.446-.521.151-.172.2-.296.3-.495.099-.198.05-.372-.025-.521-.075-.148-.669-1.611-.916-2.206-.242-.579-.487-.501-.669-.51l-.57-.01c-.198 0-.52.074-.792.372s-1.04 1.016-1.04 2.479 1.065 2.876 1.213 3.074c.149.198 2.095 3.2 5.076 4.487.709.306 1.263.489 1.694.626.712.226 1.36.194 1.872.118.571-.085 1.758-.719 2.006-1.413.248-.695.248-1.29.173-1.414z"/></svg></button>

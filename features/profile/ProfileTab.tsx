@@ -5,6 +5,8 @@ import { toNum, fmtSGD } from '../../lib/helpers';
 import { computeCpf, reverseComputeCpf } from '../../lib/calculators';
 import { generateClientAudioBriefing, playRawAudio } from '../../lib/gemini';
 import { useAi } from '../../contexts/AiContext';
+import { useAuth } from '../../contexts/AuthContext';
+import { supabase } from '../../lib/supabase';
 import LineChart from '../../components/common/LineChart';
 import PageHeader from '../../components/layout/PageHeader';
 import SectionCard from '../../components/layout/SectionCard';
@@ -49,12 +51,14 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
   onLoadClient,
   onNewProfile
 }) => {
+  const { user } = useAuth();
   const { 
     profile, setProfile, 
     age, cpfData, cashflowData,
     expenses, setExpenses,
     customExpenses, setCustomExpenses,
-    investorState, cashflowState
+    investorState, cashflowState,
+    ownerId, setOwnerId // Exposed for admin assignment
   } = useClient();
   
   const { openAiWithPrompt } = useAi();
@@ -68,6 +72,10 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
   const [isPlayingAudio, setIsPlayingAudio] = useState(false);
   const [loadingAudio, setLoadingAudio] = useState(false);
 
+  // Admin Assignment
+  const [adminAdvisors, setAdminAdvisors] = useState<{id: string, email: string}[]>([]);
+  const isAdmin = user?.role === 'admin' || user?.is_admin === true;
+
   // Close dropdown on click outside
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -80,6 +88,15 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
       document.removeEventListener("mousedown", handleClickOutside);
     };
   }, [searchRef]);
+
+  // Fetch Advisors if Admin
+  useEffect(() => {
+    if (isAdmin && supabase) {
+        supabase.from('profiles').select('id, email').order('email').then(({ data }) => {
+            if (data) setAdminAdvisors(data);
+        });
+    }
+  }, [isAdmin]);
 
   const filteredClients = useMemo(() => {
     if (!searchTerm) return [];
@@ -283,6 +300,32 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
         subtitle="Manage personal details and financial identity."
         action={headerActions}
       />
+
+      {/* --- ADMIN: ASSIGNMENT PANEL --- */}
+      {isAdmin && (
+         <div className="bg-indigo-900 rounded-xl p-4 mb-6 flex justify-between items-center text-white shadow-lg">
+            <div className="flex items-center gap-3">
+               <span className="text-2xl">👑</span>
+               <div>
+                  <h3 className="font-bold text-sm">Portfolio Custodian</h3>
+                  <p className="text-[10px] text-indigo-300">Assign this client to an advisor</p>
+               </div>
+            </div>
+            <div className="relative group">
+                <select 
+                    value={ownerId || ''} 
+                    onChange={(e) => setOwnerId(e.target.value)}
+                    className="appearance-none bg-indigo-800 border border-indigo-700 hover:bg-indigo-700 rounded-lg px-4 py-2 pr-8 text-xs font-bold text-white outline-none cursor-pointer transition-all min-w-[200px]"
+                >
+                    <option value={user?.id || ''}>Me (Admin)</option>
+                    {adminAdvisors.filter(a => a.id !== user?.id).map(adv => (
+                        <option key={adv.id} value={adv.id}>{adv.email}</option>
+                    ))}
+                </select>
+                <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-indigo-300 text-[10px]">▼</div>
+            </div>
+         </div>
+      )}
 
       {/* --- 2. HUMAN CAPITAL HERO --- */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

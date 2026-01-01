@@ -1,3 +1,4 @@
+
 import { supabase } from '../supabase';
 
 export const runDiagnostics = async () => {
@@ -12,6 +13,7 @@ export const runDiagnostics = async () => {
     const { data: { user } } = await supabase.auth.getUser();
     results.auth = { uid: user?.id, email: user?.email, isAuthenticated: !!user };
 
+    // 1. Check Profile Role
     const { data: profile, error: profErr } = await supabase
       .from('profiles')
       .select('role, status')
@@ -25,6 +27,7 @@ export const runDiagnostics = async () => {
       error: profErr?.message
     });
 
+    // 2. Check RPC Permissions
     const { data: isAdminFunc, error: funcErr } = await supabase.rpc('check_is_admin');
     results.tests.push({
       name: 'Master Key Protocol (SQL)',
@@ -33,6 +36,7 @@ export const runDiagnostics = async () => {
       error: funcErr ? `RPC Error: ${funcErr.message}` : null
     });
 
+    // 3. Check Basic Client Access
     const { count, error: leadErr } = await supabase.from('clients').select('*', { count: 'exact', head: true });
     results.tests.push({
       name: 'Cross-User Visibility',
@@ -41,7 +45,21 @@ export const runDiagnostics = async () => {
       error: leadErr?.message
     });
 
-    // SPROUTLY PROBE: Check for visibility-logic divergence
+    // 4. NEW: Check Hierarchy Schema (Director Support)
+    // We try to select the specific columns. If they don't exist, this throws an error.
+    const { error: schemaErr } = await supabase
+      .from('profiles')
+      .select('reporting_to, team_name')
+      .limit(1);
+    
+    results.tests.push({
+      name: 'Hierarchy Schema Check',
+      passed: !schemaErr || !schemaErr.message.includes('does not exist'),
+      details: schemaErr ? 'Missing Director/Team columns. Run SQL Repair.' : 'Schema ready for Hierarchy.',
+      error: schemaErr?.message
+    });
+
+    // 5. Handover Probe
     const { data: updateTest, error: updateErr } = await supabase
         .from('clients')
         .select('id, user_id')

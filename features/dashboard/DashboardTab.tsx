@@ -16,8 +16,8 @@ const COLORS = ['#3b82f6', '#8b5cf6', '#f59e0b', '#10b981', '#ef4444', '#6366f1'
 
 // Placeholder Products Data (In real app, fetch this)
 const MOCK_PRODUCTS: Product[] = [
-    { id: 'p1', name: 'Wealth Sol', provider: 'Pru', type: 'ILP' },
-    { id: 'p2', name: 'Term Protect', provider: 'AIA', type: 'Term' }
+    { id: 'p1', name: 'Wealth Sol', provider: 'Pru', type: 'ILP', tiers: [{ min: 0, max: Infinity, rate: 0.5, dollarUp: 0 }] },
+    { id: 'p2', name: 'Term Protect', provider: 'AIA', type: 'Term', tiers: [{ min: 0, max: Infinity, rate: 0.5, dollarUp: 0 }] }
 ];
 
 const DEFAULT_BENCHMARKS: Benchmarks = { callsPerWeek: 15, apptsPerWeek: 5 };
@@ -216,7 +216,7 @@ const DashboardTab: React.FC<DashboardTabProps> = ({ user, clients, onNewClient 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm flex flex-col">
                 <h3 className="font-semibold text-slate-800 mb-2">Sales Mix ({timeFilter})</h3>
-                <div className="flex-1 min-h-[200px]">
+                <div className="h-[250px]">
                     <ResponsiveContainer width="100%" height="100%">
                         <PieChart key={`pie-${timeFilter}`}>
                             <Pie data={productMix} cx="50%" cy="50%" innerRadius={40} outerRadius={60} paddingAngle={5} dataKey="value">
@@ -231,7 +231,7 @@ const DashboardTab: React.FC<DashboardTabProps> = ({ user, clients, onNewClient 
             </div>
             <div className="lg:col-span-2 bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
                 <h3 className="font-semibold text-slate-800 mb-6">Total Pipeline Funnel</h3>
-                <div className="h-64">
+                <div className="h-[250px]">
                     <ResponsiveContainer width="100%" height="100%">
                         <BarChart key={`bar-${timeFilter}`} data={pipelineData} margin={{top:10, right:10, bottom:0, left:0}}>
                             <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fontSize: 12, fill: '#64748b'}} />

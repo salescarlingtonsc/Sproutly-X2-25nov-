@@ -9,10 +9,51 @@ export const db = {
   getClients: async (userId?: string): Promise<Client[]> => {
     if (isSupabaseConfigured() && supabase) {
       try {
-        const { data: clients, error: clientError } = await supabase
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) return [];
+
+        // 1. Fetch User Profile to determine role and hierarchy
+        const { data: userProfile } = await supabase
+          .from('profiles')
+          .select('role, is_admin, id')
+          .eq('id', user.id)
+          .single();
+
+        const isAdmin = userProfile?.role === 'admin' || userProfile?.is_admin === true;
+        const isDirector = userProfile?.role === 'director';
+
+        // 2. Fetch Clients (Raw Select without Join to prevent schema errors)
+        let query = supabase
           .from('clients')
           .select('id, data, user_id, updated_at')
           .order('updated_at', { ascending: false });
+
+        // Hierarchy Logic (Safe Mode)
+        if (isAdmin) {
+           // Fetch ALL (no filter)
+        } else if (isDirector) {
+           try {
+             // Fetch Self + Direct Reports
+             const { data: downline, error: downlineErr } = await supabase
+               .from('profiles')
+               .select('id')
+               .eq('reporting_to', user.id);
+             
+             if (downlineErr) throw downlineErr; // If column missing, this throws
+
+             const downlineIds = downline?.map(d => d.id) || [];
+             const allVisibleIds = [user.id, ...downlineIds];
+             query = query.in('user_id', allVisibleIds);
+           } catch (e: any) {
+             console.warn("Director Hierarchy inactive (missing columns). Reverting to self-only.");
+             query = query.eq('user_id', user.id);
+           }
+        } else {
+           // Advisor: Fetch Self Only
+           query = query.eq('user_id', user.id);
+        }
+          
+        const { data: clients, error: clientError } = await query;
           
         if (clientError) {
           if (clientError.message.includes('stack depth')) {
@@ -25,12 +66,31 @@ export const db = {
         
         if (!clients) return [];
 
+        // 3. Manual Join for Owner Emails
+        // We fetch profiles separately to map IDs to Emails, avoiding SQL relationship dependency
+        const userIds = Array.from(new Set(clients.map((c: any) => c.user_id).filter(Boolean)));
+        const profileMap: Record<string, string> = {};
+        
+        if (userIds.length > 0) {
+            const { data: profiles } = await supabase
+                .from('profiles')
+                .select('id, email')
+                .in('id', userIds);
+            
+            if (profiles) {
+                profiles.forEach((p: any) => {
+                    profileMap[p.id] = p.email;
+                });
+            }
+        }
+
         return clients.map((row: any) => {
           const clientData = row.data || {};
           const profile = clientData.profile || { ...INITIAL_PROFILE };
           
-          // CRITICAL: Self-healing data mapping
-          // Ensures clients appear in UI even if they lack top-level fields (e.g. from old imports)
+          // Map email from manual lookup or fallback
+          const realOwnerEmail = profileMap[row.user_id] || clientData._ownerEmail || `Advisor (${row.user_id?.substring(0,4)})`;
+
           return {
             ...clientData, 
             id: row.id,
@@ -42,7 +102,7 @@ export const db = {
             
             followUp: clientData.followUp || { status: 'new' },
             _ownerId: row.user_id,
-            _ownerEmail: clientData._ownerEmail || `Advisor (${row.user_id?.substring(0,4)})`
+            _ownerEmail: realOwnerEmail
           } as Client;
         });
       } catch (e: any) {
@@ -118,6 +178,7 @@ export const db = {
       updated_at: new Date().toISOString()
     };
     
+    // Perform Upsert
     const { data, error } = await supabase
       .from('clients')
       .upsert(payload, { onConflict: 'id' })
@@ -131,11 +192,17 @@ export const db = {
       throw new Error(`Sync Error: ${error.message}`);
     }
 
+    // When returning, if we are the owner, use our email. 
+    // If not, we might not know the new email immediately without a re-fetch, but that's okay for save response.
+    const returnedOwnerId = data?.user_id || validOwnerId;
+    const isSelf = returnedOwnerId === authUser.id;
+
     return {
       ...(data?.data || client),
       id: data?.id || client.id,
-      _ownerId: data?.user_id || client._ownerId,
-      _ownerEmail: client._ownerEmail
+      _ownerId: returnedOwnerId,
+      // If we own it, use our email. If not, preserve the existing known email or generic label.
+      _ownerEmail: isSelf ? authUser.email : (client._ownerEmail || 'Pending Sync...')
     };
   },
 

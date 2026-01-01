@@ -1,3 +1,4 @@
+
 import React, { createContext, useContext, useState, useMemo, useEffect, ReactNode } from 'react';
 import { 
   Profile, Expenses, CustomExpense, Child, CpfState, CashflowState, 
@@ -76,6 +77,7 @@ interface ClientContextType {
   setWealthState: (s: WealthState) => void;
   setRetirement: (r: RetirementSettings) => void;
   setCrmState: (s: typeof INITIAL_CRM_STATE) => void;
+  setOwnerId: (id: string | null) => void; // Added for Admin assignment
 
   // Derived Data (Calculated)
   age: number;
@@ -272,6 +274,7 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       retirement, setRetirement,
       crmState, setCrmState,
       age, cpfData, cashflowData,
+      setOwnerId, // EXPOSED
       loadClient, resetClient, generateClientObject
     }}>
       {children}
