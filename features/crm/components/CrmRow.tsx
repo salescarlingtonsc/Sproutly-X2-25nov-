@@ -1,3 +1,4 @@
+
 import React, { memo, useState, useRef, useEffect } from 'react';
 import { Client } from '../../../types';
 import EditableCell from './EditableCell';
@@ -150,7 +151,7 @@ const CrmRow: React.FC<CrmRowProps> = memo(({
                         />
                         {isStale && <span title="Stale Lead (>48h stagnation)" className="text-xs">❄️</span>}
                      </div>
-                     <button onClick={(e) => { e.stopPropagation(); onQuickView(client); }} className="opacity-0 group-hover/name:opacity-100 transition-all p-1 text-slate-300 hover:text-indigo-600 shrink-0">
+                     <button onClick={(e) => { e.stopPropagation(); onQuickView(client); }} className="opacity-100 lg:opacity-0 lg:group-hover/name:opacity-100 transition-all p-1 text-slate-300 hover:text-indigo-600 shrink-0">
                         <svg viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5"><path d="M10 12a2 2 0 100-4 2 2 0 000 4z" /><path fillRule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clipRule="evenodd" /></svg>
                      </button>
                   </div>

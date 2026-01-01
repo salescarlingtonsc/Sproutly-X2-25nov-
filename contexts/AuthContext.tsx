@@ -25,8 +25,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const ADMIN_EMAIL = 'sales.carlingtonsc@gmail.com';
 
   useEffect(() => {
+    // Safety Timeout: Force stop loading after 8 seconds to prevent infinite hang
+    const safetyTimer = setTimeout(() => {
+      setIsLoading(prev => {
+        if (prev) {
+          console.warn("Auth initialization timed out - Forcing app load.");
+          return false;
+        }
+        return prev;
+      });
+    }, 8000);
+
     if (!isSupabaseConfigured() || !supabase) {
       setIsLoading(false);
+      clearTimeout(safetyTimer);
       return;
     }
 
@@ -57,6 +69,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
 
     return () => {
+      clearTimeout(safetyTimer);
       subscription.unsubscribe();
     };
   }, []);

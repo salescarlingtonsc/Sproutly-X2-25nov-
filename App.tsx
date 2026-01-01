@@ -57,12 +57,26 @@ const AppInner: React.FC = () => {
   const [saveStatus, setSaveStatus] = useState<'idle'|'saving'|'saved'|'error'>('idle');
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   
+  // Slow Loading State for Feedback
+  const [showLongLoading, setShowLongLoading] = useState(false);
+
   const lastSavedJson = useRef<string>('');
   const isSavingRef = useRef<boolean>(false);
   const gridSaveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   
   // Handover Guard
   const [transferringIds, setTransferringIds] = useState<Set<string>>(new Set());
+
+  // Monitor loading time
+  useEffect(() => {
+    let timer: any;
+    if (isLoading) {
+      timer = setTimeout(() => setShowLongLoading(true), 3000);
+    } else {
+      setShowLongLoading(false);
+    }
+    return () => clearTimeout(timer);
+  }, [isLoading]);
 
   // --- AUTO POLL FOR APPROVAL ---
   useEffect(() => {
@@ -228,7 +242,10 @@ const AppInner: React.FC = () => {
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
         <div className="flex flex-col items-center gap-4">
           <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
-          <p className="text-sm font-bold text-slate-400 uppercase tracking-widest">Initializing Quantum Core...</p>
+          <p className="text-sm font-bold text-slate-400 uppercase tracking-widest">INITIALIZING QUANTUM CORE...</p>
+          {showLongLoading && (
+             <p className="text-xs text-indigo-400 animate-pulse">Waking up database (Cold Start)...</p>
+          )}
         </div>
       </div>
     );

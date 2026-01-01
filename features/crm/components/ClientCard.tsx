@@ -254,7 +254,7 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate }) => {
                             </div>
                             <button 
                                 onClick={(e) => { e.stopPropagation(); handleDeleteNote(note.id); }}
-                                className="text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all p-1"
+                                className="text-slate-300 hover:text-red-500 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-all p-1"
                                 title="Delete Log"
                             >
                                 <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>

@@ -1,3 +1,4 @@
+
 import React, { useState, useRef, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { canAccessTab } from '../../lib/config';
@@ -79,7 +80,7 @@ const AppShell: React.FC<AppShellProps> = ({
   const isReadOnly = user?.role === 'viewer';
 
   return (
-    <div className="flex h-screen overflow-hidden bg-slate-50 font-sans text-slate-900">
+    <div className="flex h-screen supports-[height:100dvh]:h-[100dvh] overflow-hidden bg-slate-50 font-sans text-slate-900 overscroll-none">
       
       {/* 1. SIDEBAR NAVIGATION */}
       <Sidebar 
@@ -91,7 +92,7 @@ const AppShell: React.FC<AppShellProps> = ({
       />
 
       {/* 2. MAIN CONTENT AREA */}
-      <div className="flex-1 flex flex-col h-full overflow-hidden relative w-full">
+      <div className="flex-1 flex flex-col h-full overflow-hidden relative w-full overscroll-none">
          
          {/* Background Blobs (moved here to stay within content area) */}
          <div className="absolute inset-0 pointer-events-none z-0 overflow-hidden">
