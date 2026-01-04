@@ -1,14 +1,15 @@
 
 import React, { useState } from 'react';
-import { Client, FamilyMember, Policy, UserProfile } from '../../../types';
+import { Client, FamilyMember, Policy, UserProfile, Sale, Product } from '../../../types';
 import { analyzeClientMomentum, generateInvestmentReport } from '../../../lib/gemini';
 import { DEFAULT_SETTINGS } from '../../../lib/config';
 import { FinancialTools } from './FinancialTools';
-import { fmtDateTime } from '../../../lib/helpers';
+import { fmtDateTime, fmtSGD } from '../../../lib/helpers';
 import { logActivity } from '../../../lib/db/activities';
 import { useToast } from '../../../contexts/ToastContext';
-import { useDialog } from '../../../contexts/DialogContext'; // Added
+import { useDialog } from '../../../contexts/DialogContext'; 
 import { db } from '../../../lib/db';
+import { AddSaleModal } from './AddSaleModal';
 
 interface ClientCardProps {
   client: Client;
@@ -16,9 +17,9 @@ interface ClientCardProps {
   currentUser?: UserProfile | null;
   onDelete?: (id: string) => Promise<void> | void; 
   onAddSale?: () => void;
+  products?: Product[]; // Added prop
 }
 
-// ... (KEEP REVERSE_STATUS_MAP and EditableField as is) ...
 const REVERSE_STATUS_MAP: Record<string, string> = {
   'New Lead': 'new',
   'Contacted': 'contacted',
@@ -57,13 +58,12 @@ const EditableField = ({ label, value, onChange, type = 'text', options = [], cl
   );
 };
 
-export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, currentUser, onDelete, onAddSale }) => {
+export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, currentUser, onDelete, onAddSale, products = [] }) => {
   const toast = useToast();
-  const { confirm } = useDialog(); // Use custom dialog hook
+  const { confirm } = useDialog(); 
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [activeTab, setActiveTab] = useState<'overview' | 'logs' | 'family' | 'policies' | 'tools'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'closures' | 'logs' | 'family' | 'policies' | 'tools'>('overview');
   
-  // ... (keep state) ...
   const [newMemberName, setNewMemberName] = useState('');
   const [newMemberRole, setNewMemberRole] = useState<'Father'|'Mother'|'Child'|'Other'>('Child');
   const [newMemberDob, setNewMemberDob] = useState('');
@@ -77,6 +77,9 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
   const [reportContent, setReportContent] = useState('');
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
 
+  // Sale Edit State
+  const [editingSale, setEditingSale] = useState<Sale | null>(null);
+
   // Permission Logic
   const isOwner = client._ownerId === currentUser?.id;
   const isAdmin = 
@@ -88,7 +91,6 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
   const canDeleteLogs = isAdmin || isOwner;
   const canDeleteClient = isAdmin || isOwner;
 
-  // ... (Keep existing methods: handleRefreshAnalysis, generateUniqueId, handleUpdateField, handleAddFamilyMember, handleAddPolicy, handleAddNote, handleDeleteNote) ...
   const handleRefreshAnalysis = async (e: React.MouseEvent) => {
     e.stopPropagation(); 
     setIsAnalyzing(true);
@@ -208,10 +210,32 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
       }
   };
 
+  // --- SALE MANAGEMENT ---
+  const handleUpdateSale = (updatedSale: Sale) => {
+      const sales = [...(client.sales || [])];
+      const index = sales.findIndex(s => s.id === updatedSale.id);
+      if (index > -1) {
+          sales[index] = updatedSale;
+      } else {
+          sales.push(updatedSale);
+      }
+      onUpdate({ ...client, sales, lastUpdated: new Date().toISOString() });
+      setEditingSale(null);
+      toast.success("Sale updated successfully.");
+  };
+
+  const handleDeleteSale = async (saleId: string) => {
+      if (!confirm("Delete this sale record?")) return;
+      const sales = (client.sales || []).filter(s => s.id !== saleId);
+      const updatedClient = { ...client, sales, lastUpdated: new Date().toISOString() };
+      onUpdate(updatedClient);
+      await db.saveClient(updatedClient, currentUser?.id);
+      toast.success("Sale deleted.");
+  };
+
   const handleDeleteClientAction = async () => {
       console.log("Delete Initiated for:", client.id);
       
-      // Use Custom Modal instead of window.confirm
       const isConfirmed = await confirm({
           title: "Delete Client Dossier?",
           message: `Are you sure you want to permanently delete ${client.name || 'this client'}? This includes all files, notes, and history. This cannot be undone.`,
@@ -220,17 +244,13 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
       });
       
       if (!isConfirmed) {
-          console.log("Delete cancelled by user (Dialog)");
           return;
       }
       
-      console.log("User confirmed delete (Dialog)");
-
       try {
           if (onDelete) {
               await onDelete(client.id);
           } else {
-              // Legacy Fallback
               await db.deleteClient(client.id);
               toast.success("Client deleted.");
               setTimeout(() => window.location.reload(), 500);
@@ -242,7 +262,6 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
       }
   };
 
-  // ... (Keep handleGenerateReport, handleWhatsApp, handleCalendar, getMomentumColor) ...
   const handleGenerateReport = async () => {
       setReportModalOpen(true); setIsGeneratingReport(true); setReportContent('Generating personalized investment review...');
       const text = await generateInvestmentReport(client);
@@ -294,11 +313,11 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
          </div>
       </div>
       <div className="flex border-b border-slate-100">
-          {['overview', 'logs', 'tools', 'policies', 'family'].map(tab => (
+          {['overview', 'closures', 'logs', 'tools', 'policies', 'family'].map(tab => (
               <button key={tab} onClick={(e) => { e.stopPropagation(); setActiveTab(tab as any); }} className={`flex-1 py-3 text-xs font-semibold border-b-2 transition-colors capitalize ${activeTab === tab ? 'border-slate-800 text-slate-800' : 'border-transparent text-slate-400 hover:text-slate-600'}`}>
                   {tab === 'logs' ? `Logs (${client.notes?.length || 0})` : 
-                   tab === 'policies' ? `Policies (${client.policies?.length || 0})` : 
-                   tab === 'family' ? `Family (${client.familyMembers?.length || 0})` : tab}
+                   tab === 'policies' ? `Policies` : 
+                   tab === 'family' ? `Family` : tab}
               </button>
           ))}
       </div>
@@ -365,8 +384,56 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
           )}
       </div>
       )}
+
+      {activeTab === 'closures' && (
+          <div onClick={e => e.stopPropagation()}>
+              <div className="space-y-3 mb-4">
+                  {(!client.sales || client.sales.length === 0) ? (
+                      <div className="text-center py-8">
+                          <p className="text-xs text-slate-400 italic mb-3">No sales recorded yet.</p>
+                          {onAddSale && <button onClick={onAddSale} className="text-xs font-bold text-emerald-600 hover:underline">Add First Sale</button>}
+                      </div>
+                  ) : (
+                      client.sales.map((sale, i) => (
+                          <div key={sale.id || i} className="bg-white p-3 rounded-xl border border-slate-200 hover:border-indigo-300 transition-all shadow-sm group">
+                              <div className="flex justify-between items-start">
+                                  <div>
+                                      <div className="text-xs font-bold text-slate-800">{sale.productName}</div>
+                                      <div className="text-[10px] text-slate-500 font-mono">
+                                          Inception: {sale.inceptionDate ? new Date(sale.inceptionDate).toLocaleDateString() : new Date(sale.date).toLocaleDateString()}
+                                      </div>
+                                  </div>
+                                  <div className="text-right">
+                                      <div className="text-sm font-black text-emerald-600">{fmtSGD(sale.premiumAmount)}</div>
+                                      <div className="text-[9px] text-slate-400 font-bold uppercase">Prem</div>
+                                  </div>
+                              </div>
+                              {sale.notes && (
+                                <div className="mt-2 text-[10px] text-slate-500 italic bg-slate-50 p-2 rounded border border-slate-100">
+                                    "{sale.notes}"
+                                </div>
+                              )}
+                              <div className="mt-2 pt-2 border-t border-slate-50 flex justify-between items-center">
+                                  <div className="text-[10px] font-medium text-slate-500 bg-slate-50 px-2 py-0.5 rounded">
+                                      GR: <span className="text-slate-700 font-bold">{fmtSGD(sale.grossRevenue)}</span>
+                                  </div>
+                                  <div className="flex gap-3">
+                                      <button onClick={() => setEditingSale(sale)} className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 bg-indigo-50 px-2 py-1 rounded transition-colors">Edit</button>
+                                      <button onClick={() => handleDeleteSale(sale.id)} className="text-[10px] font-bold text-red-500 hover:text-red-700 bg-red-50 px-2 py-1 rounded transition-colors">Delete</button>
+                                  </div>
+                              </div>
+                          </div>
+                      ))
+                  )}
+              </div>
+              {client.sales && client.sales.length > 0 && onAddSale && (
+                  <button onClick={onAddSale} className="w-full py-2 bg-slate-50 text-slate-600 text-xs font-bold rounded-lg hover:bg-slate-100 border border-slate-200 transition-colors">
+                      + Add Another Sale
+                  </button>
+              )}
+          </div>
+      )}
       
-      {/* ... (Keep other tabs) ... */}
       {activeTab === 'logs' && (
         <div className="flex flex-col h-full" onClick={(e) => e.stopPropagation()}>
             <div className="flex-1 space-y-3 mb-4 overflow-y-auto max-h-[300px] pr-2 custom-scrollbar">
@@ -477,6 +544,18 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
                   <button onClick={() => window.open(`mailto:${client.email}?subject=Investment Review&body=${encodeURIComponent(reportContent)}`)} className="flex-1 py-1.5 bg-indigo-600 text-white text-xs font-bold rounded hover:bg-indigo-700">Email Client</button>
               </div>
           </div>
+      )}
+
+      {/* Sale Editing Modal - Only shows when editingSale state is populated */}
+      {editingSale && (
+          <AddSaleModal 
+              clientName={client.name}
+              products={products} // Pass Products
+              advisorBanding={50} 
+              onClose={() => setEditingSale(null)}
+              onSave={handleUpdateSale}
+              initialSale={editingSale}
+          />
       )}
     </div>
   );

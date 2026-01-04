@@ -272,6 +272,7 @@ export interface Sale {
   inceptionDate: string; // New: Policy Start Date
   date: string; // Record creation date
   status: string;
+  notes?: string; // New: Optional notes field
 }
 
 export interface FamilyMember {

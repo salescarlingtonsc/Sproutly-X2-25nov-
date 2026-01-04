@@ -1,7 +1,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
-import { canAccessTab } from '../../lib/config';
+import { canAccessTab, TAB_DEFINITIONS } from '../../lib/config';
 import { Client } from '../../types';
 import Sidebar from './Sidebar';
 import CommandPalette from './CommandPalette';
@@ -79,6 +79,10 @@ const AppShell: React.FC<AppShellProps> = ({
   // Determine if user can perform write actions
   const isReadOnly = user?.role === 'viewer';
 
+  // Dynamic Header Title
+  const activeDef = TAB_DEFINITIONS.find(t => t.id === activeTab);
+  const headerTitle = activeDef?.label || 'Dashboard';
+
   return (
     <div className="flex h-screen supports-[height:100dvh]:h-[100dvh] overflow-hidden bg-slate-50 font-sans text-slate-900 overscroll-none">
       
@@ -122,7 +126,7 @@ const AppShell: React.FC<AppShellProps> = ({
                            <span className="text-[10px] font-mono text-slate-400 px-1.5 py-0.5 bg-slate-100 rounded hidden sm:inline-block">{clientRef}</span>
                         </>
                      ) : (
-                        <h2 className="text-sm font-bold text-slate-900">Dashboard</h2>
+                        <h2 className="text-sm font-bold text-slate-900">{headerTitle}</h2>
                      )}
                   </div>
                   <div className="text-[10px] text-slate-400 hidden sm:block">

@@ -10,7 +10,7 @@ interface DashboardTabProps {
   user: UserProfile;
   clients: Client[];
   setActiveTab: (tab: string) => void;
-  onLoadClient: (client: Client) => void;
+  onLoadClient: (client: Client, redirect?: boolean) => void; // Updated signature
   onNewClient: () => void;
 }
 
@@ -98,7 +98,7 @@ const getFYProgress = (annualGoal: number, clients: Client[]) => {
     };
 };
 
-const DashboardTab: React.FC<DashboardTabProps> = ({ user, clients, onNewClient, onLoadClient }) => {
+const DashboardTab: React.FC<DashboardTabProps> = ({ user, clients, onNewClient, onLoadClient, setActiveTab }) => {
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('Monthly');
   const [activeBreakdown, setActiveBreakdown] = useState<{ title: string; items: any[]; type: 'currency' | 'text' } | null>(null);
   const advisorBanding = user.bandingPercentage || 50;
@@ -239,6 +239,12 @@ const DashboardTab: React.FC<DashboardTabProps> = ({ user, clients, onNewClient,
   };
 
   const cardClasses = "bg-white p-5 rounded-xl border border-slate-200 shadow-sm hover:shadow-md hover:border-indigo-300 hover:ring-2 hover:ring-indigo-50 transition-all cursor-pointer group active:scale-[0.98]";
+
+  const handleRowClick = (client: Client) => {
+      onLoadClient(client, false); // Don't redirect default to profile
+      setActiveTab('crm'); // Navigate to CRM instead where the closures tab is
+      setActiveBreakdown(null);
+  };
 
   return (
     <div className="p-6 space-y-6 animate-fade-in pb-20 md:pb-6">
@@ -457,7 +463,7 @@ const DashboardTab: React.FC<DashboardTabProps> = ({ user, clients, onNewClient,
                             </thead>
                             <tbody className="divide-y divide-slate-50">
                                 {activeBreakdown.items.map((item, i) => (
-                                    <tr key={i} className="hover:bg-slate-50 transition-colors group cursor-pointer" onClick={() => { onLoadClient(item.client); setActiveBreakdown(null); }}>
+                                    <tr key={i} className="hover:bg-slate-50 transition-colors group cursor-pointer" onClick={() => handleRowClick(item.client)}>
                                         <td className="px-4 py-3 text-slate-500 font-mono text-xs">{fmtDateTime(item.date)}</td>
                                         <td className="px-4 py-3 font-bold text-slate-800 group-hover:text-indigo-600 transition-colors">{item.name}</td>
                                         <td className="px-4 py-3 text-right font-medium">

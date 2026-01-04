@@ -1,4 +1,3 @@
-
 import React, { useState, useMemo, useEffect } from 'react';
 import { Client, Product, Advisor, WhatsAppTemplate, AppSettings, Sale, ContactStatus } from '../../types';
 import { AnalyticsPanel } from './components/AnalyticsPanel';
@@ -16,8 +15,9 @@ import { useAuth } from '../../contexts/AuthContext';
 import { supabase } from '../../lib/supabase';
 import { logActivity } from '../../lib/db/activities';
 import { useToast } from '../../contexts/ToastContext';
+import { adminDb } from '../../lib/db/admin'; // Import Admin DB
 
-// MOCK DATA FOR PROPS NOT PASSED FROM APP YET
+// Fallback Mock Data
 const MOCK_PRODUCTS: Product[] = [
     { id: 'p1', name: 'Wealth Sol', provider: 'Pru', type: 'ILP', tiers: [{ min: 0, max: Infinity, rate: 0.5, dollarUp: 0 }] },
     { id: 'p2', name: 'Term Protect', provider: 'AIA', type: 'Term', tiers: [{ min: 0, max: Infinity, rate: 0.5, dollarUp: 0 }] }
@@ -42,7 +42,8 @@ const CrmTab: React.FC<CrmTabProps> = ({
     newClient, 
     loadClient, 
     onUpdateGlobalClient,
-    deleteClient 
+    deleteClient,
+    selectedClientId // Used for deep linking
 }) => {
   const { user } = useAuth();
   const toast = useToast();
@@ -51,6 +52,9 @@ const CrmTab: React.FC<CrmTabProps> = ({
   const [advisorFilter, setAdvisorFilter] = useState<string>('All');
   const [viewMode, setViewMode] = useState<'cards' | 'list'>('list');
   
+  // Live Product State
+  const [products, setProducts] = useState<Product[]>(MOCK_PRODUCTS);
+
   // Modal States
   const [activeWhatsAppClient, setActiveWhatsAppClient] = useState<Client | null>(null);
   const [activeCommentsClient, setActiveCommentsClient] = useState<Client | null>(null);
@@ -62,10 +66,31 @@ const CrmTab: React.FC<CrmTabProps> = ({
   // All Advisors List (For Filter)
   const [allAdvisors, setAllAdvisors] = useState<{id: string, name: string}[]>([]);
   
-  // Local state for templates to simulate DB connection for now
+  // Local state for templates
   const [templates, setTemplates] = useState<WhatsAppTemplate[]>(DEFAULT_TEMPLATES.map(t => ({id: t.id, label: t.label, content: t.content})));
 
   const isAdmin = user?.role === 'admin' || user?.is_admin === true;
+
+  // SYNC PRODUCTS FROM ADMIN SETTINGS
+  useEffect(() => {
+    const fetchSettings = async () => {
+        const settings = await adminDb.getSystemSettings();
+        if (settings?.products && settings.products.length > 0) {
+            setProducts(settings.products);
+        }
+    };
+    fetchSettings();
+  }, []);
+
+  // AUTO-OPEN CLIENT DETAIL IF SELECTED ID PROVIDED
+  useEffect(() => {
+    if (selectedClientId && clients.length > 0) {
+        const matchedClient = clients.find(c => c.id === selectedClientId);
+        if (matchedClient) {
+            setActiveDetailClient(matchedClient);
+        }
+    }
+  }, [selectedClientId, clients]);
 
   // Fetch all advisors if Admin to populate filter fully
   useEffect(() => {
@@ -80,16 +105,13 @@ const CrmTab: React.FC<CrmTabProps> = ({
     }
   }, [isAdmin]);
 
-  // Combined Advisor List: 
-  // If Admin: Use fetched list from DB (shows everyone).
-  // If User: Use derived list from clients (shows only those with data visible to user).
+  // Combined Advisor List
   const availableAdvisors = useMemo(() => {
     if (isAdmin && allAdvisors.length > 0) return allAdvisors;
 
     const map = new Map<string, string>();
     clients.forEach(c => {
       if (c._ownerId) {
-         // Display the email directly if available (now populated by db.ts), otherwise fallback
          const label = c._ownerEmail || `Advisor (${c._ownerId.substring(0, 5)}...)`;
          map.set(c._ownerId, label);
       }
@@ -106,7 +128,6 @@ const CrmTab: React.FC<CrmTabProps> = ({
                             company.toLowerCase().includes(searchTerm.toLowerCase()) ||
                             (client.tags || []).some(t => t.toLowerCase().includes(searchTerm.toLowerCase()));
       
-      // Filter by Follow Up Status OR Stage for broader matching
       const currentStatus = client.followUp?.status || client.stage || '';
       const matchesStage = stageFilter === 'All' || currentStatus === stageFilter || client.stage === stageFilter;
       
@@ -146,25 +167,21 @@ const CrmTab: React.FC<CrmTabProps> = ({
 
       const updatedClient = {
           ...client,
-          // Sync high-level stage with granular status
           stage: newStageName,
-          lastContact: now, // Update top-level for sorting
+          lastContact: now,
           lastUpdated: now,
           followUp: {
               ...client.followUp,
               status: newStatus,
-              lastContactedAt: now // Explicitly update 'Last Touched'
+              lastContactedAt: now
           },
-          // Append to history for analytics
           stageHistory: [
               ...(client.stageHistory || []),
               { stage: newStageName, date: now }
           ],
-          // Append to visible logs
           notes: [logEntry, ...(client.notes || [])]
       };
       
-      // Persist log for admin auditing
       logActivity(client.id, 'status_change', `Status changed to ${newStageName}`, {
           from: client.stage,
           to: newStageName,
@@ -207,16 +224,15 @@ const CrmTab: React.FC<CrmTabProps> = ({
       logActivity(client.id, 'sale_recorded', `Sale recorded: ${sale.productName} ($${sale.premiumAmount})`);
   };
 
-  // Robust delete handler
   const handleDeleteClientWrapper = async (id: string) => {
       try {
           await deleteClient(id);
-          setActiveDetailClient(null); // Close modal if open
+          setActiveDetailClient(null);
           toast.success("Client deleted successfully.");
       } catch (error: any) {
           console.error("Failed to delete client:", error);
           toast.error(`Delete Failed: ${error.message}`);
-          alert(`FAILED TO DELETE: ${error.message}`); // LOUD FAILURE
+          alert(`FAILED TO DELETE: ${error.message}`);
       }
   };
 
@@ -231,6 +247,7 @@ const CrmTab: React.FC<CrmTabProps> = ({
       <AnalyticsPanel clients={clients} />
 
       <div className="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
+         {/* Filter UI */}
          <div className="flex items-center gap-2 w-full md:w-auto overflow-x-auto pb-2 md:pb-0">
              <div className="relative w-full md:w-64 shrink-0">
                  <input type="text" placeholder="Search clients..." className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 shadow-sm transition-all" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
@@ -242,7 +259,6 @@ const CrmTab: React.FC<CrmTabProps> = ({
                  {DEFAULT_SETTINGS.statuses.map(s => <option key={s} value={s}>{s}</option>)}
              </select>
 
-             {/* Dynamic Advisor Filter */}
              {availableAdvisors.length > 1 && (
                 <select value={advisorFilter} onChange={(e) => setAdvisorFilter(e.target.value)} className="px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 shadow-sm cursor-pointer shrink-0 min-w-[200px]">
                     <option value="All">All Advisors ({availableAdvisors.length})</option>
@@ -275,9 +291,10 @@ const CrmTab: React.FC<CrmTabProps> = ({
                 <div key={client.id} className="relative group">
                     <ClientCard 
                         client={client} 
+                        products={products} // Pass Products
                         onUpdate={handleClientUpdate} 
                         currentUser={user}
-                        onDelete={handleDeleteClientWrapper} // Pass delete wrapper
+                        onDelete={handleDeleteClientWrapper}
                         onAddSale={() => setActiveSaleClient(client)}
                     />
                     <div className="absolute top-4 right-4 flex gap-1 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity">
@@ -363,17 +380,18 @@ const CrmTab: React.FC<CrmTabProps> = ({
 
       {activeWhatsAppClient && <WhatsAppModal client={activeWhatsAppClient} templates={templates} onClose={() => setActiveWhatsAppClient(null)} />}
       {activeCommentsClient && <CommentsModal client={activeCommentsClient} onClose={() => setActiveCommentsClient(null)} onAddNote={(note) => handleAddNote(activeCommentsClient.id, note)} />}
-      {activeSaleClient && <AddSaleModal clientName={activeSaleClient.name} products={MOCK_PRODUCTS} advisorBanding={user?.bandingPercentage || 50} onClose={() => setActiveSaleClient(null)} onSave={(sale) => handleAddSale(activeSaleClient.id, sale)} />}
+      {activeSaleClient && <AddSaleModal clientName={activeSaleClient.name} products={products} advisorBanding={user?.bandingPercentage || 50} onClose={() => setActiveSaleClient(null)} onSave={(sale) => handleAddSale(activeSaleClient.id, sale)} />}
       {activeDetailClient && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[100] flex items-center justify-center p-4 animate-fade-in" onClick={() => setActiveDetailClient(null)}>
             <div className="w-full max-w-2xl h-[85vh] animate-scale-in flex flex-col" onClick={e => e.stopPropagation()}>
                  <div className="bg-white rounded-xl shadow-2xl h-full overflow-hidden flex flex-col">
                     <ClientCard 
-                        client={activeDetailClient} 
+                        client={activeDetailClient}
+                        products={products} // Pass products to detail view as well
                         onUpdate={(c) => { handleClientUpdate(c); setActiveDetailClient(c); }} 
                         currentUser={user} 
-                        onDelete={handleDeleteClientWrapper} // Pass wrapper
-                        onAddSale={() => setActiveSaleClient(activeDetailClient)} // Enable Add Sale from detail view
+                        onDelete={handleDeleteClientWrapper} 
+                        onAddSale={() => setActiveSaleClient(activeDetailClient)} 
                     />
                  </div>
             </div>
