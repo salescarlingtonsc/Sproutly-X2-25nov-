@@ -130,37 +130,72 @@ export const AdminSettings: React.FC<AdminSettingsProps> = ({ products, settings
 
             {/* TEAM TAB */}
             {activeTab === 'team' && (
-                <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-                    <div className="overflow-x-auto">
-                        <table className="w-full min-w-[600px] text-left text-sm">
-                            <thead className="bg-slate-50 border-b border-slate-100">
-                                <tr>
-                                    <th className="px-6 py-3 font-semibold text-slate-600">Advisor</th>
-                                    <th className="px-6 py-3 font-semibold text-slate-600">Commission Banding (%)</th>
-                                </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-50">
-                                {advisors.map(a => (
-                                    <tr key={a.id}>
-                                        <td className="px-6 py-3 flex items-center gap-2">
-                                            <div className="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center text-xs font-bold text-slate-600">{a.avatar}</div>
-                                            {a.name}
-                                        </td>
-                                        <td className="px-6 py-3">
-                                            <div className="flex items-center gap-2">
-                                                <input 
-                                                    type="number"
-                                                    value={a.bandingPercentage}
-                                                    onChange={e => handleAdvisorUpdate(a.id, parseFloat(e.target.value))}
-                                                    className="w-20 bg-slate-50 border border-slate-200 rounded px-2 py-1 text-center text-slate-900 focus:ring-1 focus:ring-emerald-500 outline-none"
-                                                />
-                                                <span className="text-slate-400">%</span>
-                                            </div>
-                                        </td>
+                <div className="space-y-6">
+                    {/* AGENCY IDENTITY */}
+                    <div className="bg-indigo-900 rounded-xl p-6 text-white shadow-lg">
+                        <div className="flex items-start gap-4">
+                            <div className="p-3 bg-white/10 rounded-lg">
+                                <span className="text-2xl">🏛️</span>
+                            </div>
+                            <div className="flex-1">
+                                <h3 className="font-bold text-lg mb-1">Agency Identity</h3>
+                                <p className="text-indigo-200 text-xs mb-4">This name is displayed to all managers and advisors.</p>
+                                
+                                <div>
+                                    <label className="block text-[10px] font-bold text-indigo-300 uppercase mb-1">Organization Name</label>
+                                    <input 
+                                        type="text" 
+                                        // Use 'any' cast to access dynamic property not yet in interface to avoid TS breaking changes
+                                        value={(settings as any).agencyName || ''}
+                                        onChange={e => onUpdateSettings({ ...settings, agencyName: e.target.value } as any)}
+                                        placeholder="e.g. Sproutly Organization"
+                                        className="w-full bg-indigo-800 border border-indigo-700 rounded-lg px-4 py-3 text-white font-bold outline-none focus:ring-2 focus:ring-white/20 transition-all placeholder-indigo-400/50"
+                                    />
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* BANDING TABLE */}
+                    <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                        <div className="px-6 py-4 border-b border-slate-100 bg-slate-50">
+                            <h3 className="font-bold text-slate-700">Commission Structure</h3>
+                        </div>
+                        <div className="overflow-x-auto">
+                            <table className="w-full min-w-[600px] text-left text-sm">
+                                <thead className="bg-slate-50 border-b border-slate-100">
+                                    <tr>
+                                        <th className="px-6 py-3 font-semibold text-slate-600">Advisor</th>
+                                        <th className="px-6 py-3 font-semibold text-slate-600">Role</th>
+                                        <th className="px-6 py-3 font-semibold text-slate-600">Commission Banding (%)</th>
                                     </tr>
-                                ))}
-                            </tbody>
-                        </table>
+                                </thead>
+                                <tbody className="divide-y divide-slate-50">
+                                    {advisors.map(a => (
+                                        <tr key={a.id}>
+                                            <td className="px-6 py-3 flex items-center gap-2">
+                                                <div className="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center text-xs font-bold text-slate-600">{a.avatar}</div>
+                                                {a.name}
+                                            </td>
+                                            <td className="px-6 py-3">
+                                                <span className={`text-[10px] px-2 py-0.5 rounded uppercase font-bold ${a.role === 'manager' ? 'bg-teal-100 text-teal-700' : 'bg-slate-100 text-slate-600'}`}>{a.role}</span>
+                                            </td>
+                                            <td className="px-6 py-3">
+                                                <div className="flex items-center gap-2">
+                                                    <input 
+                                                        type="number"
+                                                        value={a.bandingPercentage}
+                                                        onChange={e => handleAdvisorUpdate(a.id, parseFloat(e.target.value))}
+                                                        className="w-20 bg-slate-50 border border-slate-200 rounded px-2 py-1 text-center text-slate-900 focus:ring-1 focus:ring-emerald-500 outline-none"
+                                                    />
+                                                    <span className="text-slate-400">%</span>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
             )}

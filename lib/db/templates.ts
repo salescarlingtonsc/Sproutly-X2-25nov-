@@ -93,13 +93,20 @@ export const dbTemplates = {
     if (!supabase) return;
     if (!isValidUUID(id)) return;
     
-    const { error } = await supabase
+    // HARDENED: Select returned rows to ensure deletion happened
+    const { error, data } = await supabase
       .from('message_templates')
       .delete()
-      .eq('id', id);
+      .eq('id', id)
+      .select('id');
+
     if (error) {
       console.error("Template delete error:", error.message);
       throw error;
+    }
+
+    if (!data || data.length === 0) {
+      throw new Error("Template delete failed: Permission denied or record not found.");
     }
   }
 };

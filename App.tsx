@@ -46,7 +46,8 @@ const AppInner: React.FC = () => {
     // Data States for Auto-Save
     expenses, customExpenses,
     cashflowState, investorState, insuranceState,
-    cpfState, propertyState, wealthState, retirement
+    cpfState, propertyState, wealthState, retirement,
+    chatHistory // Added to auto-save trigger
   } = useClient();
   const toast = useToast();
   const { confirm } = useDialog();
@@ -179,9 +180,12 @@ const AppInner: React.FC = () => {
            setSaveStatus('saved');
            setTimeout(() => setSaveStatus('idle'), 2000);
         }
-     } catch (e) {
+     } catch (e: any) {
         console.error(e);
-        if (!isAutoSave) setSaveStatus('error');
+        if (!isAutoSave) {
+            setSaveStatus('error');
+            toast.error(`Save Failed: ${e.message}`);
+        }
      } finally {
         isSavingRef.current = false;
      }
@@ -205,6 +209,7 @@ const AppInner: React.FC = () => {
     propertyState, 
     wealthState, 
     retirement, 
+    chatHistory, // Trigger save on chat history change
     handleSaveClient
   ]);
 
@@ -217,8 +222,10 @@ const AppInner: React.FC = () => {
       gridSaveDebounceRef.current = setTimeout(async () => {
           try {
               await db.saveClient(updatedClient, user?.id);
-          } catch (e) {
+          } catch (e: any) {
               console.error("Background sync failed", e);
+              // ALERT THE USER if the background save failed
+              toast.error(`Auto-Save Failed: ${e.message}`);
           }
       }, 800);
   }, [clientId, loadClient, user]);
@@ -261,7 +268,6 @@ const AppInner: React.FC = () => {
   }
 
   // --- RESTRICTION GATE ---
-  // Blocks access if user is logged in but not approved/active
   if (user && (user.status === 'pending' || user.status === 'rejected')) {
     return (
       <div className="min-h-screen bg-[#0B1120] flex flex-col items-center justify-center p-6 text-white relative overflow-hidden">
@@ -343,9 +349,16 @@ const AppInner: React.FC = () => {
             saveClient={() => handleSaveClient(false)}
             loadClient={handleLoadClient}
             deleteClient={async (id) => {
-                await db.deleteClient(id);
-                setClients(prev => prev.filter(c => c.id !== id));
-                if (id === clientId) resetClient();
+                // Ensure we await this so errors propagate
+                try {
+                    await db.deleteClient(id);
+                    setClients(prev => prev.filter(c => c.id !== id));
+                    if (id === clientId) resetClient();
+                    toast.success("Client deleted successfully.");
+                } catch (e: any) {
+                    // Re-throw so child components know it failed
+                    throw e;
+                }
             }}
             onRefresh={loadClientsList}
             onUpdateGlobalClient={handleUpdateGlobalClient}

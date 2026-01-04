@@ -1,5 +1,5 @@
 
-export type UserRole = 'admin' | 'director' | 'advisor' | 'viewer' | 'user';
+export type UserRole = 'admin' | 'director' | 'manager' | 'advisor' | 'viewer' | 'user';
 
 export type SubscriptionTier = 'free' | 'platinum' | 'diamond' | 'organisation';
 
@@ -9,6 +9,7 @@ export interface UserProfile {
   role: UserRole;
   status: 'active' | 'pending' | 'rejected' | 'approved';
   bandingPercentage?: number;
+  annualGoal?: number; // New: Target Gross Revenue for the year
   avatar?: string;
   joinedAt?: string;
   organizationId?: string;
@@ -267,7 +268,9 @@ export interface Sale {
   productId: string;
   productName: string;
   premiumAmount: number;
-  date: string;
+  grossRevenue: number; // New: Calculated Revenue
+  inceptionDate: string; // New: Policy Start Date
+  date: string; // Record creation date
   status: string;
 }
 
@@ -285,6 +288,12 @@ export interface Policy {
   policyNumber: string;
   value: number;
   startDate: string;
+}
+
+export interface ChatMessage {
+  role: 'user' | 'model';
+  text: string;
+  timestamp?: string;
 }
 
 export interface Client {
@@ -319,6 +328,7 @@ export interface Client {
   familyMembers?: FamilyMember[];
   policies?: Policy[];
   notes?: Note[];
+  chatHistory?: ChatMessage[];
   goals?: string;
   milestones?: {
     createdAt?: string;

@@ -1,16 +1,14 @@
+
 import React, { useState, useRef, useEffect } from 'react';
 import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
 import { chatWithFinancialContext } from '../../lib/gemini';
-import { Client } from '../../types';
+import { Client, ChatMessage } from '../../types';
 import { useAi } from '../../contexts/AiContext';
+import { useClient } from '../../contexts/ClientContext';
+import { aiLearning } from '../../lib/db/aiLearning';
 
 interface AiAssistantProps {
   currentClient: Client | null;
-}
-
-interface Message {
-  role: 'user' | 'model';
-  text: string;
 }
 
 const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
@@ -36,12 +34,13 @@ async function decodeAudioData(data: Uint8Array, sampleRate: number = 24000) {
   return buffer;
 }
 
+const DEFAULT_WELCOME: ChatMessage = { role: 'model', text: 'Hello! I am Sproutly AI. I learn from your feedback. Ask me anything about this client or financial strategy.' };
+
 const AiAssistant: React.FC<AiAssistantProps> = ({ currentClient }) => {
   const { isOpen, toggleAi, activePrompt, clearPrompt } = useAi();
+  const { setChatHistory } = useClient(); // Hook to persist chat history
   
-  const [messages, setMessages] = useState<Message[]>([
-    { role: 'model', text: 'Hello! I am your Sproutly Co-Pilot. I have analyzed this profile. Request specific calculations or strategic insights.' }
-  ]);
+  const [messages, setMessages] = useState<ChatMessage[]>([DEFAULT_WELCOME]);
   const [input, setInput] = useState('');
   const [isThinking, setIsThinking] = useState(false);
   const [useLite, setUseLite] = useState(false); 
@@ -52,7 +51,35 @@ const AiAssistant: React.FC<AiAssistantProps> = ({ currentClient }) => {
   const audioQueueRef = useRef<number>(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  // Training State
+  const [contextInjection, setContextInjection] = useState('');
+
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, isOpen]);
+
+  // Sync Knowledge whenever chat is opened
+  useEffect(() => {
+    if (isOpen) {
+        const loadBrain = async () => {
+            const knowledge = await aiLearning.getKnowledge();
+            if (knowledge) {
+                setContextInjection(knowledge);
+                console.log("AI Brain Synced:", knowledge.length > 0 ? "Knowledge Active" : "Empty");
+            }
+        };
+        loadBrain();
+    }
+  }, [isOpen]);
+
+  // Load Client-Specific History when client changes
+  useEffect(() => {
+    if (currentClient?.id) {
+       // If client has history, load it. Otherwise, show default welcome.
+       setMessages(currentClient.chatHistory?.length ? currentClient.chatHistory : [DEFAULT_WELCOME]);
+    } else {
+       // Global mode - reset to default (or handle global history if needed)
+       setMessages([DEFAULT_WELCOME]); 
+    }
+  }, [currentClient?.id]);
 
   useEffect(() => {
     if (activePrompt && isOpen && !isThinking && !isLiveActive) {
@@ -64,22 +91,54 @@ const AiAssistant: React.FC<AiAssistantProps> = ({ currentClient }) => {
   const handleSend = async (overrideInput?: string) => {
     const textToSend = overrideInput || input;
     if (!textToSend.trim()) return;
-    if (!currentClient) {
-      setMessages(prev => [...prev, { role: 'user', text: textToSend }, { role: 'model', text: 'Please load a profile for Sproutly insights.' }]);
-      setInput('');
-      return;
-    }
+    
     setInput('');
-    setMessages(prev => [...prev, { role: 'user', text: textToSend }]);
+    const userMsg: ChatMessage = { role: 'user', text: textToSend };
+    const newHistory = [...messages, userMsg];
+    
+    setMessages(newHistory);
     setIsThinking(true);
+    
     try {
-      const response = await chatWithFinancialContext(messages, textToSend, currentClient, useLite);
-      setMessages(prev => [...prev, { role: 'model', text: response || 'Insight unavailable.' }]);
+      // Inject "Brain" into the context sent to Gemini
+      const enhancedClientState = currentClient ? {
+          ...currentClient,
+          _organizational_knowledge: contextInjection
+      } : {
+          _system_note: "NO CLIENT SELECTED. User is asking general questions.",
+          _organizational_knowledge: contextInjection
+      };
+      
+      const responseText = await chatWithFinancialContext(newHistory, textToSend, enhancedClientState, useLite);
+      const modelMsg: ChatMessage = { role: 'model', text: responseText || 'Insight unavailable.' };
+      
+      const finalHistory = [...newHistory, modelMsg];
+      setMessages(finalHistory);
+      
+      // Persist to Client Context
+      if (currentClient) {
+          setChatHistory(finalHistory);
+      }
+
     } catch (e) {
       setMessages(prev => [...prev, { role: 'model', text: 'Sproutly services are currently unavailable.' }]);
     } finally {
       setIsThinking(false);
     }
+  };
+
+  const handleTrain = async (msgIndex: number, isPositive: boolean) => {
+      const msg = messages[msgIndex];
+      const prevMsg = messages[msgIndex - 1]; // The user question
+      
+      if (isPositive && msg.role === 'model' && prevMsg?.role === 'user') {
+          // Save valid pair
+          await aiLearning.train(prevMsg.text, msg.text, 'general');
+          alert("Sproutly AI has learned this response! It will be used to improve future answers for the whole team.");
+      } else if (!isPositive) {
+          // Negative feedback flow could ask for correction, keeping it simple for now
+          alert("Feedback recorded. We will tune the model.");
+      }
   };
 
   const startLiveSession = async () => {
@@ -97,7 +156,7 @@ const AiAssistant: React.FC<AiAssistantProps> = ({ currentClient }) => {
          model: 'gemini-2.5-flash-native-audio-preview-09-2025',
          config: { 
             responseModalities: [Modality.AUDIO], 
-            systemInstruction: `You are Sproutly Co-Pilot.` 
+            systemInstruction: `You are Sproutly AI. ${contextInjection} ${currentClient ? `Focus on client: ${currentClient.profile.name}` : 'No client selected, answer generally.'}` 
          },
          callbacks: {
             onopen: () => {
@@ -161,7 +220,12 @@ const AiAssistant: React.FC<AiAssistantProps> = ({ currentClient }) => {
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
             <span className="text-xl">{isLiveActive ? '🎙️' : '🧠'}</span>
-            <h3 className="text-white font-bold text-sm m-0">{isLiveActive ? 'Sproutly Voice' : 'Sproutly Co-Pilot'}</h3>
+            <div>
+                <h3 className="text-white font-bold text-sm m-0 leading-none">{isLiveActive ? 'Sproutly Voice' : 'Sproutly AI'}</h3>
+                <p className="text-[9px] text-indigo-300 font-bold uppercase tracking-wider mt-0.5">
+                    {currentClient ? `Focus: ${currentClient.profile.name}` : 'Global Mode'}
+                </p>
+            </div>
           </div>
           <button onClick={toggleAi} className="text-slate-400 hover:text-white">✕</button>
         </div>
@@ -181,9 +245,27 @@ const AiAssistant: React.FC<AiAssistantProps> = ({ currentClient }) => {
          </div>
       ) : (
          <div className="flex-1 overflow-y-auto p-4 bg-slate-50 space-y-3">
+            {!currentClient && (
+                <div className="bg-amber-50 p-3 rounded-xl border border-amber-100 text-xs text-amber-800 mb-2">
+                    <strong>Global Context:</strong> Select a client from the CRM or Dashboard to ask specific financial questions.
+                </div>
+            )}
             {messages.map((msg, idx) => (
                <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[85%] p-3 rounded-xl text-sm leading-relaxed ${msg.role === 'user' ? 'bg-indigo-600 text-white rounded-br-none' : 'bg-white text-gray-800 border border-gray-200 rounded-bl-none shadow-sm'}`}>{msg.text}</div>
+                  <div className={`max-w-[85%] p-3 rounded-xl text-sm leading-relaxed whitespace-pre-wrap relative group ${msg.role === 'user' ? 'bg-indigo-600 text-white rounded-br-none' : 'bg-white text-gray-800 border border-gray-200 rounded-bl-none shadow-sm'}`}>
+                      {msg.text}
+                      {/* Training Controls */}
+                      {msg.role === 'model' && idx > 0 && (
+                          <div className="absolute -bottom-6 left-0 opacity-0 group-hover:opacity-100 transition-opacity flex gap-2">
+                              <button onClick={() => handleTrain(idx, true)} className="text-[10px] bg-slate-200 hover:bg-emerald-100 hover:text-emerald-700 px-2 py-0.5 rounded text-slate-500 font-bold" title="Train: Good Answer">
+                                  👍 Helpful
+                              </button>
+                              <button onClick={() => handleTrain(idx, false)} className="text-[10px] bg-slate-200 hover:bg-red-100 hover:text-red-700 px-2 py-0.5 rounded text-slate-500 font-bold" title="Train: Needs Improvement">
+                                  👎 Incorrect
+                              </button>
+                          </div>
+                      )}
+                  </div>
                </div>
             ))}
             {isThinking && (
@@ -200,8 +282,8 @@ const AiAssistant: React.FC<AiAssistantProps> = ({ currentClient }) => {
             <div className="relative flex items-center gap-2">
                <button onClick={startLiveSession} className="p-3 bg-indigo-50 text-indigo-600 rounded-xl hover:bg-indigo-100 transition-colors flex-shrink-0">🎙️</button>
                <div className="relative flex-1">
-                  <input type="text" value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSend()} placeholder={currentClient ? "Ask Sproutly..." : "Load profile..."} disabled={!currentClient || isThinking} className="w-full pl-4 pr-10 py-3 bg-gray-100 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all" />
-                  <button onClick={() => handleSend()} disabled={!input.trim() || !currentClient || isThinking} className={`absolute right-2 top-2 p-1.5 text-white rounded-lg disabled:opacity-50 transition-colors ${useLite ? 'bg-emerald-500 hover:bg-emerald-600' : 'bg-indigo-600 hover:bg-indigo-700'}`}><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4"><path d="M3.105 2.289a.75.75 0 00-.826.95l1.414 4.925A2.001 2.001 0 005.694 10a2.001 2.001 0 00-1.999 1.836l-1.415 4.925a.75.75 0 00.826.95 28.896 28.896 0 0015.293-7.154.75.75 0 000-1.115A28.897 28.897 0 003.105 2.289z" /></svg></button>
+                  <input type="text" value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSend()} placeholder={currentClient ? "Ask Sproutly..." : "Ask general questions..."} disabled={isThinking} className="w-full pl-4 pr-10 py-3 bg-gray-100 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all" />
+                  <button onClick={() => handleSend()} disabled={!input.trim() || isThinking} className={`absolute right-2 top-2 p-1.5 text-white rounded-lg disabled:opacity-50 transition-colors ${useLite ? 'bg-emerald-500 hover:bg-emerald-600' : 'bg-indigo-600 hover:bg-indigo-700'}`}><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4"><path d="M3.105 2.289a.75.75 0 00-.826.95l1.414 4.925A2.001 2.001 0 005.694 10a2.001 2.001 0 00-1.999 1.836l-1.415 4.925a.75.75 0 00.826.95 28.896 28.896 0 0015.293-7.154.75.75 0 000-1.115A28.897 28.897 0 003.105 2.289z" /></svg></button>
                </div>
             </div>
          </div>

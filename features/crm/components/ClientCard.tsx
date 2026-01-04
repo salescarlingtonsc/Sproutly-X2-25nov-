@@ -1,17 +1,24 @@
 
 import React, { useState } from 'react';
-import { Client, FamilyMember, Policy } from '../../../types';
+import { Client, FamilyMember, Policy, UserProfile } from '../../../types';
 import { analyzeClientMomentum, generateInvestmentReport } from '../../../lib/gemini';
 import { DEFAULT_SETTINGS } from '../../../lib/config';
 import { FinancialTools } from './FinancialTools';
 import { fmtDateTime } from '../../../lib/helpers';
 import { logActivity } from '../../../lib/db/activities';
+import { useToast } from '../../../contexts/ToastContext';
+import { useDialog } from '../../../contexts/DialogContext'; // Added
+import { db } from '../../../lib/db';
 
 interface ClientCardProps {
   client: Client;
   onUpdate: (updatedClient: Client) => void;
+  currentUser?: UserProfile | null;
+  onDelete?: (id: string) => Promise<void> | void; 
+  onAddSale?: () => void;
 }
 
+// ... (KEEP REVERSE_STATUS_MAP and EditableField as is) ...
 const REVERSE_STATUS_MAP: Record<string, string> = {
   'New Lead': 'new',
   'Contacted': 'contacted',
@@ -50,9 +57,13 @@ const EditableField = ({ label, value, onChange, type = 'text', options = [], cl
   );
 };
 
-export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate }) => {
+export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, currentUser, onDelete, onAddSale }) => {
+  const toast = useToast();
+  const { confirm } = useDialog(); // Use custom dialog hook
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [activeTab, setActiveTab] = useState<'overview' | 'logs' | 'family' | 'policies' | 'tools'>('overview');
+  
+  // ... (keep state) ...
   const [newMemberName, setNewMemberName] = useState('');
   const [newMemberRole, setNewMemberRole] = useState<'Father'|'Mother'|'Child'|'Other'>('Child');
   const [newMemberDob, setNewMemberDob] = useState('');
@@ -66,6 +77,18 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate }) => {
   const [reportContent, setReportContent] = useState('');
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
 
+  // Permission Logic
+  const isOwner = client._ownerId === currentUser?.id;
+  const isAdmin = 
+    currentUser?.email === 'sales.carlingtonsc@gmail.com' || 
+    currentUser?.role === 'admin' || 
+    currentUser?.role === 'director' || 
+    currentUser?.is_admin === true;
+    
+  const canDeleteLogs = isAdmin || isOwner;
+  const canDeleteClient = isAdmin || isOwner;
+
+  // ... (Keep existing methods: handleRefreshAnalysis, generateUniqueId, handleUpdateField, handleAddFamilyMember, handleAddPolicy, handleAddNote, handleDeleteNote) ...
   const handleRefreshAnalysis = async (e: React.MouseEvent) => {
     e.stopPropagation(); 
     setIsAnalyzing(true);
@@ -74,13 +97,19 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate }) => {
     setIsAnalyzing(false);
   };
 
+  const generateUniqueId = (prefix: string) => `${prefix}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
   const handleUpdateField = (field: keyof Client, val: any) => {
       const now = new Date().toISOString();
       const statusKey = REVERSE_STATUS_MAP[val] || val;
 
       if (field === 'stage' && val !== client.stage) {
-          // Manual Stage Change
-          const logEntry = { id: `sys_${Date.now()}`, content: `Stage updated: ${client.stage || 'New'} ➔ ${val}`, date: now, author: 'System' };
+          const logEntry = { 
+              id: generateUniqueId('sys'), 
+              content: `Stage updated: ${client.stage || 'New'} ➔ ${val}`, 
+              date: now, 
+              author: 'System' 
+          };
           
           onUpdate({ 
              ...client, 
@@ -93,8 +122,12 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate }) => {
           logActivity(client.id, 'status_change', `Manual stage change to ${val}`);
 
       } else if (field === 'contactStatus' && val !== client.contactStatus) {
-          // Manual Contact Status Change
-          const logEntry = { id: `sys_${Date.now()}`, content: `Status updated: ${client.contactStatus || '-'} ➔ ${val}`, date: now, author: 'System' };
+          const logEntry = { 
+              id: generateUniqueId('sys'), 
+              content: `Status updated: ${client.contactStatus || '-'} ➔ ${val}`, 
+              date: now, 
+              author: 'System' 
+          };
           
           onUpdate({
               ...client,
@@ -110,7 +143,7 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate }) => {
 
   const handleAddFamilyMember = () => {
       if (!newMemberName) return;
-      const newMember: FamilyMember = { id: `fam_${Date.now()}`, name: newMemberName, role: newMemberRole, dob: newMemberDob };
+      const newMember: FamilyMember = { id: generateUniqueId('fam'), name: newMemberName, role: newMemberRole, dob: newMemberDob };
       onUpdate({ ...client, familyMembers: [...(client.familyMembers || []), newMember] });
       setNewMemberName('');
       setNewMemberDob('');
@@ -118,7 +151,7 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate }) => {
 
   const handleAddPolicy = () => {
       if (!newPolicyProvider || !newPolicyName) return;
-      const newPolicy: Policy = { id: `pol_${Date.now()}`, provider: newPolicyProvider, name: newPolicyName, policyNumber: newPolicyNumber || 'N/A', value: parseFloat(newPolicyValue) || 0, startDate: new Date().toISOString() };
+      const newPolicy: Policy = { id: generateUniqueId('pol'), provider: newPolicyProvider, name: newPolicyName, policyNumber: newPolicyNumber || 'N/A', value: parseFloat(newPolicyValue) || 0, startDate: new Date().toISOString() };
       const newTag = `Insured: ${newPolicyProvider}`;
       const updatedTags = (client.tags || []).includes(newTag) ? (client.tags || []) : [...(client.tags || []), newTag];
       onUpdate({ ...client, policies: [...(client.policies || []), newPolicy], tags: updatedTags });
@@ -128,22 +161,88 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate }) => {
   const handleAddNote = () => {
       if (!newNote.trim()) return;
       const noteEntry = {
-          id: `note_${Date.now()}`,
+          id: generateUniqueId('note'),
           content: newNote,
           date: new Date().toISOString(),
-          author: 'Me' // In a real app this would be user.name
+          author: 'Me' 
       };
       onUpdate({ ...client, notes: [noteEntry, ...(client.notes || [])] });
       setNewNote('');
   };
 
-  const handleDeleteNote = (noteId: string) => {
-      if (confirm("Delete this log entry? This cannot be undone.")) {
-          const updatedNotes = (client.notes || []).filter(n => n.id !== noteId);
-          onUpdate({ ...client, notes: updatedNotes });
+  const handleDeleteNote = async (noteId: string, index: number) => {
+      if (!canDeleteLogs) {
+          toast.error("Permission Denied");
+          return;
+      }
+      
+      const isConfirmed = await confirm({
+          title: "Delete Log?",
+          message: "This action cannot be undone.",
+          confirmText: "Delete",
+          isDestructive: true
+      });
+
+      if (!isConfirmed) return;
+
+      try {
+          const currentNotes = [...(client.notes || [])];
+          if (index >= 0 && index < currentNotes.length) {
+             currentNotes.splice(index, 1);
+          } else {
+             const noteIndex = currentNotes.findIndex(n => n.id === noteId);
+             if (noteIndex > -1) currentNotes.splice(noteIndex, 1);
+          }
+          const updatedClient = { ...client, notes: currentNotes, lastUpdated: new Date().toISOString() };
+          onUpdate(updatedClient);
+          try {
+              await db.saveClient(updatedClient, currentUser?.id);
+              toast.success("Log removed.");
+          } catch (err: any) {
+              console.error("Save after delete failed:", err);
+              toast.error("DB Save Failed: " + err.message);
+          }
+      } catch (e: any) {
+          console.error("Delete failed:", e);
+          toast.error("Failed to delete log");
       }
   };
 
+  const handleDeleteClientAction = async () => {
+      console.log("Delete Initiated for:", client.id);
+      
+      // Use Custom Modal instead of window.confirm
+      const isConfirmed = await confirm({
+          title: "Delete Client Dossier?",
+          message: `Are you sure you want to permanently delete ${client.name || 'this client'}? This includes all files, notes, and history. This cannot be undone.`,
+          confirmText: "Delete Forever",
+          isDestructive: true
+      });
+      
+      if (!isConfirmed) {
+          console.log("Delete cancelled by user (Dialog)");
+          return;
+      }
+      
+      console.log("User confirmed delete (Dialog)");
+
+      try {
+          if (onDelete) {
+              await onDelete(client.id);
+          } else {
+              // Legacy Fallback
+              await db.deleteClient(client.id);
+              toast.success("Client deleted.");
+              setTimeout(() => window.location.reload(), 500);
+          }
+      } catch (e: any) {
+          console.error("DELETE ACTION FAILED:", e);
+          alert(`CRITICAL ERROR: ${e.message}`);
+          toast.error(e.message);
+      }
+  };
+
+  // ... (Keep handleGenerateReport, handleWhatsApp, handleCalendar, getMomentumColor) ...
   const handleGenerateReport = async () => {
       setReportModalOpen(true); setIsGeneratingReport(true); setReportContent('Generating personalized investment review...');
       const text = await generateInvestmentReport(client);
@@ -152,8 +251,14 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate }) => {
 
   const handleWhatsApp = (e: React.MouseEvent) => {
     e.stopPropagation();
-    const template = `Hi ${client.name.split(' ')[0]}, it's Sproutly. I found an opportunity that matches your portfolio. Do you have 5 mins?`;
-    window.open(`https://wa.me/?text=${encodeURIComponent(template)}`, '_blank');
+    const rawPhone = client.phone || client.profile?.phone || '';
+    let cleanPhone = rawPhone.replace(/\D/g, '');
+    if (cleanPhone.length === 8) cleanPhone = '65' + cleanPhone;
+    const firstName = (client.name || '').split(' ')[0] || 'there';
+    const template = `Hi ${firstName}, it's Sproutly. I found an opportunity that matches your portfolio. Do you have 5 mins?`;
+    const encodedText = encodeURIComponent(template);
+    const url = cleanPhone.length >= 8 ? `https://wa.me/${cleanPhone}?text=${encodedText}` : `https://wa.me/?text=${encodedText}`;
+    window.open(url, '_blank');
   };
 
   const handleCalendar = (e: React.MouseEvent) => {
@@ -200,7 +305,6 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate }) => {
       <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
       {activeTab === 'overview' && (
       <div className="space-y-6">
-          {/* Owner Display */}
           <div className="bg-slate-50 p-2 rounded-lg border border-slate-100 flex justify-between items-center">
              <span className="text-[10px] font-bold text-slate-400 uppercase">Portfolio Custodian</span>
              <span className="text-xs font-bold text-indigo-600">{client._ownerEmail || 'System/Me'}</span>
@@ -212,9 +316,19 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate }) => {
               <EditableField label="Exp. Revenue ($)" value={client.value} onChange={(v:any) => handleUpdateField('value', v)} type="number" placeholder="Est. Revenue" />
               <EditableField label="Platform" value={client.platform} onChange={(v:any) => handleUpdateField('platform', v)} type="select" options={DEFAULT_SETTINGS.platforms} />
           </div>
+          
+          {onAddSale && (
+              <button 
+                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); onAddSale(); }} 
+                  className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl shadow-lg shadow-emerald-500/30 transition-all font-bold text-xs flex items-center justify-center gap-2 transform active:scale-[0.98]"
+              >
+                  <span>💰 Record Closure / Sale</span>
+              </button>
+          )}
+
           <div className="border-t border-slate-100 my-2"></div>
           <div className="grid grid-cols-2 gap-4">
-              <EditableField label="First Appt" value={client.firstApptDate} onChange={(v:any) => handleUpdateField('firstApptDate', v)} type="datetime-local" />
+              <EditableField label="Next Appt" value={client.firstApptDate} onChange={(v:any) => handleUpdateField('firstApptDate', v)} type="datetime-local" />
               <EditableField label="Status" value={client.contactStatus} onChange={(v:any) => handleUpdateField('contactStatus', v)} type="select" options={['Uncontacted', 'Attempted', 'Active']} />
           </div>
           <div className="border-t border-slate-100 my-2"></div>
@@ -239,26 +353,39 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate }) => {
             </div>
             <p className="text-xs text-slate-600 leading-relaxed font-medium">{client.nextAction || "Review recent notes to determine next steps."}</p>
           </div>
+          {canDeleteClient && (
+              <div className="pt-4 border-t border-slate-100">
+                  <button 
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleDeleteClientAction(); }} 
+                      className="w-full text-xs text-red-500 hover:text-white bg-red-50 hover:bg-red-500 py-2 rounded-lg transition-colors font-bold uppercase tracking-wider border border-red-100 cursor-pointer"
+                  >
+                      Delete Client
+                  </button>
+              </div>
+          )}
       </div>
       )}
       
+      {/* ... (Keep other tabs) ... */}
       {activeTab === 'logs' && (
         <div className="flex flex-col h-full" onClick={(e) => e.stopPropagation()}>
             <div className="flex-1 space-y-3 mb-4 overflow-y-auto max-h-[300px] pr-2 custom-scrollbar">
                 {(client.notes || []).map((note, i) => (
-                    <div key={note.id || i} className="bg-slate-50 p-3 rounded-xl border border-slate-100 text-xs relative group">
+                    <div key={`${note.id || 'note'}-${i}`} className="bg-slate-50 p-3 rounded-xl border border-slate-100 text-xs relative group hover:border-slate-300 transition-colors">
                         <div className="flex justify-between items-start mb-1.5">
                             <div>
-                                <span className="font-bold text-slate-700 block">{note.author || 'Advisor'}</span>
+                                <span className={`font-bold block ${note.author === 'System' ? 'text-indigo-600' : 'text-slate-700'}`}>{note.author || 'Advisor'}</span>
                                 <span className="text-[10px] text-slate-400 font-mono">{fmtDateTime(note.date)}</span>
                             </div>
-                            <button 
-                                onClick={(e) => { e.stopPropagation(); handleDeleteNote(note.id); }}
-                                className="text-slate-300 hover:text-red-500 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-all p-1"
-                                title="Delete Log"
-                            >
-                                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
-                            </button>
+                            {canDeleteLogs && (
+                                <button 
+                                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleDeleteNote(note.id, i); }}
+                                    className="bg-white border border-slate-200 text-slate-400 hover:text-red-500 hover:bg-red-50 hover:border-red-200 p-2 rounded-lg transition-all cursor-pointer z-20 shadow-sm"
+                                    title="Delete Log"
+                                >
+                                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                                </button>
+                            )}
                         </div>
                         <p className="text-slate-600 leading-relaxed whitespace-pre-wrap">{note.content}</p>
                     </div>
@@ -286,7 +413,7 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate }) => {
             </div>
         </div>
       )}
-
+      
       {activeTab === 'tools' && <FinancialTools client={client} onUpdate={onUpdate} />}
       {activeTab === 'policies' && (
           <div onClick={(e) => e.stopPropagation()}>

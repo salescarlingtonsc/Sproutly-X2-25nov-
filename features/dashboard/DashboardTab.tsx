@@ -2,6 +2,9 @@
 import React, { useState, useMemo } from 'react';
 import { Client, Product, Benchmarks, UserProfile } from '../../types';
 import { PieChart, Pie, Legend, Cell, BarChart, Bar, XAxis, Tooltip, ResponsiveContainer } from 'recharts';
+import Modal from '../../components/ui/Modal';
+import { fmtDateTime, fmtSGD } from '../../lib/helpers';
+import Button from '../../components/ui/Button';
 
 interface DashboardTabProps {
   user: UserProfile;
@@ -13,12 +16,6 @@ interface DashboardTabProps {
 
 type TimeFilter = 'Daily' | 'Weekly' | 'Monthly' | 'Quarterly' | 'Yearly';
 const COLORS = ['#3b82f6', '#8b5cf6', '#f59e0b', '#10b981', '#ef4444', '#6366f1'];
-
-// Placeholder Products Data (In real app, fetch this)
-const MOCK_PRODUCTS: Product[] = [
-    { id: 'p1', name: 'Wealth Sol', provider: 'Pru', type: 'ILP', tiers: [{ min: 0, max: Infinity, rate: 0.5, dollarUp: 0 }] },
-    { id: 'p2', name: 'Term Protect', provider: 'AIA', type: 'Term', tiers: [{ min: 0, max: Infinity, rate: 0.5, dollarUp: 0 }] }
-];
 
 const DEFAULT_BENCHMARKS: Benchmarks = { callsPerWeek: 15, apptsPerWeek: 5 };
 
@@ -58,11 +55,60 @@ const getDateRange = (filter: TimeFilter, offset: number = 0) => {
     return { start, end };
 };
 
-const DashboardTab: React.FC<DashboardTabProps> = ({ user, clients, onNewClient }) => {
+// New Helper for Financial Year Calculation
+const getFYProgress = (annualGoal: number, clients: Client[]) => {
+    const currentYear = new Date().getFullYear();
+    const start = new Date(currentYear, 0, 1);
+    const end = new Date(currentYear, 11, 31);
+    const now = new Date();
+
+    let totalRevenue = 0;
+    
+    clients.forEach(c => {
+        (c.sales || []).forEach(sale => {
+            // Use Inception Date if available, else Sale Date
+            const dateStr = sale.inceptionDate || sale.date;
+            if (!dateStr) return;
+            
+            const saleDate = new Date(dateStr);
+            if (saleDate.getFullYear() === currentYear) {
+                totalRevenue += (sale.grossRevenue || 0);
+            }
+        });
+    });
+
+    const percentComplete = Math.min(100, (totalRevenue / (annualGoal || 1)) * 100);
+    
+    // Pro-rata targets
+    const dayOfYear = Math.floor((now.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
+    const targetYTD = (annualGoal / 365) * dayOfYear;
+    const gap = totalRevenue - targetYTD;
+    
+    // Time left
+    const daysLeft = 365 - dayOfYear;
+    const monthsLeft = 12 - now.getMonth();
+
+    return {
+        totalRevenue,
+        percentComplete,
+        targetYTD,
+        gap,
+        daysLeft,
+        monthsLeft
+    };
+};
+
+const DashboardTab: React.FC<DashboardTabProps> = ({ user, clients, onNewClient, onLoadClient }) => {
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('Monthly');
-  const products = MOCK_PRODUCTS;
+  const [activeBreakdown, setActiveBreakdown] = useState<{ title: string; items: any[]; type: 'currency' | 'text' } | null>(null);
   const advisorBanding = user.bandingPercentage || 50;
   const benchmarks = DEFAULT_BENCHMARKS;
+
+  // --- FY GOAL TRACKER ---
+  const fyStats = useMemo(() => {
+      const annualGoal = user.annualGoal || 120000; // Default fallback if not set
+      return getFYProgress(annualGoal, clients);
+  }, [user.annualGoal, clients]);
 
   const calculatePeriodStats = (offset: number) => {
       const { start, end } = getDateRange(timeFilter, offset);
@@ -72,32 +118,72 @@ const DashboardTab: React.FC<DashboardTabProps> = ({ user, clients, onNewClient 
       let apptsSet = 0;
       let apptsMet = 0;
 
+      const commissionList: any[] = [];
+      const closureList: any[] = [];
+      const callList: any[] = [];
+      const apptSetList: any[] = [];
+      const apptMetList: any[] = [];
+
       clients.forEach(c => {
           (c.sales || []).forEach(sale => {
               const d = new Date(sale.date);
               if (d >= start && d <= end) {
                   closures++;
-                  commission += (sale.premiumAmount || 0) * (advisorBanding / 100);
+                  // Calculate Commission based on Gross Revenue if available, else estimate
+                  const gross = sale.grossRevenue || sale.premiumAmount; // Fallback
+                  const comm = gross * (advisorBanding / 100);
+                  commission += comm;
+                  const item = { 
+                      id: sale.id, 
+                      name: c.profile.name, 
+                      date: sale.date, 
+                      value: comm, 
+                      subtitle: `${sale.productName} ($${sale.premiumAmount})`,
+                      client: c
+                  };
+                  commissionList.push(item);
+                  closureList.push({ ...item, value: sale.premiumAmount });
               }
           });
           if (c.milestones?.contactedAt) {
               const d = new Date(c.milestones.contactedAt);
-              if (d >= start && d <= end) calls++;
+              if (d >= start && d <= end) {
+                  calls++;
+                  callList.push({ id: c.id, name: c.profile.name, date: c.milestones.contactedAt, value: 0, subtitle: c.phone, client: c });
+              }
           }
           if (c.milestones?.appointmentSetAt) {
               const d = new Date(c.milestones.appointmentSetAt);
-              if (d >= start && d <= end) apptsSet++;
+              if (d >= start && d <= end) {
+                  apptsSet++;
+                  apptSetList.push({ id: c.id, name: c.profile.name, date: c.milestones.appointmentSetAt, value: 0, subtitle: 'Appointment Set', client: c });
+              }
           }
           if (c.milestones?.appointmentMetAt) {
               const d = new Date(c.milestones.appointmentMetAt);
-              if (d >= start && d <= end) apptsMet++;
+              if (d >= start && d <= end) {
+                  apptsMet++;
+                  apptMetList.push({ id: c.id, name: c.profile.name, date: c.milestones.appointmentMetAt, value: 0, subtitle: 'Appointment Met', client: c });
+              }
           }
       });
-      return { commission, closures, calls, apptsSet, apptsMet };
+
+      // Sort lists by date descending
+      const sortDesc = (a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime();
+      commissionList.sort(sortDesc);
+      closureList.sort(sortDesc);
+      callList.sort(sortDesc);
+      apptSetList.sort(sortDesc);
+      apptMetList.sort(sortDesc);
+
+      return { 
+          commission, closures, calls, apptsSet, apptsMet,
+          commissionList, closureList, callList, apptSetList, apptMetList
+      };
   };
 
-  const currentStats = useMemo(() => calculatePeriodStats(0), [clients, timeFilter]);
-  const prevStats = useMemo(() => calculatePeriodStats(1), [clients, timeFilter]);
+  const currentStats = useMemo(() => calculatePeriodStats(0), [clients, timeFilter, advisorBanding]);
+  const prevStats = useMemo(() => calculatePeriodStats(1), [clients, timeFilter, advisorBanding]);
 
   const getGrowth = (curr: number, prev: number) => {
       if (prev === 0) return curr > 0 ? 100 : 0;
@@ -152,12 +238,82 @@ const DashboardTab: React.FC<DashboardTabProps> = ({ user, clients, onNewClient 
       )
   };
 
+  const cardClasses = "bg-white p-5 rounded-xl border border-slate-200 shadow-sm hover:shadow-md hover:border-indigo-300 hover:ring-2 hover:ring-indigo-50 transition-all cursor-pointer group active:scale-[0.98]";
+
   return (
     <div className="p-6 space-y-6 animate-fade-in pb-20 md:pb-6">
+        {/* GOAL TRACKER MODULE */}
+        <div className="bg-slate-900 rounded-2xl p-6 text-white shadow-xl relative overflow-hidden">
+            <div className="absolute top-0 right-0 w-64 h-64 bg-emerald-500/20 rounded-full blur-[80px]"></div>
+            
+            <div className="relative z-10 grid grid-cols-1 lg:grid-cols-4 gap-8 items-center">
+                {/* 1. Main Progress */}
+                <div className="lg:col-span-1">
+                    <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-1">Financial Year Goal</h3>
+                    <div className="text-4xl font-black tracking-tight">{fmtSGD(user.annualGoal || 120000)}</div>
+                    <div className="mt-4 w-full bg-slate-800 rounded-full h-3 overflow-hidden">
+                        <div 
+                            className="h-full bg-gradient-to-r from-emerald-400 to-teal-500 transition-all duration-1000 ease-out relative"
+                            style={{ width: `${fyStats.percentComplete}%` }}
+                        >
+                            <div className="absolute inset-0 bg-white/20 animate-pulse"></div>
+                        </div>
+                    </div>
+                    <div className="flex justify-between mt-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                        <span>{fyStats.percentComplete.toFixed(1)}% Achieved</span>
+                        <span>{fmtSGD(fyStats.totalRevenue)}</span>
+                    </div>
+                </div>
+
+                {/* 2. Run Rate Stats */}
+                <div className="lg:col-span-2 grid grid-cols-3 gap-4 divide-x divide-white/10">
+                    <div className="px-4 text-center">
+                        <div className="text-[10px] text-slate-400 uppercase font-bold mb-1">Monthly Target</div>
+                        <div className="text-xl font-bold text-white">
+                            {fmtSGD((user.annualGoal || 120000) / 12)}
+                        </div>
+                        <div className="text-[9px] text-slate-500 mt-1">Run Rate Required</div>
+                    </div>
+                    <div className="px-4 text-center">
+                        <div className="text-[10px] text-slate-400 uppercase font-bold mb-1">YTD Status</div>
+                        <div className={`text-xl font-bold ${fyStats.gap >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                            {fyStats.gap >= 0 ? '+' : ''}{fmtSGD(fyStats.gap)}
+                        </div>
+                        <div className="text-[9px] text-slate-500 mt-1">{fyStats.gap >= 0 ? 'Ahead of Schedule' : 'Behind Schedule'}</div>
+                    </div>
+                    <div className="px-4 text-center">
+                        <div className="text-[10px] text-slate-400 uppercase font-bold mb-1">Time Remaining</div>
+                        <div className="text-xl font-bold text-white">{fyStats.daysLeft} Days</div>
+                        <div className="text-[9px] text-slate-500 mt-1">End of Fin. Year</div>
+                    </div>
+                </div>
+
+                {/* 3. Motivation/Gap */}
+                <div className="lg:col-span-1 bg-white/5 rounded-xl p-4 border border-white/10 backdrop-blur-sm">
+                    {fyStats.gap < 0 ? (
+                        <div>
+                            <div className="text-rose-400 text-xs font-bold uppercase mb-1">⚠️ Gap Detected</div>
+                            <p className="text-sm font-medium leading-snug">
+                                You are <span className="text-rose-300 font-bold">{fmtSGD(Math.abs(fyStats.gap))}</span> off pace. Close <span className="text-white font-bold underline">2 extra cases</span> this month to realign.
+                            </p>
+                        </div>
+                    ) : (
+                        <div>
+                            <div className="text-emerald-400 text-xs font-bold uppercase mb-1">🚀 Excellent Pace</div>
+                            <p className="text-sm font-medium leading-snug">
+                                You are <span className="text-emerald-300 font-bold">{fmtSGD(fyStats.gap)}</span> ahead! You're on track to hit <span className="text-white font-bold">{fmtSGD((user.annualGoal || 120000) * 1.1)}</span> this year.
+                            </p>
+                        </div>
+                    )}
+                </div>
+            </div>
+        </div>
+
+        {/* Existing Dashboard Controls */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
             <div>
                 <h1 className="text-2xl font-bold text-slate-800">Performance Pulse</h1>
-                <p className="text-slate-500">Tracking against past performance.</p>
+                <p className="text-slate-500">Activity & Pipeline tracking.</p>
             </div>
             <div className="flex bg-white rounded-lg border border-slate-200 p-1 shadow-sm overflow-x-auto relative z-20">
                 {['Daily', 'Weekly', 'Monthly', 'Quarterly', 'Yearly'].map(tf => (
@@ -167,31 +323,65 @@ const DashboardTab: React.FC<DashboardTabProps> = ({ user, clients, onNewClient 
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-            <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow">
-                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Commission</p>
+            <div 
+                onClick={() => setActiveBreakdown({ title: 'Commission Breakdown', items: currentStats.commissionList, type: 'currency' })}
+                className={cardClasses}
+            >
+                <div className="flex justify-between items-start">
+                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Commission</p>
+                    <span className="opacity-0 group-hover:opacity-100 text-indigo-500 text-xs font-bold transition-opacity">View ↗</span>
+                </div>
                 <p className="text-3xl font-bold text-slate-900">${currentStats.commission.toLocaleString(undefined, { maximumFractionDigits: 0 })}</p>
                 <GrowthBadge curr={currentStats.commission} prev={prevStats.commission} prefix="$" />
             </div>
-            <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow">
-                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Closures</p>
+            
+            <div 
+                onClick={() => setActiveBreakdown({ title: 'Closures Breakdown', items: currentStats.closureList, type: 'currency' })}
+                className={cardClasses}
+            >
+                <div className="flex justify-between items-start">
+                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Closures</p>
+                    <span className="opacity-0 group-hover:opacity-100 text-indigo-500 text-xs font-bold transition-opacity">View ↗</span>
+                </div>
                 <p className="text-3xl font-bold text-slate-900">{currentStats.closures}</p>
                 <GrowthBadge curr={currentStats.closures} prev={prevStats.closures} />
             </div>
-            <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow">
-                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Held Rate</p>
+
+            <div 
+                onClick={() => setActiveBreakdown({ title: 'Appointments Met (Held)', items: currentStats.apptMetList, type: 'text' })}
+                className={cardClasses}
+            >
+                <div className="flex justify-between items-start">
+                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Held Rate</p>
+                    <span className="opacity-0 group-hover:opacity-100 text-indigo-500 text-xs font-bold transition-opacity">View Met ↗</span>
+                </div>
                 <p className="text-3xl font-bold text-slate-900">{heldRate.toFixed(0)}%</p>
                 <GrowthBadge curr={heldRate} prev={prevHeldRate} suffix="%" />
             </div>
-             <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow relative overflow-hidden">
-                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Calls Made</p>
+
+             <div 
+                onClick={() => setActiveBreakdown({ title: 'Clients Contacted', items: currentStats.callList, type: 'text' })}
+                className={`${cardClasses} relative overflow-hidden`}
+            >
+                <div className="flex justify-between items-start">
+                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Calls Made</p>
+                    <span className="opacity-0 group-hover:opacity-100 text-indigo-500 text-xs font-bold transition-opacity">View ↗</span>
+                </div>
                 <div className="flex items-baseline gap-1">
                     <p className="text-3xl font-bold text-slate-900">{currentStats.calls}</p>
                     <span className="text-sm text-slate-400 font-medium">/ {benchmarkAnalysis.targetCalls}</span>
                 </div>
                 <div className={`mt-2 text-xs font-medium inline-block px-2 py-1 rounded ${benchmarkAnalysis.callDeficit > 0 ? 'text-rose-600 bg-rose-50' : 'text-emerald-600 bg-emerald-50'}`}>{benchmarkAnalysis.callDeficit > 0 ? `⚠ -${benchmarkAnalysis.callDeficit}` : '✓ On Track'}</div>
             </div>
-            <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow">
-                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Appts Set</p>
+
+            <div 
+                onClick={() => setActiveBreakdown({ title: 'Appointments Set', items: currentStats.apptSetList, type: 'text' })}
+                className={cardClasses}
+            >
+                <div className="flex justify-between items-start">
+                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Appts Set</p>
+                    <span className="opacity-0 group-hover:opacity-100 text-indigo-500 text-xs font-bold transition-opacity">View ↗</span>
+                </div>
                 <div className="flex items-baseline gap-1">
                     <p className="text-3xl font-bold text-slate-900">{currentStats.apptsSet}</p>
                     <span className="text-sm text-slate-400 font-medium">/ {benchmarkAnalysis.targetAppts}</span>
@@ -242,6 +432,52 @@ const DashboardTab: React.FC<DashboardTabProps> = ({ user, clients, onNewClient 
                 </div>
             </div>
         </div>
+
+        {/* Breakdown Modal */}
+        {activeBreakdown && (
+            <Modal 
+                isOpen={!!activeBreakdown} 
+                onClose={() => setActiveBreakdown(null)} 
+                title={`${activeBreakdown.title} (${timeFilter})`}
+                footer={<Button variant="ghost" onClick={() => setActiveBreakdown(null)}>Close Breakdown</Button>}
+            >
+                <div className="max-h-96 overflow-y-auto custom-scrollbar">
+                    {activeBreakdown.items.length === 0 ? (
+                        <div className="text-center py-10 text-slate-400 italic text-sm">No data recorded for this period.</div>
+                    ) : (
+                        <table className="w-full text-sm">
+                            <thead className="bg-slate-50 sticky top-0 z-10 border-b border-slate-100">
+                                <tr>
+                                    <th className="px-4 py-3 text-left font-bold text-slate-500 text-xs uppercase tracking-wider">Date</th>
+                                    <th className="px-4 py-3 text-left font-bold text-slate-500 text-xs uppercase tracking-wider">Client</th>
+                                    <th className="px-4 py-3 text-right font-bold text-slate-500 text-xs uppercase tracking-wider">
+                                        {activeBreakdown.type === 'currency' ? 'Value' : 'Details'}
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-50">
+                                {activeBreakdown.items.map((item, i) => (
+                                    <tr key={i} className="hover:bg-slate-50 transition-colors group cursor-pointer" onClick={() => { onLoadClient(item.client); setActiveBreakdown(null); }}>
+                                        <td className="px-4 py-3 text-slate-500 font-mono text-xs">{fmtDateTime(item.date)}</td>
+                                        <td className="px-4 py-3 font-bold text-slate-800 group-hover:text-indigo-600 transition-colors">{item.name}</td>
+                                        <td className="px-4 py-3 text-right font-medium">
+                                            {activeBreakdown.type === 'currency' ? (
+                                                <div className="flex flex-col items-end">
+                                                    <span className="text-emerald-600 font-bold">{fmtSGD(item.value)}</span>
+                                                    <span className="text-[10px] text-slate-400">{item.subtitle}</span>
+                                                </div>
+                                            ) : (
+                                                <span className="text-slate-500 text-xs">{item.subtitle}</span>
+                                            )}
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    )}
+                </div>
+            </Modal>
+        )}
     </div>
   );
 }

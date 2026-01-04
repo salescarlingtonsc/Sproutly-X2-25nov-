@@ -3,26 +3,36 @@ import React, { useState, useMemo } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, CartesianGrid, PieChart, Pie, Legend } from 'recharts';
 import { Client, Stage, Advisor, Product, Team } from '../../../types';
 import { LeadImporter } from './LeadImporter';
+import Modal from '../../../components/ui/Modal';
+import Button from '../../../components/ui/Button';
+import { Activity } from '../../../lib/db/activities';
+import { fmtSGD } from '../../../lib/helpers';
 
 interface DirectorDashboardProps {
   clients: Client[];
   advisors: Advisor[];
   teams: Team[];
   currentUser: Advisor;
-  activeSeconds: number;
+  activities: Activity[];
   products: Product[];
   onUpdateClient: (client: Client) => void;
   onImport: (newClients: Client[]) => void;
 }
 
-type TimeFilter = 'Monthly' | 'Quarterly' | 'Yearly' | 'All Time';
+type TimeFilter = 'This Month' | 'Last Month' | 'This Quarter' | 'This Year' | 'All Time';
 const COLORS = ['#3b82f6', '#8b5cf6', '#f59e0b', '#10b981', '#ef4444', '#6366f1'];
 
-export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, advisors, teams, currentUser, activeSeconds, products, onUpdateClient, onImport }) => {
+export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, advisors, teams, currentUser, activities, products, onUpdateClient, onImport }) => {
   const [activeTab, setActiveTab] = useState<'analytics' | 'products' | 'activity' | 'leads'>('analytics');
-  const [timeFilter, setTimeFilter] = useState<TimeFilter>('Monthly');
+  const [timeFilter, setTimeFilter] = useState<TimeFilter>('This Month');
   const [showImporter, setShowImporter] = useState(false);
   const [filterAdvisor, setFilterAdvisor] = useState<string>('all');
+  
+  // Drill-down Modal States
+  const [showActivityBreakdown, setShowActivityBreakdown] = useState(false);
+  const [showVolBreakdown, setShowVolBreakdown] = useState(false);
+  const [showEffBreakdown, setShowEffBreakdown] = useState(false);
+  const [showCloseBreakdown, setShowCloseBreakdown] = useState(false);
 
   // --- Hierarchy Filter Logic ---
   const managedAdvisors = useMemo(() => {
@@ -37,41 +47,150 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
       return clients.filter(c => c.advisorId && managedAdvisorIds.includes(c.advisorId));
   }, [clients, managedAdvisors]);
 
-  // --- Date Filtering Logic ---
-  const filteredClients = useMemo(() => {
-      if (timeFilter === 'All Time') return managedClients;
+  // --- Date Range Engine (The Truth Source) ---
+  const dateRange = useMemo(() => {
       const now = new Date();
-      return managedClients.filter(c => {
-          // Safeguard: Check if milestones exist before accessing properties
-          if (!c.milestones?.createdAt) return false;
-          const d = new Date(c.milestones.createdAt);
-          const diffDays = (now.getTime() - d.getTime()) / (1000 * 3600 * 24);
-          if (timeFilter === 'Monthly') return diffDays <= 30;
-          if (timeFilter === 'Quarterly') return diffDays <= 90;
-          if (timeFilter === 'Yearly') return diffDays <= 365;
-          return true;
-      });
-  }, [managedClients, timeFilter]);
+      const start = new Date();
+      const end = new Date();
+      
+      start.setHours(0,0,0,0);
+      end.setHours(23,59,59,999);
 
-  // --- Analytics Logic ---
-  const leads = filteredClients.length;
-  // Added safeguards (?.milestones)
-  const contacted = filteredClients.filter(c => c.milestones?.contactedAt || ([Stage.PICKED_UP, Stage.APPT_SET, Stage.APPT_MET, Stage.PENDING, Stage.CLOSED] as string[]).includes(c.stage)).length;
-  const apptSet = filteredClients.filter(c => c.milestones?.appointmentSetAt || ([Stage.APPT_SET, Stage.APPT_MET, Stage.PENDING, Stage.CLOSED] as string[]).includes(c.stage)).length;
-  const apptMet = filteredClients.filter(c => c.milestones?.appointmentMetAt || ([Stage.APPT_MET, Stage.PENDING, Stage.CLOSED] as string[]).includes(c.stage)).length;
-  const closed = filteredClients.filter(c => c.stage === Stage.CLOSED || c.milestones?.closedAt).length;
+      if (timeFilter === 'This Month') {
+          start.setDate(1); // 1st of current month
+      } else if (timeFilter === 'Last Month') {
+          start.setMonth(now.getMonth() - 1);
+          start.setDate(1);
+          end.setDate(0); // Last day of previous month
+      } else if (timeFilter === 'This Quarter') {
+          const currQ = Math.floor(now.getMonth() / 3);
+          start.setMonth(currQ * 3);
+          start.setDate(1);
+      } else if (timeFilter === 'This Year') {
+          start.setMonth(0);
+          start.setDate(1);
+      } else {
+          start.setFullYear(2000); // All time
+      }
+      return { start, end };
+  }, [timeFilter]);
 
+  // --- Aggregated Metrics Calculation (Event-Based) ---
+  const breakdownStats = useMemo(() => {
+      return managedAdvisors.map(adv => {
+          const advClients = managedClients.filter(c => c.advisorId === adv.id);
+          
+          let closureVol = 0;
+          let contacted = 0;
+          let apptSet = 0;
+          let apptMet = 0;
+          let closed = 0;
+
+          advClients.forEach(c => {
+              // 1. Sales Volume (Based on Sale Date)
+              (c.sales || []).forEach(sale => {
+                  const saleDate = new Date(sale.date); // or inceptionDate
+                  if (saleDate >= dateRange.start && saleDate <= dateRange.end) {
+                      closureVol += (sale.premiumAmount || 0);
+                      // Only count as 'closed' if the sale happened in this period
+                      // We avoid double counting if multiple policies sold to same client in same period? 
+                      // For now, let's count policies sold as 'closed deals' count or use unique clients.
+                      // Let's stick to unique clients closed in this period for the count.
+                  }
+              });
+
+              // 2. Closed Count (Client Level)
+              if (c.milestones?.closedAt) {
+                  const d = new Date(c.milestones.closedAt);
+                  if (d >= dateRange.start && d <= dateRange.end) closed++;
+              }
+
+              // 3. Contacted
+              if (c.milestones?.contactedAt) {
+                  const d = new Date(c.milestones.contactedAt);
+                  if (d >= dateRange.start && d <= dateRange.end) contacted++;
+              }
+
+              // 4. Appt Set
+              if (c.milestones?.appointmentSetAt) {
+                  const d = new Date(c.milestones.appointmentSetAt);
+                  if (d >= dateRange.start && d <= dateRange.end) apptSet++;
+              }
+
+              // 5. Appt Met
+              if (c.milestones?.appointmentMetAt) {
+                  const d = new Date(c.milestones.appointmentMetAt);
+                  if (d >= dateRange.start && d <= dateRange.end) apptMet++;
+              }
+          });
+
+          // Ratios
+          const efficiency = contacted > 0 ? (apptSet / contacted) * 100 : 0;
+          const closeRate = apptMet > 0 ? (closed / apptMet) * 100 : 0;
+
+          return {
+              advisor: adv,
+              closureVol,
+              contacted,
+              apptSet,
+              apptMet,
+              closed,
+              efficiency,
+              closeRate
+          };
+      }).sort((a, b) => b.closureVol - a.closureVol); 
+  }, [managedAdvisors, managedClients, dateRange]);
+
+  // --- Top Level Totals ---
+  const totalClosureVol = breakdownStats.reduce((acc, curr) => acc + curr.closureVol, 0);
+  const totalContacted = breakdownStats.reduce((acc, curr) => acc + curr.contacted, 0);
+  const totalApptSet = breakdownStats.reduce((acc, curr) => acc + curr.apptSet, 0);
+  const totalApptMet = breakdownStats.reduce((acc, curr) => acc + curr.apptMet, 0);
+  const totalClosed = breakdownStats.reduce((acc, curr) => acc + curr.closed, 0);
+
+  const avgEfficiency = totalContacted > 0 ? (totalApptSet / totalContacted * 100) : 0;
+  const avgCloseRate = totalApptMet > 0 ? (totalClosed / totalApptMet * 100) : 0;
+
+  // --- Funnel Data ---
   const funnelData = [
-    { name: 'Leads', value: leads, fill: '#64748b' },
-    { name: 'Contacted', value: contacted, fill: '#3b82f6' },
-    { name: 'Appt Set', value: apptSet, fill: '#8b5cf6' },
-    { name: 'Appt Met', value: apptMet, fill: '#f59e0b' },
-    { name: 'Closed', value: closed, fill: '#10b981' },
+    { name: 'Contacted', value: totalContacted, fill: '#3b82f6' },
+    { name: 'Appt Set', value: totalApptSet, fill: '#8b5cf6' },
+    { name: 'Appt Met', value: totalApptMet, fill: '#f59e0b' },
+    { name: 'Closed', value: totalClosed, fill: '#10b981' },
   ];
 
-  const contactRatio = leads > 0 ? (contacted / leads * 100).toFixed(1) : 0;
-  const setRatio = contacted > 0 ? (apptSet / contacted * 100).toFixed(1) : 0;
-  const closeRatio = apptMet > 0 ? (closed / apptMet * 100).toFixed(1) : 0;
+  // --- Activity Stats ---
+  const activityStats = useMemo(() => {
+      const stats: Record<string, { duration: number, lastActive: string }> = {};
+      let totalSeconds = 0;
+
+      activities.forEach(act => {
+          const d = new Date(act.created_at);
+          if (d >= dateRange.start && d <= dateRange.end) {
+              if (managedAdvisors.find(a => a.id === act.user_id)) {
+                  if (!stats[act.user_id || 'unknown']) {
+                      stats[act.user_id || 'unknown'] = { duration: 0, lastActive: act.created_at };
+                  }
+                  const duration = act.details?.duration_sec || 0;
+                  stats[act.user_id || 'unknown'].duration += duration;
+                  totalSeconds += duration;
+              }
+          }
+      });
+
+      const breakdown = Object.entries(stats).map(([uid, data]) => {
+          const advisor = managedAdvisors.find(a => a.id === uid);
+          return {
+              id: uid,
+              name: advisor?.name || 'Unknown User',
+              email: advisor?.email,
+              duration: data.duration,
+              lastActive: data.lastActive
+          };
+      }).sort((a,b) => b.duration - a.duration);
+
+      return { totalSeconds, breakdown };
+  }, [activities, managedAdvisors, dateRange]);
 
   const formatTime = (seconds: number) => {
     const hrs = Math.floor(seconds / 3600);
@@ -79,21 +198,24 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
     return `${hrs}h ${mins}m`;
   };
 
-  // --- Product Logic ---
+  // --- Product Logic (Event Based) ---
   const productStats = useMemo(() => {
       const providerRevenue: Record<string, number> = {};
       const productPerformance: Record<string, { count: number, revenue: number, name: string, provider: string }> = {};
 
-      filteredClients.forEach(c => {
+      managedClients.forEach(c => {
           c.sales?.forEach(sale => {
-             const prod = products.find(p => p.id === sale.productId);
-             if (prod) {
-                 providerRevenue[prod.provider] = (providerRevenue[prod.provider] || 0) + sale.premiumAmount;
-                 if (!productPerformance[prod.id]) {
-                     productPerformance[prod.id] = { count: 0, revenue: 0, name: prod.name, provider: prod.provider };
+             const saleDate = new Date(sale.date);
+             if (saleDate >= dateRange.start && saleDate <= dateRange.end) {
+                 const prod = products.find(p => p.id === sale.productId);
+                 if (prod) {
+                     providerRevenue[prod.provider] = (providerRevenue[prod.provider] || 0) + sale.premiumAmount;
+                     if (!productPerformance[prod.id]) {
+                         productPerformance[prod.id] = { count: 0, revenue: 0, name: prod.name, provider: prod.provider };
+                     }
+                     productPerformance[prod.id].count += 1;
+                     productPerformance[prod.id].revenue += sale.premiumAmount;
                  }
-                 productPerformance[prod.id].count += 1;
-                 productPerformance[prod.id].revenue += sale.premiumAmount;
              }
           });
       });
@@ -102,16 +224,12 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
       const topProducts = Object.values(productPerformance).sort((a,b) => b.revenue - a.revenue).slice(0, 10);
 
       return { providerData, topProducts };
-  }, [filteredClients, products]);
+  }, [managedClients, products, dateRange]);
 
-  // --- Pipeline Velocity Logic (Macro) ---
+  // --- Pipeline Velocity (All Time only for accuracy of averages) ---
   const velocityData = React.useMemo(() => {
     const stageDurations: Record<string, number[]> = {};
-    const stagesOrdered = [
-        'New Lead', 'Picked Up', 
-        'NPU 1', 'NPU 2', 'NPU 3', 'NPU 4', 'NPU 5', 'NPU 6',
-        'Appt Set', 'Appt Met', 'Pending Decision'
-    ];
+    const stagesOrdered = ['New Lead', 'Picked Up', 'NPU', 'Appt Set', 'Appt Met', 'Pending Decision'];
 
     managedClients.forEach(c => {
         if (!c.stageHistory || c.stageHistory.length < 2) return;
@@ -122,68 +240,37 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
             const next = sortedHistory[i+1];
             const diffTime = new Date(next.date).getTime() - new Date(current.date).getTime();
             const days = diffTime / (1000 * 3600 * 24);
+            const key = current.stage.includes('NPU') ? 'NPU' : current.stage;
             
-            if (!stageDurations[current.stage]) stageDurations[current.stage] = [];
-            stageDurations[current.stage].push(days);
+            if (!stageDurations[key]) stageDurations[key] = [];
+            stageDurations[key].push(days);
         }
     });
 
     return stagesOrdered.map(stage => {
         const durations = stageDurations[stage] || [];
-        const avg = durations.length > 0 
-            ? durations.reduce((a,b) => a+b, 0) / durations.length 
-            : 0;
+        const avg = durations.length > 0 ? durations.reduce((a,b) => a+b, 0) / durations.length : 0;
         return { name: stage, avgDays: parseFloat(avg.toFixed(1)), count: durations.length };
-    }).filter(d => d.name.includes('NPU') || d.name === 'New Lead' || d.name === 'Picked Up' || d.avgDays > 0);
+    }).filter(d => d.avgDays > 0);
   }, [managedClients]);
 
-  // --- Agent Efficiency Logic (Micro) ---
+  // --- Agent Efficiency ---
   const agentEfficiency = useMemo(() => {
     return managedAdvisors.map(advisor => {
         const advisorClients = clients.filter(c => c.advisorId === advisor.id);
-        
         let newLeadDurations: number[] = [];
-        let npuDurations: number[] = [];
-
         advisorClients.forEach(c => {
-            if (!c.stageHistory || c.stageHistory.length < 2) return;
-            
-            // Sort by date ascending
-            const sortedHistory = [...c.stageHistory].sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-
-            for (let i = 0; i < sortedHistory.length - 1; i++) {
-                const current = sortedHistory[i];
-                const next = sortedHistory[i+1];
-                const diffMs = new Date(next.date).getTime() - new Date(current.date).getTime();
-                const diffHours = diffMs / (1000 * 60 * 60);
-                const diffDays = diffHours / 24;
-
-                // 1. New Lead Response Time
-                if (current.stage === 'New Lead') {
-                    newLeadDurations.push(diffHours);
-                }
-
-                // 2. NPU Stagnation (Time between NPU stages)
-                if (current.stage.includes('NPU')) {
-                    npuDurations.push(diffDays);
-                }
+            // Check milestones for contactedAt to get accurate efficiency regardless of time filter
+            if (c.milestones?.createdAt && c.milestones?.contactedAt) {
+                const diff = new Date(c.milestones.contactedAt).getTime() - new Date(c.milestones.createdAt).getTime();
+                if (diff > 0) newLeadDurations.push(diff / (1000 * 3600));
             }
         });
-
-        const avgResponseHours = newLeadDurations.length > 0 
-            ? newLeadDurations.reduce((a,b) => a+b, 0) / newLeadDurations.length 
-            : 0;
-
-        const avgNpuDays = npuDurations.length > 0
-            ? npuDurations.reduce((a,b) => a+b, 0) / npuDurations.length
-            : 0;
+        const avgResponseHours = newLeadDurations.length > 0 ? newLeadDurations.reduce((a,b) => a+b, 0) / newLeadDurations.length : 0;
         
-        // Rating Logic
         let rating: 'Excellent' | 'Average' | 'Needs Coaching' | 'No Data' = 'No Data';
         if (newLeadDurations.length > 0) {
-            if (avgResponseHours < 4 && avgNpuDays < 5) rating = 'Excellent';
-            else if (avgResponseHours > 24 || avgNpuDays > 14) rating = 'Needs Coaching';
-            else rating = 'Average';
+            rating = avgResponseHours < 4 ? 'Excellent' : avgResponseHours > 24 ? 'Needs Coaching' : 'Average';
         }
 
         return {
@@ -191,25 +278,16 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
             name: advisor.name,
             avatar: advisor.avatar,
             avgResponseHours,
-            avgNpuDays,
             leadsProcessed: newLeadDurations.length,
-            npuMovements: npuDurations.length,
             rating
         };
-    }).sort((a,b) => {
-        // Sort: Active users first, then by speed
-        if (a.leadsProcessed === 0 && b.leadsProcessed > 0) return 1;
-        if (b.leadsProcessed === 0 && a.leadsProcessed > 0) return -1;
-        return a.avgResponseHours - b.avgResponseHours;
-    });
+    }).sort((a,b) => a.avgResponseHours - b.avgResponseHours);
   }, [managedAdvisors, clients]);
 
   // --- Lead Management Logic ---
   const handleAssign = (clientId: string, newAdvisorId: string) => {
     const client = clients.find(c => c.id === clientId);
-    if (client) {
-      onUpdateClient({ ...client, advisorId: newAdvisorId });
-    }
+    if (client) onUpdateClient({ ...client, advisorId: newAdvisorId });
   };
 
   const filteredLeadList = filterAdvisor === 'all' 
@@ -226,6 +304,89 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
         />
       )}
 
+      {/* --- DRILL DOWN MODALS --- */}
+      {showActivityBreakdown && (
+          <Modal isOpen={showActivityBreakdown} onClose={() => setShowActivityBreakdown(false)} title="Team Activity Breakdown" footer={<Button variant="ghost" onClick={() => setShowActivityBreakdown(false)}>Close</Button>}>
+             <div className="max-h-96 overflow-y-auto">
+                <table className="w-full text-sm">
+                   <thead>
+                      <tr className="border-b border-slate-100 text-slate-500 text-xs text-left"><th className="py-2">Advisor</th><th className="py-2 text-right">Time Online</th></tr>
+                   </thead>
+                   <tbody className="divide-y divide-slate-50">
+                      {activityStats.breakdown.map((row, idx) => (
+                         <tr key={idx}><td className="py-3 font-medium text-slate-800">{row.name}</td><td className="py-3 text-right font-bold text-slate-800">{formatTime(row.duration)}</td></tr>
+                      ))}
+                   </tbody>
+                </table>
+             </div>
+          </Modal>
+      )}
+
+      {showVolBreakdown && (
+          <Modal isOpen={showVolBreakdown} onClose={() => setShowVolBreakdown(false)} title="Closure Volume Breakdown" footer={<Button variant="ghost" onClick={() => setShowVolBreakdown(false)}>Close</Button>}>
+             <div className="max-h-96 overflow-y-auto">
+                <table className="w-full text-sm">
+                   <thead>
+                      <tr className="border-b border-slate-100 text-slate-500 text-xs text-left"><th className="py-2">Advisor</th><th className="py-2 text-right">Closed Deals</th><th className="py-2 text-right">Volume</th></tr>
+                   </thead>
+                   <tbody className="divide-y divide-slate-50">
+                      {breakdownStats.sort((a,b) => b.closureVol - a.closureVol).map((row, idx) => (
+                         <tr key={idx} className="hover:bg-slate-50">
+                            <td className="py-3 font-medium text-slate-800">{row.advisor.name}</td>
+                            <td className="py-3 text-right text-slate-500">{row.closed}</td>
+                            <td className="py-3 text-right font-bold text-emerald-600">{fmtSGD(row.closureVol)}</td>
+                         </tr>
+                      ))}
+                   </tbody>
+                </table>
+             </div>
+          </Modal>
+      )}
+
+      {showEffBreakdown && (
+          <Modal isOpen={showEffBreakdown} onClose={() => setShowEffBreakdown(false)} title="Appointment Efficiency" footer={<Button variant="ghost" onClick={() => setShowEffBreakdown(false)}>Close</Button>}>
+             <div className="max-h-96 overflow-y-auto">
+                <table className="w-full text-sm">
+                   <thead>
+                      <tr className="border-b border-slate-100 text-slate-500 text-xs text-left"><th className="py-2">Advisor</th><th className="py-2 text-right">Contacted</th><th className="py-2 text-right">Set</th><th className="py-2 text-right">Rate</th></tr>
+                   </thead>
+                   <tbody className="divide-y divide-slate-50">
+                      {breakdownStats.sort((a,b) => b.efficiency - a.efficiency).map((row, idx) => (
+                         <tr key={idx} className="hover:bg-slate-50">
+                            <td className="py-3 font-medium text-slate-800">{row.advisor.name}</td>
+                            <td className="py-3 text-right text-slate-500">{row.contacted}</td>
+                            <td className="py-3 text-right text-slate-500">{row.apptSet}</td>
+                            <td className={`py-3 text-right font-bold ${row.efficiency < 30 ? 'text-red-500' : 'text-slate-800'}`}>{row.efficiency.toFixed(1)}%</td>
+                         </tr>
+                      ))}
+                   </tbody>
+                </table>
+             </div>
+          </Modal>
+      )}
+
+      {showCloseBreakdown && (
+          <Modal isOpen={showCloseBreakdown} onClose={() => setShowCloseBreakdown(false)} title="Close Rate Performance" footer={<Button variant="ghost" onClick={() => setShowCloseBreakdown(false)}>Close</Button>}>
+             <div className="max-h-96 overflow-y-auto">
+                <table className="w-full text-sm">
+                   <thead>
+                      <tr className="border-b border-slate-100 text-slate-500 text-xs text-left"><th className="py-2">Advisor</th><th className="py-2 text-right">Met</th><th className="py-2 text-right">Closed</th><th className="py-2 text-right">Rate</th></tr>
+                   </thead>
+                   <tbody className="divide-y divide-slate-50">
+                      {breakdownStats.sort((a,b) => b.closeRate - a.closeRate).map((row, idx) => (
+                         <tr key={idx} className="hover:bg-slate-50">
+                            <td className="py-3 font-medium text-slate-800">{row.advisor.name}</td>
+                            <td className="py-3 text-right text-slate-500">{row.apptMet}</td>
+                            <td className="py-3 text-right text-slate-500">{row.closed}</td>
+                            <td className={`py-3 text-right font-bold ${row.closeRate < 20 ? 'text-red-500' : 'text-emerald-600'}`}>{row.closeRate.toFixed(1)}%</td>
+                         </tr>
+                      ))}
+                   </tbody>
+                </table>
+             </div>
+          </Modal>
+      )}
+
       <div className="max-w-6xl mx-auto">
         <header className="mb-8 flex flex-col md:flex-row md:items-end justify-between gap-4">
           <div>
@@ -240,7 +401,7 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
           <div className="flex gap-4">
              {/* Time Filter */}
              <div className="bg-white rounded-lg border border-slate-200 p-1 flex shadow-sm">
-                 {['Monthly', 'Quarterly', 'Yearly', 'All Time'].map(tf => (
+                 {['This Month', 'Last Month', 'This Quarter', 'This Year', 'All Time'].map(tf => (
                     <button
                         key={tf}
                         onClick={() => setTimeFilter(tf as TimeFilter)}
@@ -252,30 +413,15 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
              </div>
 
              <div className="bg-white p-1 rounded-xl border border-slate-200 flex shadow-sm">
-                <button 
-                onClick={() => setActiveTab('analytics')}
-                className={`px-4 py-2 text-sm font-medium rounded-lg transition-all ${activeTab === 'analytics' ? 'bg-slate-900 text-white shadow' : 'text-slate-500 hover:text-slate-900'}`}
-                >
-                Analytics
-                </button>
-                <button 
-                onClick={() => setActiveTab('products')}
-                className={`px-4 py-2 text-sm font-medium rounded-lg transition-all ${activeTab === 'products' ? 'bg-slate-900 text-white shadow' : 'text-slate-500 hover:text-slate-900'}`}
-                >
-                Products
-                </button>
-                <button 
-                onClick={() => setActiveTab('activity')}
-                className={`px-4 py-2 text-sm font-medium rounded-lg transition-all ${activeTab === 'activity' ? 'bg-slate-900 text-white shadow' : 'text-slate-500 hover:text-slate-900'}`}
-                >
-                Activity
-                </button>
-                <button 
-                onClick={() => setActiveTab('leads')}
-                className={`px-4 py-2 text-sm font-medium rounded-lg transition-all ${activeTab === 'leads' ? 'bg-slate-900 text-white shadow' : 'text-slate-500 hover:text-slate-900'}`}
-                >
-                Leads
-                </button>
+                {['analytics', 'products', 'activity', 'leads'].map(tab => (
+                    <button 
+                        key={tab}
+                        onClick={() => setActiveTab(tab as any)}
+                        className={`px-4 py-2 text-sm font-medium rounded-lg transition-all capitalize ${activeTab === tab ? 'bg-slate-900 text-white shadow' : 'text-slate-500 hover:text-slate-900'}`}
+                    >
+                        {tab}
+                    </button>
+                ))}
             </div>
           </div>
         </header>
@@ -284,33 +430,58 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
           <>
             {/* Top Level Stats */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-10">
-              <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-                 <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Team Activity</p>
-                 <p className="text-3xl font-bold text-slate-900">{formatTime(activeSeconds)}</p>
+              <div 
+                className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-all cursor-pointer group"
+                onClick={() => setShowActivityBreakdown(true)}
+              >
+                 <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 flex justify-between">
+                    Team Activity
+                    <span className="opacity-0 group-hover:opacity-100 text-indigo-500">View ↗</span>
+                 </p>
+                 <p className="text-3xl font-bold text-slate-900">{formatTime(activityStats.totalSeconds)}</p>
                  <p className="text-xs text-emerald-600 mt-2 font-medium">Across {managedAdvisors.length} active agents</p>
               </div>
-              <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-                 <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Total Closure Vol</p>
+              <div 
+                className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-all cursor-pointer group"
+                onClick={() => setShowVolBreakdown(true)}
+              >
+                 <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 flex justify-between">
+                    Total Closure Vol
+                    <span className="opacity-0 group-hover:opacity-100 text-indigo-500">View ↗</span>
+                 </p>
                  <p className="text-3xl font-bold text-slate-900">
-                    ${(filteredClients.filter(c => c.stage === Stage.CLOSED).reduce((a, b) => a + (b.value || 0), 0) / 1000).toFixed(1)}k
+                    {fmtSGD(totalClosureVol).split('.')[0]}
                  </p>
                  <p className="text-xs text-slate-400 mt-2">Weighted Pipeline ({timeFilter})</p>
               </div>
-              <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-                 <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Appt Efficiency</p>
-                 <p className="text-3xl font-bold text-slate-900">{setRatio}%</p>
+              <div 
+                className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-all cursor-pointer group"
+                onClick={() => setShowEffBreakdown(true)}
+              >
+                 <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 flex justify-between">
+                    Appt Efficiency
+                    <span className="opacity-0 group-hover:opacity-100 text-indigo-500">View ↗</span>
+                 </p>
+                 <p className="text-3xl font-bold text-slate-900">{avgEfficiency.toFixed(1)}%</p>
                  <p className="text-xs text-slate-500 mt-2">Contact → Appt Rate</p>
               </div>
-              <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-                 <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Close Rate</p>
-                 <p className="text-3xl font-bold text-emerald-600">{closeRatio}%</p>
+              <div 
+                className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-all cursor-pointer group"
+                onClick={() => setShowCloseBreakdown(true)}
+              >
+                 <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 flex justify-between">
+                    Close Rate
+                    <span className="opacity-0 group-hover:opacity-100 text-indigo-500">View ↗</span>
+                 </p>
+                 <p className="text-3xl font-bold text-emerald-600">{avgCloseRate.toFixed(1)}%</p>
                  <p className="text-xs text-slate-500 mt-2">Appt Met → Closed</p>
               </div>
             </div>
 
+            {/* Rest of the Dashboard (Funnel, Products, etc.) */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
               <div className="lg:col-span-2 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-                <h3 className="font-semibold text-slate-800 mb-6">Conversion Funnel</h3>
+                <h3 className="font-semibold text-slate-800 mb-6">Conversion Funnel ({timeFilter})</h3>
                 <div className="h-80 w-full">
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={funnelData} layout="vertical" margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
@@ -336,15 +507,17 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
                    <div className="mb-6">
                      <p className="text-xs text-slate-400 mb-1">Observation</p>
                      <p className="text-sm font-medium leading-relaxed">
-                       High volume of leads ({leads}), but low appointment setting rate ({setRatio}%). 
-                       Agent is making calls but struggling to bridge value.
+                       {avgEfficiency < 20 ? 
+                         `High lead volume, but low appointment setting rate (${avgEfficiency.toFixed(1)}%).` : 
+                         `Strong appointment setting (${avgEfficiency.toFixed(1)}%), maintain close rate.`}
                      </p>
                    </div>
                    <div className="mb-6">
                      <p className="text-xs text-slate-400 mb-1">Recommendation</p>
                      <p className="text-sm font-medium leading-relaxed text-emerald-300">
-                       Focus weekly 1:1 on "The First 30 Seconds". Roleplay the opening hook. 
-                       Review the top 3 drop-off calls.
+                        {avgEfficiency < 20 ? 
+                         'Focus on "The First 30 Seconds". Roleplay the opening hook.' : 
+                         'Shift focus to closing techniques and objection handling.'}
                      </p>
                    </div>
                 </div>
@@ -412,12 +585,12 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
             </div>
         )}
 
-        {/* ACTIVITY TRACKER (Formerly Velocity) */}
+        {/* ACTIVITY TRACKER */}
         {activeTab === 'activity' && (
             <div className="space-y-6">
                 <div className="bg-white p-8 rounded-2xl border border-slate-200 shadow-sm">
                     <div className="mb-8">
-                        <h3 className="text-lg font-bold text-slate-800">Pipeline Velocity</h3>
+                        <h3 className="text-lg font-bold text-slate-800">Pipeline Velocity (All Time)</h3>
                         <p className="text-sm text-slate-500">Average days spent in each stage across all advisors.</p>
                     </div>
                     <div className="h-80 w-full">
@@ -451,7 +624,7 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
                                 <tr className="bg-slate-50 border-b border-slate-100 text-slate-500 uppercase text-xs tracking-wider">
                                     <th className="px-6 py-4 font-semibold">Advisor</th>
                                     <th className="px-6 py-4 font-semibold">Speed to Contact <span className="normal-case font-normal text-slate-400">(New → Contacted)</span></th>
-                                    <th className="px-6 py-4 font-semibold">NPU Velocity <span className="normal-case font-normal text-slate-400">(Avg days per NPU stage)</span></th>
+                                    <th className="px-6 py-4 font-semibold">Leads Processed</th>
                                     <th className="px-6 py-4 font-semibold text-right">Efficiency Rating</th>
                                 </tr>
                             </thead>
@@ -473,23 +646,13 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
                                                             : `${(agent.avgResponseHours / 24).toFixed(1)} days`
                                                         }
                                                     </span>
-                                                    <span className="text-xs text-slate-400">({agent.leadsProcessed} leads)</span>
                                                 </div>
                                             ) : (
                                                 <span className="text-slate-400 text-xs italic">No data</span>
                                             )}
                                         </td>
                                         <td className="px-6 py-4">
-                                            {agent.npuMovements > 0 ? (
-                                                <div className="flex items-center gap-2">
-                                                    <span className={`text-sm font-bold ${agent.avgNpuDays < 5 ? 'text-emerald-600' : agent.avgNpuDays > 14 ? 'text-rose-600' : 'text-slate-700'}`}>
-                                                        {agent.avgNpuDays.toFixed(1)} days
-                                                    </span>
-                                                    <span className="text-xs text-slate-400">avg. dwell time</span>
-                                                </div>
-                                            ) : (
-                                                <span className="text-slate-400 text-xs italic">No NPU history</span>
-                                            )}
+                                            {agent.leadsProcessed}
                                         </td>
                                         <td className="px-6 py-4 text-right">
                                             {agent.rating === 'Excellent' && <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-800">Excellent</span>}

@@ -39,7 +39,8 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   return (
     <ToastContext.Provider value={{ toast }}>
       {children}
-      <div className="fixed bottom-6 right-6 z-[100] flex flex-col gap-2 pointer-events-none">
+      {/* Z-Index boosted to 99999 to override Modals (z-10000) */}
+      <div className="fixed bottom-6 right-6 z-[99999] flex flex-col gap-2 pointer-events-none">
         {toasts.map(t => (
           <Toast key={t.id} {...t} onClose={removeToast} />
         ))}

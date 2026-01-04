@@ -99,33 +99,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               status: isHardcodedAdmin ? 'approved' : 'pending',
               extraSlots: 0,
               modules: [],
-              is_admin: isHardcodedAdmin
+              is_admin: isHardcodedAdmin,
+              isAgencyAdmin: isHardcodedAdmin
            });
            return;
         }
-        throw error;
+        // Don't throw, just use fallback if profile missing
+        console.warn("Profile fetch error:", error.message);
       }
 
       // Auto-create for new users if not found
-      if (!data) {
-        const newProfile = {
-          id: uid,
-          email: email,
-          role: isHardcodedAdmin ? 'admin' : 'user',
-          is_admin: isHardcodedAdmin,
-          subscription_tier: isHardcodedAdmin ? 'diamond' : 'free',
-          status: isHardcodedAdmin ? 'approved' : 'pending',
-          extra_slots: 0,
-          created_at: new Date().toISOString(),
-          modules: []
-        };
-        await supabase.from('profiles').insert(newProfile);
-        data = newProfile as any;
+      if (!data && !error) { 
+         // Logic mainly for first-time login if trigger didn't fire
       }
 
       // Determine final role status (Inclusive Check)
+      // PRIORITY: Hardcoded Email > DB Role
       const isAdminByData = data?.role === 'admin' || data?.is_admin === true;
       const finalRole = (isHardcodedAdmin || isAdminByData) ? 'admin' : (data?.role || 'user');
+      const finalIsAdmin = isHardcodedAdmin || isAdminByData;
       
       const finalTier = finalRole === 'admin' ? 'diamond' : ((data?.subscription_tier as SubscriptionTier) || 'free');
       
@@ -146,11 +138,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         status: finalStatus as 'pending' | 'approved' | 'rejected',
         extraSlots: finalSlots,
         modules: finalModules,
-        is_admin: data?.is_admin || isHardcodedAdmin
+        is_admin: finalIsAdmin,
+        isAgencyAdmin: finalIsAdmin // Ensure this property is set for UI checks
       });
 
     } catch (e) {
       console.error('Error loading profile', e);
+      // Fail-safe for the specific admin email
       const isAdmin = email === ADMIN_EMAIL;
       setUser({ 
         id: uid, 
@@ -160,7 +154,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         status: isAdmin ? 'approved' : 'pending',
         extraSlots: 0,
         modules: [],
-        is_admin: isAdmin
+        is_admin: isAdmin,
+        isAgencyAdmin: isAdmin
       });
     } finally {
       setIsLoading(false);

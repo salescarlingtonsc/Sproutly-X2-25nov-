@@ -3,7 +3,7 @@ import React, { createContext, useContext, useState, useMemo, useEffect, ReactNo
 import { 
   Profile, Expenses, CustomExpense, Child, CpfState, CashflowState, 
   InsuranceState, InvestorState, PropertyState, WealthState, Client, 
-  RetirementSettings, CpfData, CashflowData, Sale, FamilyMember, Policy, Note
+  RetirementSettings, CpfData, CashflowData, Sale, FamilyMember, Policy, Note, ChatMessage, ContactStatus
 } from '../types';
 import { getAge, toNum } from '../lib/helpers';
 import { computeCpf } from '../lib/calculators';
@@ -28,7 +28,7 @@ export const INITIAL_RETIREMENT: RetirementSettings = { initialSavings: '', scen
 export const INITIAL_CRM_STATE = {
   company: '',
   platform: 'Personal',
-  contactStatus: 'Uncontacted' as 'Uncontacted' | 'Attempted' | 'Active',
+  contactStatus: 'new' as ContactStatus,
   momentumScore: 50,
   sales: [] as Sale[],
   familyMembers: [] as FamilyMember[],
@@ -84,6 +84,7 @@ interface ClientContextType {
   wealthState: WealthState;
   retirement: RetirementSettings;
   crmState: typeof INITIAL_CRM_STATE;
+  chatHistory: ChatMessage[];
 
   // Setters
   setProfile: (p: Profile) => void;
@@ -99,6 +100,7 @@ interface ClientContextType {
   setRetirement: (r: RetirementSettings) => void;
   setCrmState: (s: typeof INITIAL_CRM_STATE) => void;
   setOwnerId: (id: string | null) => void; // Added for Admin assignment
+  setChatHistory: (history: ChatMessage[]) => void;
 
   // Derived Data (Calculated)
   age: number;
@@ -136,6 +138,7 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const [wealthState, setWealthState] = useState<WealthState>(INITIAL_WEALTH);
   const [retirement, setRetirement] = useState<RetirementSettings>(INITIAL_RETIREMENT);
   const [crmState, setCrmState] = useState(INITIAL_CRM_STATE);
+  const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
 
   // Sync profile children with children state
   useEffect(() => {
@@ -186,19 +189,23 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     setPropertyState(c.propertyState || INITIAL_PROPERTY);
     setWealthState(c.wealthState || INITIAL_WEALTH);
     setRetirement(c.retirement || INITIAL_RETIREMENT);
+    setChatHistory(c.chatHistory || []);
 
     // Load CRM specific fields
     setCrmState({
       company: c.company || '',
       platform: c.platform || 'Personal',
-      contactStatus: c.contactStatus || 'Uncontacted',
+      contactStatus: c.contactStatus || 'new',
       momentumScore: c.momentumScore || 50,
       sales: c.sales || [],
       familyMembers: c.familyMembers || [],
       policies: c.policies || [],
       notes: c.notes || [],
       goals: c.goals || '',
-      milestones: c.milestones || { createdAt: c.lastUpdated },
+      milestones: {
+        createdAt: c.milestones?.createdAt || c.lastUpdated,
+        ...c.milestones
+      },
       nextAction: c.nextAction || ''
     });
   };
@@ -225,6 +232,7 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     setWealthState(INITIAL_WEALTH);
     setRetirement(INITIAL_RETIREMENT);
     setCrmState(INITIAL_CRM_STATE);
+    setChatHistory([]);
   };
 
   const generateClientObject = (): Client => {
@@ -251,6 +259,7 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       documents,
       _ownerId: ownerId || undefined,
       _ownerEmail: ownerEmail || undefined,
+      chatHistory, // Save history
 
       // CRM Top-Level Shortcuts (Derived)
       name: profile.name,
@@ -299,7 +308,8 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       retirement, setRetirement,
       crmState, setCrmState,
       age, cpfData, cashflowData,
-      setOwnerId, // EXPOSED
+      setOwnerId,
+      chatHistory, setChatHistory, // EXPOSED
       loadClient, resetClient, generateClientObject
     }}>
       {children}

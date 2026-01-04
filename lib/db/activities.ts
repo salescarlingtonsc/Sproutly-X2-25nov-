@@ -25,6 +25,7 @@ export const logActivity = async (clientId: string | null, type: string, title: 
       client_id: clientId || SYSTEM_PLACEHOLDER_UUID,
       type,
       title,
+      message: title, // Legacy compatibility: populate message with title
       details: {
         ...details,
         browser: navigator.userAgent.substring(0, 50),
@@ -49,12 +50,13 @@ export const logTabUsage = async (tabId: string, durationSeconds: number) => {
       client_id: SYSTEM_PLACEHOLDER_UUID,
       type: 'system_navigation',
       title: `Agent active in ${tabId}`,
+      message: `Agent active in ${tabId}`, // Legacy compatibility
       details: { tab_id: tabId, duration_sec: durationSeconds }
     });
   } catch (e) {}
 };
 
-export const fetchGlobalActivity = async (): Promise<Activity[]> => {
+export const fetchGlobalActivity = async (limit: number = 100): Promise<Activity[]> => {
   if (!supabase) return [];
   try {
     // Removed recursive join on 'profiles' to resolve stack depth limit exceeded.
@@ -62,7 +64,7 @@ export const fetchGlobalActivity = async (): Promise<Activity[]> => {
       .from('activities')
       .select('*')
       .order('created_at', { ascending: false })
-      .limit(100);
+      .limit(limit);
     
     return error ? [] : data;
   } catch (e) {

@@ -72,7 +72,7 @@ const InvestorTab: React.FC = () => {
             </div>
             
             <div className="flex gap-2 bg-white/5 p-1 rounded-xl w-fit backdrop-blur-sm border border-white/10">
-               {['conservative', 'balanced', 'growth'].map((type) => (
+               {(['conservative', 'balanced', 'growth'] as const).map((type) => (
                   <button
                      key={type}
                      onClick={() => setInvestorState({ ...investorState, portfolioType: type })}

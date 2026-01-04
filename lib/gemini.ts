@@ -259,11 +259,31 @@ export const chatWithFinancialContext = async (history: any[], userMessage: stri
   const ai = getAI();
   const model = useLite ? "gemini-3-flash-preview" : "gemini-3-pro-preview";
   const config = useLite ? {} : { thinkingConfig: { thinkingBudget: 32768 } };
+  
+  const systemInstruction = `
+    You are Sproutly AI, an expert financial advisor co-pilot.
+    Your goal is to help advisors close deals and serve clients better.
+
+    MANDATORY RESPONSE FORMAT (Strictly follow this structure):
+    
+    1. **Direct Answer**: Concise response to the query.
+    2. **Strategic Analysis**: 1-2 bullet points connecting the answer to the client's specific data (income, gaps, family).
+    3. **Suggested Actions**: 2 distinct, actionable steps the advisor should take next.
+    4. **Potential Objection**: Identify one likely objection the client might have and provide a 1-sentence rebuttal.
+
+    FORMATTING RULES:
+    - Use Markdown.
+    - Use **Bold** for headers and emphasis.
+    - Use bullet points for lists.
+    - Keep paragraphs short (max 2-3 sentences).
+    - NEVER output a single large block of text.
+  `;
+
   const chat = ai.chats.create({ 
     model, 
     config: {
       ...config,
-      systemInstruction: "You are the Sproutly Strategic Co-Pilot. You have access to client financial data. Be precise, logical, and helpful."
+      systemInstruction
     }, 
     history: (history || []).map(h => ({ role: h.role === 'user' ? 'user' : 'model', parts: [{ text: h.text }] })) 
   });

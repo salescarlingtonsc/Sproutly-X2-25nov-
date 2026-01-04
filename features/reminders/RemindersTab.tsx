@@ -7,6 +7,7 @@ import ClientDrawer from '../crm/components/ClientDrawer';
 import { useToast } from '../../contexts/ToastContext';
 import { logActivity } from '../../lib/db/activities';
 
+// ... (KEEP REVERSE_STATUS_MAP as is) ...
 const REVERSE_STATUS_MAP: Record<string, string> = {
   'New Lead': 'new',
   'Contacted': 'contacted',
@@ -50,12 +51,28 @@ const RemindersTab: React.FC = () => {
     setIsDrawerOpen(true);
   };
 
+  const handleDeleteClient = async () => {
+      if (!selectedClient) return;
+      // The drawer handles the confirmation dialog UI, but we must handle the logic/errors here
+      try {
+          await db.deleteClient(selectedClient.id);
+          setClients(prev => prev.filter(c => c.id !== selectedClient!.id));
+          setSelectedClient(null);
+          setIsDrawerOpen(false);
+          toast.success("Client deleted successfully.");
+      } catch (e: any) {
+          console.error("Delete Failed:", e);
+          toast.error(`Delete Failed: ${e.message}`);
+          alert(`FAILED TO DELETE: ${e.message}`); // LOUD FAILURE
+      }
+  };
+
+  // ... (Keep handleUpdateClient, handleWhatsApp, ReminderCard, etc.) ...
   const handleUpdateClient = async (id: string, field: string, value: any, section: string = 'root') => {
     if (!selectedClient) return;
     
     let updatedClient = { ...selectedClient };
     
-    // Logic similar to ClientCard to ensure history tracking
     if (field === 'status' && section === 'followUp') {
         const newStatus = value as ContactStatus;
         const newStageName = newStatus === 'new' ? 'New Lead' : 
@@ -93,7 +110,6 @@ const RemindersTab: React.FC = () => {
         logActivity(updatedClient.id, 'status_change', `Status changed to ${newStageName} via Reminders`);
         
     } else {
-        // Standard field update
         if (section === 'root') {
             (updatedClient as any)[field] = value;
         } else if (section === 'profile') {
@@ -105,7 +121,6 @@ const RemindersTab: React.FC = () => {
         }
     }
 
-    // Optimistic Update
     setSelectedClient(updatedClient);
     setClients(prev => prev.map(c => c.id === id ? updatedClient : c));
 
@@ -130,9 +145,6 @@ const RemindersTab: React.FC = () => {
   const now = new Date();
   const currentMonth = now.getMonth();
 
-  // --- FILTERS ---
-
-  // 1. Birthdays
   const birthdayReminders = clients.filter(c => {
     const checkBirthday = (dobStr?: string) => {
         if (!dobStr) return false;
@@ -142,16 +154,14 @@ const RemindersTab: React.FC = () => {
     return checkBirthday(c.profile.dob) || (c.familyMembers || []).some(f => checkBirthday(f.dob));
   });
 
-  // 2. Immediate Attention (NPU Overdue)
   const npuOverdue = clients.filter(c => {
     if (!c.followUp.status?.includes('NPU')) return false;
     const lastDate = c.followUp.lastContactedAt || c.lastUpdated;
     const daysSince = (now.getTime() - new Date(lastDate).getTime()) / (1000 * 3600 * 24);
-    if (c.followUp.status === 'NPU 1') return daysSince > 2; // Strict for NPU 1
-    return daysSince > 5; // Looser for others
+    if (c.followUp.status === 'NPU 1') return daysSince > 2;
+    return daysSince > 5; 
   });
 
-  // 3. Pending Decision
   const pendingOverdue = clients.filter(c => {
     if (c.followUp.status !== 'pending_decision' && c.followUp.status !== 'Pending Decision') return false;
     const lastDate = c.followUp.lastContactedAt || c.lastUpdated;
@@ -159,7 +169,6 @@ const RemindersTab: React.FC = () => {
     return daysSince > 3;
   });
 
-  // 4. Appointments (Next 48h)
   const appointments = clients.filter(c => {
       if (!c.appointments?.firstApptDate) return false;
       const apptDate = new Date(c.appointments.firstApptDate);
@@ -266,7 +275,6 @@ const RemindersTab: React.FC = () => {
             />
         </div>
 
-        {/* Client Management Drawer Integration */}
         {selectedClient && (
             <ClientDrawer 
                 isOpen={isDrawerOpen}
@@ -275,7 +283,7 @@ const RemindersTab: React.FC = () => {
                 onUpdateField={handleUpdateClient}
                 onStatusUpdate={(c, s) => handleUpdateClient(c.id, 'status', s, 'followUp')}
                 onOpenFullProfile={() => { /* Navigate to Profile Logic */ }}
-                onDelete={() => {}} // Read-only here mostly, prevention of accidental delete
+                onDelete={handleDeleteClient}
             />
         )}
     </div>
