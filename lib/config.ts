@@ -46,7 +46,7 @@ export const TAB_DEFINITIONS = [
   { id: 'vision', label: 'Vision Board', icon: '🎥' },
   { id: 'analytics', label: 'Intelligence', icon: '🧠' },
   { id: 'report', label: 'Deliverable', icon: '📄' }, 
-  { id: 'admin', label: 'Admin', icon: '🔧' }
+  { id: 'admin', label: 'Management', icon: '🔧' }
 ];
 
 export const TAB_GROUPS = [
@@ -101,16 +101,18 @@ export const canAccessTab = (user: UserProfile | null, tabId: string): boolean =
   
   // Cast role to string to avoid type overlap errors if UserRole definition is narrowed elsewhere
   const role = user.role as string;
-  const isAdmin = role === 'admin' || user.is_admin === true;
+  const isSuperAdmin = role === 'admin' || user.is_admin === true;
+  const isManagement = isSuperAdmin || role === 'director' || role === 'manager';
 
-  if (!isApproved && !isAdmin) {
+  if (!isApproved && !isSuperAdmin) {
      return tabId === 'disclaimer';
   }
   
-  if (isAdmin) return true;
+  if (isSuperAdmin) return true;
   
-  if (tabId === 'admin' && role === 'viewer') return true;
-  if (tabId === 'admin' && !isAdmin) return false;
+  if (tabId === 'admin') {
+      return isManagement || role === 'viewer';
+  }
   
   if (user.modules && Array.isArray(user.modules) && user.modules.length > 0) {
     if (user.modules.includes(tabId)) return true;

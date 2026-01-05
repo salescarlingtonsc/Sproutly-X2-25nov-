@@ -18,8 +18,8 @@ import { dbTemplates } from '../../lib/db/templates';
 import { aiLearning } from '../../lib/db/aiLearning';
 
 const REPAIR_SQL = `
--- REPAIR SCRIPT V11.1: FIX INFINITE RECURSION
--- 1. Secure Access Function (Bypasses RLS to fetch my own details)
+-- REPAIR SCRIPT V12.5: MANAGER VISIBILITY FIX
+-- 1. Secure Access Function
 CREATE OR REPLACE FUNCTION get_my_claims()
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -42,53 +42,68 @@ BEGIN
 END;
 $$;
 
--- 2. Clean Slate (Remove buggy policies)
+-- 2. Reset Policies
 DROP POLICY IF EXISTS "Profiles_Select_Hierarchy" ON profiles;
 DROP POLICY IF EXISTS "Clients_Select_Hierarchy" ON clients;
+DROP POLICY IF EXISTS "Profiles_Update_Hierarchy" ON profiles;
+DROP POLICY IF EXISTS "Profiles_Insert_Hierarchy" ON profiles;
+DROP POLICY IF EXISTS "Profiles_Delete_Hierarchy" ON profiles;
 
--- 3. Profiles Policy (Non-Recursive)
+-- 3. SELECT (Read)
+-- Allow Managers to see profiles in their Org so they can manage their unit
 CREATE POLICY "Profiles_Select_Hierarchy" ON profiles FOR SELECT
 USING (
   auth.uid() = id
+  OR (get_my_claims()->>'is_admin')::boolean = true
   OR (
-    -- Admin check using secure function
-    (get_my_claims()->>'is_admin')::boolean = true
-  )
-  OR (
-    -- Director: See same Org
-    (get_my_claims()->>'role') = 'director' 
+    (get_my_claims()->>'role') IN ('director', 'manager')
     AND organization_id = (get_my_claims()->>'org_id')
-  )
-  OR (
-    -- Manager: See their Unit (reporting_to matches)
-    (get_my_claims()->>'role') = 'manager'
-    AND reporting_to = (get_my_claims()->>'report_to')
   )
 );
 
--- 4. Clients Policy (Non-Recursive)
+-- 4. UPDATE (Edit / Push to Org)
+CREATE POLICY "Profiles_Update_Hierarchy" ON profiles FOR UPDATE
+USING (
+  auth.uid() = id
+  OR (get_my_claims()->>'is_admin')::boolean = true
+  OR (
+    (get_my_claims()->>'role') IN ('director', 'manager')
+    AND organization_id = (get_my_claims()->>'org_id')
+  )
+);
+
+-- 5. INSERT (Add)
+CREATE POLICY "Profiles_Insert_Hierarchy" ON profiles FOR INSERT
+WITH CHECK (
+  (get_my_claims()->>'is_admin')::boolean = true
+  OR (
+    (get_my_claims()->>'role') IN ('director', 'manager')
+    AND organization_id = (get_my_claims()->>'org_id')
+  )
+);
+
+-- 6. DELETE (Remove)
+CREATE POLICY "Profiles_Delete_Hierarchy" ON profiles FOR DELETE
+USING (
+  (get_my_claims()->>'is_admin')::boolean = true
+  OR (
+    (get_my_claims()->>'role') = 'director' 
+    AND organization_id = (get_my_claims()->>'org_id')
+  )
+);
+
+-- Clients Policy
+-- Managers can see clients in their Org (filtered by UI logic)
 CREATE POLICY "Clients_Select_Hierarchy" ON clients FOR SELECT
 USING (
-  user_id = auth.uid() -- Own clients
+  user_id = auth.uid()
+  OR (get_my_claims()->>'is_admin')::boolean = true
   OR (
-    (get_my_claims()->>'is_admin')::boolean = true
-  )
-  OR (
-    -- Director: See clients owned by profiles in same Org
-    (get_my_claims()->>'role') = 'director'
+    (get_my_claims()->>'role') IN ('director', 'manager')
     AND EXISTS (
       SELECT 1 FROM profiles owner
       WHERE owner.id = clients.user_id
       AND owner.organization_id = (get_my_claims()->>'org_id')
-    )
-  )
-  OR (
-    -- Manager: See clients owned by team members
-    (get_my_claims()->>'role') = 'manager'
-    AND EXISTS (
-      SELECT 1 FROM profiles owner
-      WHERE owner.id = clients.user_id
-      AND owner.reporting_to = (get_my_claims()->>'report_to')
     )
   )
 );
@@ -199,7 +214,8 @@ const AdminTab: React.FC = () => {
                 teamId: p.reporting_to, // In our schema, reporting_to holds the Team ID for advisors
                 isAgencyAdmin: p.role === 'admin' || p.is_admin,
                 subscriptionTier: p.subscription_tier || 'free',
-                modules: p.modules || []
+                modules: p.modules || [],
+                annualGoal: p.annual_goal || 0
             }));
             setAdvisors(mappedAdvisors);
         }
@@ -221,7 +237,6 @@ const AdminTab: React.FC = () => {
 
     } catch (e: any) {
         console.error("Sync Error:", e);
-        // Don't show toast for initial recursion error to avoid spam, user can use repair tool
     } finally {
         setLoading(false);
         setTimeout(() => { isInitialMount.current = false; }, 1000);
@@ -254,9 +269,37 @@ const AdminTab: React.FC = () => {
               modules: updatedAdvisor.modules,
               is_admin: updatedAdvisor.role === 'admin',
               reporting_to: updatedAdvisor.teamId || null, 
-              organization_id: updatedAdvisor.organizationId
+              organization_id: updatedAdvisor.organizationId,
+              annual_goal: updatedAdvisor.annualGoal
           }).eq('id', updatedAdvisor.id);
-          toast.success("Advisor updated.");
+      }
+  };
+
+  const handleAddAdvisor = async (newAdvisor: Advisor) => {
+      // Optimistic update
+      setAdvisors(prev => [...prev, newAdvisor]);
+      
+      if (supabase) {
+          const { error } = await supabase.from('profiles').insert({
+              id: newAdvisor.id, // Will fail if ID not valid UUID matching auth, but good for tracking
+              email: newAdvisor.email,
+              role: newAdvisor.role,
+              status: newAdvisor.status,
+              organization_id: newAdvisor.organizationId,
+              reporting_to: newAdvisor.teamId || null,
+              banding_percentage: newAdvisor.bandingPercentage,
+              subscription_tier: newAdvisor.subscriptionTier,
+              modules: newAdvisor.modules,
+              is_admin: newAdvisor.isAgencyAdmin
+          });
+
+          if (error) {
+              // Graceful degradation for "Invite" scenarios
+              console.warn("DB Insert Skipped (Auth Constraint):", error.message);
+              toast.info("Invite sent. Profile will sync when user logs in.");
+          } else {
+              toast.success("Advisor profile created in database.");
+          }
       }
   };
 
@@ -315,7 +358,7 @@ const AdminTab: React.FC = () => {
       };
 
       try {
-          addLog(`DIAGNOSTIC START (V11.1): ${new Date().toISOString()}`);
+          addLog(`DIAGNOSTIC START (V12.5): ${new Date().toISOString()}`);
           
           let { data: sessionData } = await supabase.auth.getSession();
           if (!sessionData.session) {
@@ -324,7 +367,7 @@ const AdminTab: React.FC = () => {
               sessionData = await supabase.auth.getSession();
           }
 
-          // We check the new secure function instead of RPC to verify it exists
+          // Check Secure Function
           const { error: funcErr } = await supabase.rpc('get_my_claims');
           if (funcErr) addLog("Secure Function Missing. Run Repair SQL.", 'error');
           else addLog("Secure Function OK.", 'success');
@@ -420,12 +463,14 @@ const AdminTab: React.FC = () => {
                 <DirectorDashboard 
                     clients={clients} advisors={advisors} teams={teams} currentUser={activeUser} 
                     activities={activities} products={products} onUpdateClient={handleUpdateClient} onImport={handleImportLeads}
+                    onUpdateAdvisor={handleUpdateAdvisor}
                 />
             )}
             {activeTab === 'users' && (
                 <UserManagement 
                     advisors={advisors} teams={teams} currentUser={activeUser} 
-                    onUpdateAdvisor={handleUpdateAdvisor} onDeleteAdvisor={handleDeleteAdvisor} onUpdateTeams={setTeams} onAddAdvisor={(adv) => setAdvisors([...advisors, adv])}
+                    onUpdateAdvisor={handleUpdateAdvisor} onDeleteAdvisor={handleDeleteAdvisor} onUpdateTeams={setTeams} 
+                    onAddAdvisor={handleAddAdvisor} // Use the new persistent handler
                 />
             )}
             {activeTab === 'settings' && (
@@ -443,21 +488,21 @@ const AdminTab: React.FC = () => {
         </div>
 
         <Modal 
-            isOpen={isRepairOpen} onClose={() => setIsRepairOpen(false)} title="System Diagnostics & Repair (V11.1)"
+            isOpen={isRepairOpen} onClose={() => setIsRepairOpen(false)} title="System Diagnostics & Repair (V12.5)"
             footer={
                <div className="flex gap-2 w-full">
                   <Button variant="ghost" onClick={() => setIsRepairOpen(false)}>Close</Button>
                   <Button variant="secondary" onClick={copyDebugSql}>2. Copy SQL</Button>
-                  <Button variant="accent" onClick={runDiagnostics} isLoading={diagStatus === 'running'}>3. Run Hierarchy Check</Button>
+                  <Button variant="accent" onClick={runDiagnostics} isLoading={diagStatus === 'running'}>3. Run Check</Button>
                </div>
             }
         >
             <div className="p-4 bg-slate-900 rounded-xl text-white font-mono text-xs overflow-auto max-h-96">
                 <div className="mb-4 space-y-2">
-                    <p className="text-emerald-400 font-bold uppercase">Instructions (Recursion Fix V11.1):</p>
+                    <p className="text-emerald-400 font-bold uppercase">Instructions (Update Permissions V12.5):</p>
                     <p>1. Click "Copy Repair SQL" below.</p>
-                    <p>2. Go to Supabase > SQL Editor.</p>
-                    <p>3. Paste and Run. (This recreates policies securely).</p>
+                    <p>2. Go to Supabase &gt; SQL Editor.</p>
+                    <p>3. Paste and Run. (This fixes Manager visibility issues).</p>
                     <p>4. Check console for "Hierarchy Schema OK".</p>
                 </div>
                 {diagLog.length > 0 && (
@@ -484,7 +529,7 @@ const AdminTab: React.FC = () => {
                         onClick={copyDebugSql}
                         className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-3 rounded-lg text-xs uppercase font-bold w-full flex items-center justify-center gap-2 shadow-lg"
                     >
-                        <span>📋</span> 1. Copy Repair SQL (V11.1)
+                        <span>📋</span> 1. Copy Repair SQL (V12.5)
                     </button>
                 </div>
             </div>

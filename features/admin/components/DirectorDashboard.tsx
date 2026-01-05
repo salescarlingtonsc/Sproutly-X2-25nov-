@@ -7,6 +7,7 @@ import Modal from '../../../components/ui/Modal';
 import Button from '../../../components/ui/Button';
 import { Activity } from '../../../lib/db/activities';
 import { fmtSGD } from '../../../lib/helpers';
+import { useToast } from '../../../contexts/ToastContext';
 
 interface DirectorDashboardProps {
   clients: Client[];
@@ -17,15 +18,18 @@ interface DirectorDashboardProps {
   products: Product[];
   onUpdateClient: (client: Client) => void;
   onImport: (newClients: Client[]) => void;
+  onUpdateAdvisor: (advisor: Advisor) => void;
 }
 
 type TimeFilter = 'This Month' | 'Last Month' | 'This Quarter' | 'This Year' | 'All Time';
 const COLORS = ['#3b82f6', '#8b5cf6', '#f59e0b', '#10b981', '#ef4444', '#6366f1'];
 
-export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, advisors, teams, currentUser, activities, products, onUpdateClient, onImport }) => {
+export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, advisors, teams, currentUser, activities, products, onUpdateClient, onImport, onUpdateAdvisor }) => {
+  const toast = useToast();
   const [activeTab, setActiveTab] = useState<'analytics' | 'products' | 'activity' | 'leads'>('analytics');
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('This Month');
   const [showImporter, setShowImporter] = useState(false);
+  const [showGoalSetter, setShowGoalSetter] = useState(false);
   const [filterAdvisor, setFilterAdvisor] = useState<string>('all');
   
   // Drill-down Modal States
@@ -33,6 +37,9 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
   const [showVolBreakdown, setShowVolBreakdown] = useState(false);
   const [showEffBreakdown, setShowEffBreakdown] = useState(false);
   const [showCloseBreakdown, setShowCloseBreakdown] = useState(false);
+
+  // Goal Setting State
+  const [goalUpdates, setGoalUpdates] = useState<Record<string, number>>({});
 
   // --- Hierarchy Filter Logic ---
   const managedAdvisors = useMemo(() => {
@@ -92,10 +99,6 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
                   const saleDate = new Date(sale.date); // or inceptionDate
                   if (saleDate >= dateRange.start && saleDate <= dateRange.end) {
                       closureVol += (sale.premiumAmount || 0);
-                      // Only count as 'closed' if the sale happened in this period
-                      // We avoid double counting if multiple policies sold to same client in same period? 
-                      // For now, let's count policies sold as 'closed deals' count or use unique clients.
-                      // Let's stick to unique clients closed in this period for the count.
                   }
               });
 
@@ -290,6 +293,28 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
     if (client) onUpdateClient({ ...client, advisorId: newAdvisorId });
   };
 
+  // --- Goal Setting Logic ---
+  const handleGoalChange = (advisorId: string, val: string) => {
+      setGoalUpdates(prev => ({ ...prev, [advisorId]: parseFloat(val) || 0 }));
+  };
+
+  const handleSaveGoals = async () => {
+      // Process updates
+      const promises = Object.keys(goalUpdates).map(advisorId => {
+          const advisor = managedAdvisors.find(a => a.id === advisorId);
+          if (advisor) {
+              const newGoal = goalUpdates[advisorId];
+              return onUpdateAdvisor({ ...advisor, annualGoal: newGoal });
+          }
+          return Promise.resolve();
+      });
+      
+      await Promise.all(promises);
+      toast.success("Annual targets updated for team.");
+      setShowGoalSetter(false);
+      setGoalUpdates({});
+  };
+
   const filteredLeadList = filterAdvisor === 'all' 
     ? managedClients 
     : managedClients.filter(c => c.advisorId === filterAdvisor);
@@ -335,6 +360,52 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
                             <td className="py-3 font-medium text-slate-800">{row.advisor.name}</td>
                             <td className="py-3 text-right text-slate-500">{row.closed}</td>
                             <td className="py-3 text-right font-bold text-emerald-600">{fmtSGD(row.closureVol)}</td>
+                         </tr>
+                      ))}
+                   </tbody>
+                </table>
+             </div>
+          </Modal>
+      )}
+
+      {/* Goal Setting Modal */}
+      {showGoalSetter && (
+          <Modal 
+            isOpen={showGoalSetter} 
+            onClose={() => setShowGoalSetter(false)} 
+            title="Set Fiscal Year Targets"
+            footer={
+                <div className="flex gap-2 w-full">
+                    <Button variant="ghost" onClick={() => setShowGoalSetter(false)}>Cancel</Button>
+                    <Button variant="primary" onClick={handleSaveGoals}>Save Targets</Button>
+                </div>
+            }
+          >
+             <div className="max-h-96 overflow-y-auto custom-scrollbar">
+                <div className="mb-4 text-xs text-slate-500">Define the Annual Gross Revenue (AGR) target for each advisor in your unit.</div>
+                <table className="w-full text-sm">
+                   <thead className="bg-slate-50 sticky top-0 border-b border-slate-100">
+                      <tr className="text-slate-500 text-[10px] uppercase font-bold text-left"><th className="py-3 px-2">Advisor</th><th className="py-3 px-2 text-right">Annual Goal ($)</th></tr>
+                   </thead>
+                   <tbody className="divide-y divide-slate-50">
+                      {managedAdvisors.map((adv) => (
+                         <tr key={adv.id} className="hover:bg-slate-50">
+                            <td className="py-3 px-2 flex items-center gap-3">
+                                <div className="w-7 h-7 rounded-full bg-slate-200 flex items-center justify-center text-[10px] font-bold text-slate-600">{adv.avatar}</div>
+                                <span className="font-bold text-slate-800 text-xs">{adv.name}</span>
+                            </td>
+                            <td className="py-3 px-2 text-right">
+                                <div className="flex items-center justify-end gap-1">
+                                    <span className="text-slate-400 text-xs">$</span>
+                                    <input 
+                                        type="number" 
+                                        className="w-24 text-right p-1.5 border border-slate-200 rounded text-sm font-bold text-slate-900 focus:ring-2 focus:ring-emerald-500 outline-none bg-white"
+                                        placeholder="0"
+                                        value={goalUpdates[adv.id] !== undefined ? goalUpdates[adv.id] : adv.annualGoal}
+                                        onChange={(e) => handleGoalChange(adv.id, e.target.value)}
+                                    />
+                                </div>
+                            </td>
                          </tr>
                       ))}
                    </tbody>
@@ -423,6 +494,13 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
                     </button>
                 ))}
             </div>
+            
+            <button 
+                onClick={() => setShowGoalSetter(true)}
+                className="bg-emerald-50 text-emerald-700 font-bold px-4 py-2 rounded-lg text-xs hover:bg-emerald-100 transition-colors border border-emerald-100 shadow-sm flex items-center gap-2"
+            >
+                <span>🎯</span> Set Targets
+            </button>
           </div>
         </header>
 
