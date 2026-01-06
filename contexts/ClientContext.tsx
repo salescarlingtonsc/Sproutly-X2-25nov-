@@ -60,6 +60,21 @@ const STATUS_TO_STAGE: Record<string, string> = {
   'npu_6': 'NPU 6'
 };
 
+// Robust UUID Generator (Fallback for non-secure contexts)
+const safeUUID = () => {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    try {
+      return crypto.randomUUID();
+    } catch (e) {
+      // Fallback if crypto.randomUUID fails (e.g. non-secure context)
+    }
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+};
+
 interface ClientContextType {
   // Metadata
   clientId: string | null;
@@ -123,7 +138,7 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   
   // Stable Draft IDs (Prevent Duplicates on Autosave)
   // These persist across renders even if state updates haven't propagated
-  const draftId = useRef<string>(crypto.randomUUID());
+  const draftId = useRef<string>(safeUUID());
   const draftRefCode = useRef<string>(`REF-${Math.floor(Math.random()*10000)}`);
 
   const [lastUpdated, setLastUpdated] = useState<string>(new Date().toISOString());
@@ -229,7 +244,7 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     setClientId(null);
     setClientRef(null);
     // Regenerate stable drafts for new session
-    draftId.current = crypto.randomUUID();
+    draftId.current = safeUUID();
     draftRefCode.current = `REF-${Math.floor(Math.random()*10000)}`;
 
     setLastUpdated(new Date().toISOString());

@@ -156,17 +156,18 @@ export const db = {
       updated_at: new Date().toISOString()
     };
     
-    const { data, error } = await supabase.from('clients').upsert(payload, { onConflict: 'id' }).select().maybeSingle();
+    // UPSERT - Optimized to NOT select return data to avoid RLS read policy blocks for non-admin users
+    const { error } = await supabase.from('clients').upsert(payload, { onConflict: 'id' });
 
     if (error) throw new Error(`Sync Error: ${error.message}`);
 
-    const returnedOwnerId = data?.user_id || validOwnerId;
-    const isSelf = returnedOwnerId === authUser.id;
+    const isSelf = validOwnerId === authUser.id;
 
+    // We reconstruct the return object from payload since we trusted the client-side ID
     return {
-      ...(data?.data || client),
-      id: data?.id || client.id,
-      _ownerId: returnedOwnerId,
+      ...client,
+      id: payload.id,
+      _ownerId: validOwnerId,
       _ownerEmail: isSelf ? authUser.email : (client._ownerEmail || 'Pending Sync...')
     };
   },
