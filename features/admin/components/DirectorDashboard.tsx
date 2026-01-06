@@ -18,7 +18,7 @@ interface DirectorDashboardProps {
   products: Product[];
   onUpdateClient: (client: Client) => void;
   onImport: (newClients: Client[]) => void;
-  onUpdateAdvisor: (advisor: Advisor) => void;
+  onUpdateAdvisor: (advisor: Advisor) => Promise<void>; // Updated to Promise
 }
 
 type TimeFilter = 'This Month' | 'Last Month' | 'This Quarter' | 'This Year' | 'All Time';
@@ -39,7 +39,8 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
   const [showCloseBreakdown, setShowCloseBreakdown] = useState(false);
 
   // Goal Setting State
-  const [goalUpdates, setGoalUpdates] = useState<Record<string, number>>({});
+  const [goalUpdates, setGoalUpdates] = useState<Record<string, string | number>>({});
+  const [isSavingGoals, setIsSavingGoals] = useState(false);
 
   // --- Hierarchy Filter Logic ---
   const managedAdvisors = useMemo(() => {
@@ -295,24 +296,36 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
 
   // --- Goal Setting Logic ---
   const handleGoalChange = (advisorId: string, val: string) => {
-      setGoalUpdates(prev => ({ ...prev, [advisorId]: parseFloat(val) || 0 }));
+      // Allow raw string to support typing (clearing to empty string, typing decimals etc)
+      setGoalUpdates(prev => ({ ...prev, [advisorId]: val }));
   };
 
   const handleSaveGoals = async () => {
-      // Process updates
-      const promises = Object.keys(goalUpdates).map(advisorId => {
-          const advisor = managedAdvisors.find(a => a.id === advisorId);
-          if (advisor) {
-              const newGoal = goalUpdates[advisorId];
-              return onUpdateAdvisor({ ...advisor, annualGoal: newGoal });
-          }
-          return Promise.resolve();
-      });
-      
-      await Promise.all(promises);
-      toast.success("Annual targets updated for team.");
-      setShowGoalSetter(false);
-      setGoalUpdates({});
+      setIsSavingGoals(true);
+      try {
+          // Process updates
+          const promises = Object.keys(goalUpdates).map(advisorId => {
+              const advisor = managedAdvisors.find(a => a.id === advisorId);
+              const rawVal = goalUpdates[advisorId];
+              const numVal = rawVal === '' ? 0 : parseFloat(String(rawVal));
+              
+              if (advisor && !isNaN(numVal)) {
+                  // Ensure we use the parsed number for the update
+                  return onUpdateAdvisor({ ...advisor, annualGoal: numVal });
+              }
+              return Promise.resolve();
+          });
+          
+          await Promise.all(promises);
+          toast.success("Annual targets updated for team.");
+          setShowGoalSetter(false);
+          setGoalUpdates({});
+      } catch (e: any) {
+          console.error("Failed to save goals:", e);
+          toast.error("Failed to save goals: " + e.message);
+      } finally {
+          setIsSavingGoals(false);
+      }
   };
 
   const filteredLeadList = filterAdvisor === 'all' 
@@ -377,7 +390,7 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
             footer={
                 <div className="flex gap-2 w-full">
                     <Button variant="ghost" onClick={() => setShowGoalSetter(false)}>Cancel</Button>
-                    <Button variant="primary" onClick={handleSaveGoals}>Save Targets</Button>
+                    <Button variant="primary" onClick={handleSaveGoals} isLoading={isSavingGoals}>Save Targets</Button>
                 </div>
             }
           >
@@ -401,7 +414,7 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
                                         type="number" 
                                         className="w-24 text-right p-1.5 border border-slate-200 rounded text-sm font-bold text-slate-900 focus:ring-2 focus:ring-emerald-500 outline-none bg-white"
                                         placeholder="0"
-                                        value={goalUpdates[adv.id] !== undefined ? goalUpdates[adv.id] : adv.annualGoal}
+                                        value={goalUpdates[adv.id] !== undefined ? goalUpdates[adv.id] : (adv.annualGoal || '')}
                                         onChange={(e) => handleGoalChange(adv.id, e.target.value)}
                                     />
                                 </div>

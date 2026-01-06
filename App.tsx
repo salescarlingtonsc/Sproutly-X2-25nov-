@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from './contexts/AuthContext';
 import { ClientProvider, useClient } from './contexts/ClientContext';
@@ -40,7 +41,7 @@ import { Client } from './types';
 const AppInner: React.FC = () => {
   const { user, signOut, refreshProfile, isLoading } = useAuth();
   const { 
-    profile, loadClient, resetClient, generateClientObject, 
+    profile, loadClient, resetClient, generateClientObject, promoteToSaved,
     clientId, 
     // Data States for Auto-Save
     expenses, customExpenses,
@@ -136,7 +137,9 @@ const AppInner: React.FC = () => {
   const handleSaveClient = useCallback(async (isAutoSave = false, overrideClient?: Client) => {
      if (document.hidden && isAutoSave) return;
      if (!user || (user.status !== 'approved' && user.status !== 'active')) return;
-     if (isSavingRef.current && !isAutoSave) return;
+     
+     // STRICT LOCK: Prevent re-entry if already saving (even for autosave)
+     if (isSavingRef.current) return;
 
      const clientData = overrideClient || generateClientObject();
      
@@ -159,12 +162,11 @@ const AppInner: React.FC = () => {
         return; 
      }
 
-     if (!isAutoSave) {
-        setSaveStatus('saving');
-        isSavingRef.current = true;
-     }
+     isSavingRef.current = true; // LOCK
+     if (!isAutoSave) setSaveStatus('saving');
 
      try {
+        const isNewClient = !clientId;
         const saved = await db.saveClient(clientData, user.id);
         
         setClients(prev => {
@@ -173,8 +175,14 @@ const AppInner: React.FC = () => {
             return [...prev, saved];
         });
 
+        if (isNewClient) {
+            // CRITICAL: Promote the newly generated ID to state so subsequent autosaves use it
+            promoteToSaved(saved);
+        }
+
         lastSavedJson.current = JSON.stringify(saved);
         setLastSaved(new Date());
+        
         if (!isAutoSave) {
            setSaveStatus('saved');
            setTimeout(() => setSaveStatus('idle'), 2000);
@@ -186,9 +194,9 @@ const AppInner: React.FC = () => {
             toast.error(`Save Failed: ${e.message}`);
         }
      } finally {
-        isSavingRef.current = false;
+        isSavingRef.current = false; // UNLOCK
      }
-  }, [user, generateClientObject, transferringIds]);
+  }, [user, generateClientObject, transferringIds, clientId, promoteToSaved]);
 
   // --- UNIVERSAL AUTO-SAVE LOOP ---
   // Listens to ALL client context state changes

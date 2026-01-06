@@ -82,14 +82,13 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
 
   // Permission Logic
   const isOwner = client._ownerId === currentUser?.id;
-  const isAdmin = 
+  const canDeleteClient = 
     currentUser?.email === 'sales.carlingtonsc@gmail.com' || 
     currentUser?.role === 'admin' || 
     currentUser?.role === 'director' || 
     currentUser?.is_admin === true;
     
-  const canDeleteLogs = isAdmin || isOwner;
-  const canDeleteClient = isAdmin || isOwner;
+  const canDeleteLogs = canDeleteClient || isOwner; // Logs can still be deleted by owner, but client deletion is restricted
 
   const handleRefreshAnalysis = async (e: React.MouseEvent) => {
     e.stopPropagation(); 

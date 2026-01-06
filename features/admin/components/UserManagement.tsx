@@ -32,7 +32,8 @@ const AdvisorRow: React.FC<{
   onEdit: (user: Advisor) => void;
   onDelete: (id: string) => void;
   readOnly?: boolean;
-}> = ({ user, isLeader = false, directorName, onBandingUpdate, onGoalUpdate, onEdit, onDelete, readOnly }) => (
+  canDelete?: boolean;
+}> = ({ user, isLeader = false, directorName, onBandingUpdate, onGoalUpdate, onEdit, onDelete, readOnly, canDelete = false }) => (
   <tr className={isLeader ? "bg-indigo-50/40" : "bg-white"}>
       <td className="px-6 py-3 flex items-center gap-3">
           <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold ${isLeader ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-200 text-slate-600'}`}>{user.avatar}</div>
@@ -83,7 +84,9 @@ const AdvisorRow: React.FC<{
           {!readOnly && (
               <>
                 <button onClick={() => onEdit(user)} className="text-xs text-slate-500 hover:text-slate-800 font-medium bg-slate-50 hover:bg-slate-100 px-3 py-1.5 rounded transition-colors">Edit</button>
-                <button onClick={() => onDelete(user.id)} className="text-xs text-rose-500 hover:text-rose-700 font-medium bg-rose-50 hover:bg-rose-100 px-3 py-1.5 rounded transition-colors ml-2">Delete</button>
+                {canDelete && (
+                    <button onClick={() => onDelete(user.id)} className="text-xs text-rose-500 hover:text-rose-700 font-medium bg-rose-50 hover:bg-rose-100 px-3 py-1.5 rounded transition-colors ml-2">Delete</button>
+                )}
               </>
           )}
       </td>
@@ -608,7 +611,7 @@ export const UserManagement: React.FC<UserManagementProps> = ({ advisors, teams,
                                     <>
                                         {groupedAdvisors.unassigned.map(u => {
                                             const reportingDirector = u.role === 'manager' && u.teamId ? advisors.find(a => a.id === u.teamId)?.name : undefined;
-                                            return <AdvisorRow key={u.id} user={u} directorName={reportingDirector} onBandingUpdate={handleActiveBandingUpdate} onGoalUpdate={handleGoalUpdate} onEdit={openEditModal} onDelete={onDeleteAdvisor} readOnly={!isDirector && u.id !== currentUser.id} />;
+                                            return <AdvisorRow key={u.id} user={u} directorName={reportingDirector} onBandingUpdate={handleActiveBandingUpdate} onGoalUpdate={handleGoalUpdate} onEdit={openEditModal} onDelete={onDeleteAdvisor} readOnly={!isDirector && u.id !== currentUser.id} canDelete={isDirector} />;
                                         })}
                                         {visibleTeams.map(team => {
                                             const teamMembers = groupedAdvisors.groups[team.id] || [];
@@ -629,7 +632,7 @@ export const UserManagement: React.FC<UserManagementProps> = ({ advisors, teams,
                                                             </div>
                                                         </td>
                                                     </tr>
-                                                    {teamMembers.map(u => <AdvisorRow key={u.id} user={u} isLeader={u.id === team.leaderId} onBandingUpdate={handleActiveBandingUpdate} onGoalUpdate={handleGoalUpdate} onEdit={openEditModal} onDelete={onDeleteAdvisor} readOnly={isManager && u.role === 'manager'} />)}
+                                                    {teamMembers.map(u => <AdvisorRow key={u.id} user={u} isLeader={u.id === team.leaderId} onBandingUpdate={handleActiveBandingUpdate} onGoalUpdate={handleGoalUpdate} onEdit={openEditModal} onDelete={onDeleteAdvisor} readOnly={isManager && u.role === 'manager'} canDelete={isDirector} />)}
                                                 </React.Fragment>
                                             );
                                         })}

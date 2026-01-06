@@ -261,7 +261,7 @@ const AdminTab: React.FC = () => {
   const handleUpdateAdvisor = async (updatedAdvisor: Advisor) => {
       setAdvisors(prev => prev.map(a => a.id === updatedAdvisor.id ? updatedAdvisor : a));
       if (supabase) {
-          await supabase.from('profiles').update({
+          const { error } = await supabase.from('profiles').update({
               role: updatedAdvisor.role,
               status: updatedAdvisor.status,
               banding_percentage: updatedAdvisor.bandingPercentage,
@@ -272,6 +272,15 @@ const AdminTab: React.FC = () => {
               organization_id: updatedAdvisor.organizationId,
               annual_goal: updatedAdvisor.annualGoal
           }).eq('id', updatedAdvisor.id);
+          
+          if (error) {
+              console.error("Profile update failed:", error);
+              // FIXED: Extract error message string to avoid [object Object]
+              const errMsg = error.message || (typeof error === 'object' ? JSON.stringify(error) : String(error));
+              toast.error(`Failed to update profile: ${errMsg}`);
+              // In production, we might revert the optimistic update here
+              throw error;
+          }
       }
   };
 

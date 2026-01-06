@@ -7,12 +7,10 @@ import { generateClientAudioBriefing, playRawAudio } from '../../lib/gemini';
 import { useAi } from '../../contexts/AiContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { supabase } from '../../lib/supabase';
-import LineChart from '../../components/common/LineChart';
 import PageHeader from '../../components/layout/PageHeader';
 import SectionCard from '../../components/layout/SectionCard';
-import LabeledText from '../../components/common/LabeledText';
-import LabeledSelect from '../../components/common/LabeledSelect';
 import { Client } from '../../types';
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
 
 // --- HELPER COMPONENT FOR INPUTS ---
 const RateInput = ({ value, onChange, className }: { value: number, onChange: (n: number) => void, className?: string }) => {
@@ -58,7 +56,8 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
     expenses, setExpenses,
     customExpenses, setCustomExpenses,
     investorState, cashflowState,
-    ownerId, setOwnerId // Exposed for admin assignment
+    ownerId, setOwnerId, // Exposed for admin assignment
+    clientRef // Reference code from context
   } = useClient();
   
   const { openAiWithPrompt } = useAi();
@@ -71,6 +70,10 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
   // Audio State
   const [isPlayingAudio, setIsPlayingAudio] = useState(false);
   const [loadingAudio, setLoadingAudio] = useState(false);
+
+  // Chart State
+  const [showCostOfWaiting, setShowCostOfWaiting] = useState(false);
+  const [selectedStrategy, setSelectedStrategy] = useState<'conservative' | 'moderate' | 'growth'>('moderate');
 
   // Admin Assignment
   const [adminAdvisors, setAdminAdvisors] = useState<{id: string, email: string}[]>([]);
@@ -136,13 +139,14 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
   };
 
   // --- PERSISTENT INVESTMENT SETTINGS ---
-  const rate1 = profile.investmentRates?.conservative ?? 0.05;
-  const rate2 = profile.investmentRates?.moderate ?? 6;
-  const rate3 = profile.investmentRates?.growth ?? 9;
+  // Fix: Default conservative rate to 3% to show visible gap vs bank rate (0.5%)
+  const rate1 = profile.investmentRates?.conservative ?? 3.0; 
+  const rate2 = profile.investmentRates?.moderate ?? 6.0;
+  const rate3 = profile.investmentRates?.growth ?? 9.0;
 
-  const setRate1 = (v: number) => setProfile({...profile, investmentRates: {...(profile.investmentRates || { conservative: 0.05, moderate: 6, growth: 9 }), conservative: v}});
-  const setRate2 = (v: number) => setProfile({...profile, investmentRates: {...(profile.investmentRates || { conservative: 0.05, moderate: 6, growth: 9 }), moderate: v}});
-  const setRate3 = (v: number) => setProfile({...profile, investmentRates: {...(profile.investmentRates || { conservative: 0.05, moderate: 6, growth: 9 }), growth: v}});
+  const setRate1 = (v: number) => setProfile({...profile, investmentRates: {...(profile.investmentRates || { conservative: 3, moderate: 6, growth: 9 }), conservative: v}});
+  const setRate2 = (v: number) => setProfile({...profile, investmentRates: {...(profile.investmentRates || { conservative: 3, moderate: 6, growth: 9 }), moderate: v}});
+  const setRate3 = (v: number) => setProfile({...profile, investmentRates: {...(profile.investmentRates || { conservative: 3, moderate: 6, growth: 9 }), growth: v}});
 
   // --- CALCULATIONS ---
 
@@ -189,7 +193,7 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
   const shortfall = Math.max(0, requiredMonthlyInvestment - currentMonthlySavings);
   const hasSurplus = currentMonthlySavings >= requiredMonthlyInvestment;
 
-  // --- COMPOUNDING PROJECTION ---
+  // --- COMPOUNDING PROJECTION (IMPROVED) ---
   const compoundingData = useMemo(() => {
     const monthly = toNum(profile.monthlyInvestmentAmount);
     const currentPortfolio = investorState ? toNum(investorState.portfolioValue) : 0;
@@ -198,39 +202,82 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
 
     if (monthly <= 0 && startingPrincipal <= 0) return null;
 
-    const rates = [
-       { key: 'conservative', label: 'Safe', rate: rate1, color: '#3b82f6' }, 
-       { key: 'moderate', label: 'Balanced', rate: rate2, color: '#10b981' },     
-       { key: 'growth', label: 'Dynamic', rate: rate3, color: '#8b5cf6' }        
-    ];
+    const rates = {
+       conservative: rate1, 
+       moderate: rate2,     
+       growth: rate3
+    };
+
+    const activeRate = rates[selectedStrategy];
+    
+    // --- SCENARIO 1: START NOW ---
+    const r = activeRate / 100;
+    const monthlyRate = r / 12;
+    
+    // --- SCENARIO 2: WAIT 5 YEARS ---
+    // For the first 5 years, money just sits in "Bank" (0.5% return)
+    // Then we start the same investment strategy, but 5 years late.
+    const delayYears = 5;
+    const bankRate = 0.005 / 12; // 0.5% p.a.
 
     const maxAge = retirementAge;
     const duration = maxAge - age;
     const chartData = [];
-    const stats = rates.map(r => ({ ...r, finalAmount: 0 }));
+    
+    let nowPV = startingPrincipal;
+    let laterPV = startingPrincipal;
+
+    let finalNow = 0;
+    let finalLater = 0;
 
     for (let y = 0; y <= duration + 5; y++) {
         const currentSimAge = age + y;
-        const shouldRecord = duration > 30 ? y % 2 === 0 : true;
-        const row: any = { age: `Age ${currentSimAge}` };
         
-        stats.forEach(s => {
-            const r = s.rate / 100;
-            const monthlyRate = r / 12;
-            const months = y * 12;
-            const pvGrowth = startingPrincipal * Math.pow(1 + monthlyRate, months);
-            const pmtGrowth = monthlyRate > 0 
-                ? monthly * ( (Math.pow(1 + monthlyRate, months) - 1) / monthlyRate )
-                : monthly * months;
-            const val = pvGrowth + pmtGrowth;
-            row[s.key] = Math.round(val);
-            if (currentSimAge === maxAge) s.finalAmount = val;
+        // --- CALC NOW ---
+        const months = y * 12;
+        const growthFactor = Math.pow(1 + monthlyRate, months);
+        const pmtFactor = monthlyRate > 0 ? (growthFactor - 1) / monthlyRate : months;
+        const valNow = (startingPrincipal * growthFactor) + (monthly * pmtFactor);
+
+        // --- CALC LATER ---
+        let valLater = 0;
+        if (y < delayYears) {
+            // In the "Delay Phase" - only bank interest, assume user saves the 'monthly' into bank
+            const bankGrowth = Math.pow(1 + bankRate, months);
+            const bankPmtFactor = (bankGrowth - 1) / bankRate;
+            valLater = (startingPrincipal * bankGrowth) + (monthly * bankPmtFactor);
+        } else {
+            // In the "Catch Up Phase"
+            // 1. Calculate the pot size at year 5 (The new Principal)
+            const monthsDelay = delayYears * 12;
+            const bankGrowth5 = Math.pow(1 + bankRate, monthsDelay);
+            const bankPmtFactor5 = (bankGrowth5 - 1) / bankRate;
+            const principalAtYear5 = (startingPrincipal * bankGrowth5) + (monthly * bankPmtFactor5);
+
+            // 2. Grow that new principal for (y - 5) years at Investment Rate
+            const activeMonths = (y - delayYears) * 12;
+            const growthFactorActive = Math.pow(1 + monthlyRate, activeMonths);
+            const pmtFactorActive = (growthFactorActive - 1) / monthlyRate;
+            
+            valLater = (principalAtYear5 * growthFactorActive) + (monthly * pmtFactorActive);
+        }
+
+        if (currentSimAge === maxAge) {
+            finalNow = valNow;
+            finalLater = valLater;
+        }
+
+        chartData.push({
+            age: currentSimAge,
+            label: `Age ${currentSimAge}`,
+            now: Math.round(valNow),
+            later: Math.round(valLater),
+            gap: Math.round(valNow - valLater)
         });
-        
-        if (y <= duration && shouldRecord) chartData.push(row);
     }
-    return { chartData, stats, startingPrincipal };
-  }, [profile.monthlyInvestmentAmount, rate1, rate2, rate3, age, retirementAge, investorState?.portfolioValue, cashflowState?.currentSavings]);
+    
+    return { chartData, finalNow, finalLater, opportunityCost: finalNow - finalLater };
+  }, [profile.monthlyInvestmentAmount, rate1, rate2, rate3, age, retirementAge, investorState?.portfolioValue, cashflowState?.currentSavings, selectedStrategy]);
 
   const LIFESTYLES = [
     { label: 'Basic', value: '2500', icon: '⛺', desc: 'Simple needs' },
@@ -297,7 +344,16 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
       <PageHeader 
         title="Client Profile" 
         icon="👤" 
-        subtitle="Manage personal details and financial identity."
+        subtitle={
+            <span className="flex items-center gap-2">
+                Manage personal details and financial identity.
+                {clientRef && (
+                    <span className="bg-slate-100 text-slate-500 px-2 py-0.5 rounded text-[10px] font-mono border border-slate-200">
+                        {clientRef}
+                    </span>
+                )}
+            </span>
+        }
         action={headerActions}
       />
 
@@ -523,80 +579,161 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
          </SectionCard>
       </div>
 
-      {/* --- 5. WEALTH ACCELERATION --- */}
+      {/* --- 5. WEALTH ACCELERATION (UPDATED NARRATIVE) --- */}
       {age > 0 && (
-         <div className="bg-slate-900 rounded-3xl p-8 text-white relative overflow-hidden shadow-2xl">
-            <div className="absolute top-0 right-0 w-96 h-96 bg-indigo-600/20 rounded-full blur-[100px] pointer-events-none"></div>
+         <div className="bg-gradient-to-br from-slate-900 via-[#0B1120] to-indigo-950 rounded-3xl p-8 text-white relative overflow-hidden shadow-2xl">
+            <div className="absolute top-0 right-0 w-96 h-96 bg-indigo-600/10 rounded-full blur-[100px] pointer-events-none"></div>
             
-            <div className="relative z-10 grid grid-cols-1 lg:grid-cols-3 gap-8">
-               <div className="lg:col-span-1 space-y-6">
+            {/* Header: Investment Narrative */}
+            <div className="relative z-10 flex flex-col md:flex-row justify-between items-start gap-8 mb-8">
+               <div className="space-y-4 max-w-lg">
                   <div>
-                     <h3 className="text-xl font-bold text-white mb-2">Wealth Acceleration</h3>
+                     <div className="inline-flex items-center gap-2 mb-2">
+                        <h3 className="text-xl font-bold text-white">Wealth Acceleration</h3>
+                        {showCostOfWaiting && (
+                           <span className="text-[10px] font-bold uppercase tracking-widest bg-red-500/20 text-red-400 px-2 py-0.5 rounded border border-red-500/30 animate-pulse">Gap Analysis Active</span>
+                        )}
+                     </div>
                      <p className="text-sm text-slate-400 leading-relaxed">
-                        Small differences in return rates create massive differences in outcome over time. This is the "Snowball Effect".
+                        Compound interest is not intuitive. Visualizing the difference between starting now versus waiting reveals the true cost of delay.
                      </p>
                   </div>
 
-                  <div className="bg-white/10 rounded-2xl p-4 border border-white/10 backdrop-blur-md">
-                     <label className="text-[10px] font-bold text-indigo-300 uppercase tracking-widest">Monthly Commitment</label>
-                     <div className="flex items-center mt-1">
-                        <span className="text-xl text-gray-400 mr-1">$</span>
-                        <input 
-                           type="text" 
-                           value={profile.monthlyInvestmentAmount || ''} 
-                           onChange={(e) => setProfile({...profile, monthlyInvestmentAmount: e.target.value})}
-                           className="w-full bg-transparent text-2xl font-bold text-white outline-none placeholder-gray-600"
-                           placeholder={fmtSGD(currentMonthlySavings)}
-                        />
+                  <div className="bg-white/5 rounded-2xl p-4 border border-white/10 backdrop-blur-md flex items-center gap-4">
+                     <div className="flex-1">
+                        <label className="text-[10px] font-bold text-indigo-300 uppercase tracking-widest">Monthly Commitment</label>
+                        <div className="flex items-center mt-1">
+                           <span className="text-xl text-gray-400 mr-1">$</span>
+                           <input 
+                              type="text" 
+                              value={profile.monthlyInvestmentAmount || ''} 
+                              onChange={(e) => setProfile({...profile, monthlyInvestmentAmount: e.target.value})}
+                              className="w-full bg-transparent text-2xl font-bold text-white outline-none placeholder-gray-600"
+                              placeholder={fmtSGD(currentMonthlySavings)}
+                           />
+                        </div>
+                     </div>
+                     <div className="h-10 w-px bg-white/10"></div>
+                     <div className="flex-1 pl-2">
+                        <label className="text-[10px] font-bold text-indigo-300 uppercase tracking-widest mb-1 block">Strategy</label>
+                        <div className="flex bg-black/30 p-1 rounded-lg">
+                           {['conservative', 'moderate', 'growth'].map(s => (
+                              <button
+                                 key={s}
+                                 onClick={() => setSelectedStrategy(s as any)}
+                                 className={`flex-1 py-1 text-[9px] font-bold uppercase rounded-md transition-all ${selectedStrategy === s ? 'bg-indigo-500 text-white shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}
+                              >
+                                 {s === 'conservative' ? 'Low' : s === 'moderate' ? 'Mid' : 'High'}
+                              </button>
+                           ))}
+                        </div>
                      </div>
                   </div>
                </div>
 
-               <div className="lg:col-span-2">
-                  {compoundingData ? (
-                     <div className="h-full flex flex-col">
-                        <div className="flex-1 min-h-[250px] bg-slate-800/50 rounded-xl border border-white/5 p-4 mb-4">
-                           <LineChart
-                              xLabels={compoundingData.chartData.map(d => d.age)}
-                              series={[
-                                 { name: `Safe (${rate1}%)`, values: compoundingData.chartData.map(d => d.conservative), stroke: '#3b82f6' },
-                                 { name: `Balanced (${rate2}%)`, values: compoundingData.chartData.map(d => d.moderate), stroke: '#10b981' },
-                                 { name: `Dynamic (${rate3}%)`, values: compoundingData.chartData.map(d => d.growth), stroke: '#a855f7' }
-                              ]}
-                              height={250}
-                              onFormatY={(v) => v >= 1000000 ? `$${(v/1000000).toFixed(1)}M` : `$${(v/1000).toFixed(0)}k`}
-                           />
-                        </div>
-                        
-                        <div className="grid grid-cols-3 gap-4 mt-4 bg-slate-800/50 p-4 rounded-xl border border-white/5">
-                           {compoundingData.stats.map(s => (
-                              <div key={s.key} className="text-center relative">
-                                 <div className="flex flex-col items-center justify-center gap-1 mb-2">
-                                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{s.label}</span>
-                                    <div className="flex items-center gap-1 bg-slate-900 rounded-lg px-2 py-1 border border-slate-700 hover:border-slate-500 transition-colors cursor-text group">
-                                        <RateInput 
-                                            value={s.rate}
-                                            onChange={(val) => {
-                                                if (s.key === 'conservative') setRate1(val);
-                                                if (s.key === 'moderate') setRate2(val);
-                                                if (s.key === 'growth') setRate3(val);
-                                            }}
-                                            className="w-8 bg-transparent text-right font-bold text-white text-xs outline-none focus:text-indigo-400 transition-colors"
-                                        />
-                                        <span className="text-xs text-slate-500 group-focus-within:text-slate-300">%</span>
-                                    </div>
-                                 </div>
-                                 <div className="text-xl font-bold" style={{ color: s.color }}>{fmtSGD(s.finalAmount)}</div>
-                              </div>
-                           ))}
-                        </div>
+               {/* Impact Card - Only shows when waiting toggled */}
+               <div className={`transition-all duration-500 ${showCostOfWaiting ? 'opacity-100 translate-y-0' : 'opacity-50 translate-y-2 grayscale'}`}>
+                  <div className="bg-red-500/10 border border-red-500/30 p-6 rounded-2xl backdrop-blur-sm text-center min-w-[200px]">
+                     <div className="text-[10px] font-bold text-red-300 uppercase tracking-widest mb-1">Cost of Waiting 5 Years</div>
+                     <div className="text-3xl font-black text-red-400 tracking-tighter">
+                        {compoundingData ? fmtSGD(compoundingData.opportunityCost) : '$0'}
                      </div>
-                  ) : (
-                     <div className="h-full flex items-center justify-center text-slate-600 italic">
-                        Enter a monthly investment amount to see projections.
+                     <div className="text-[10px] text-red-300/70 mt-2 font-medium">
+                        Wealth Destroyed
                      </div>
-                  )}
+                  </div>
                </div>
+            </div>
+
+            <div className="relative z-10">
+               {compoundingData ? (
+                  <div className="h-full flex flex-col">
+                     {/* Toggle Switch */}
+                     <div className="flex justify-end mb-4">
+                        <label className="flex items-center gap-3 cursor-pointer group">
+                           <span className={`text-xs font-bold transition-colors ${showCostOfWaiting ? 'text-white' : 'text-slate-500'}`}>Show 5-Year Delay Impact</span>
+                           <div className="relative">
+                              <input type="checkbox" className="sr-only" checked={showCostOfWaiting} onChange={() => setShowCostOfWaiting(!showCostOfWaiting)} />
+                              <div className={`w-10 h-5 rounded-full shadow-inner transition-colors ${showCostOfWaiting ? 'bg-red-500' : 'bg-slate-700'}`}></div>
+                              <div className={`absolute left-1 top-1 w-3 h-3 bg-white rounded-full shadow transition-transform ${showCostOfWaiting ? 'translate-x-5' : ''}`}></div>
+                           </div>
+                        </label>
+                     </div>
+
+                     <div className="h-[300px] w-full">
+                        <ResponsiveContainer width="100%" height="100%">
+                           <AreaChart data={compoundingData.chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                              <defs>
+                                 <linearGradient id="colorNow" x1="0" y1="0" x2="0" y2="1">
+                                    <stop offset="5%" stopColor="#10b981" stopOpacity={0.8}/>
+                                    <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                                 </linearGradient>
+                                 <linearGradient id="colorLater" x1="0" y1="0" x2="0" y2="1">
+                                    <stop offset="5%" stopColor="#94a3b8" stopOpacity={0.8}/>
+                                    <stop offset="95%" stopColor="#94a3b8" stopOpacity={0}/>
+                                 </linearGradient>
+                              </defs>
+                              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#1e293b" />
+                              <XAxis dataKey="age" tick={{fill: '#475569', fontSize: 10}} axisLine={false} tickLine={false} tickFormatter={(v) => `Age ${v}`} />
+                              <YAxis tick={{fill: '#475569', fontSize: 10}} axisLine={false} tickLine={false} tickFormatter={(val) => val >= 1000000 ? `$${(val/1000000).toFixed(1)}m` : `$${(val/1000).toFixed(0)}k`} />
+                              <Tooltip 
+                                 contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '12px', color: '#fff' }} 
+                                 itemStyle={{ fontSize: 12 }}
+                                 formatter={(val: number) => fmtSGD(val)}
+                                 labelFormatter={(l) => `Age ${l}`}
+                              />
+                              
+                              <Area 
+                                 type="monotone" 
+                                 dataKey="now" 
+                                 stroke="#10b981" 
+                                 strokeWidth={3}
+                                 fill="url(#colorNow)" 
+                                 name="Start Today" 
+                                 animationDuration={1500}
+                              />
+                              
+                              {showCostOfWaiting && (
+                                 <Area 
+                                    type="monotone" 
+                                    dataKey="later" 
+                                    stroke="#94a3b8" 
+                                    strokeWidth={2} 
+                                    strokeDasharray="5 5"
+                                    fill="url(#colorLater)" 
+                                    name="Wait 5 Years" 
+                                    animationDuration={1500}
+                                 />
+                              )}
+                           </AreaChart>
+                        </ResponsiveContainer>
+                     </div>
+                     
+                     <div className="grid grid-cols-3 gap-4 mt-6 bg-slate-800/50 p-4 rounded-xl border border-white/5">
+                        <div className="text-center">
+                           <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Target Return</div>
+                           <div className="text-xl font-bold text-indigo-400">
+                              {selectedStrategy === 'conservative' ? rate1 : selectedStrategy === 'moderate' ? rate2 : rate3}%
+                           </div>
+                        </div>
+                        <div className="text-center">
+                           <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Projected Wealth</div>
+                           <div className="text-xl font-bold text-white">{fmtSGD(compoundingData.finalNow)}</div>
+                        </div>
+                        <div className="text-center relative">
+                           <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Wait 5 Years</div>
+                           <div className={`text-xl font-bold ${showCostOfWaiting ? 'text-red-400 line-through' : 'text-gray-500'}`}>
+                              {fmtSGD(compoundingData.finalLater)}
+                           </div>
+                           {!showCostOfWaiting && <div className="absolute inset-0 flex items-center justify-center bg-slate-800/90 text-[10px] text-white font-bold rounded cursor-pointer" onClick={() => setShowCostOfWaiting(true)}>Tap to Reveal</div>}
+                        </div>
+                     </div>
+                  </div>
+               ) : (
+                  <div className="h-full flex items-center justify-center text-slate-600 italic">
+                     Enter a monthly investment amount to see projections.
+                  </div>
+               )}
             </div>
          </div>
       )}

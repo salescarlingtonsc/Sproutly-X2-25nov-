@@ -1,5 +1,5 @@
 
-import React, { createContext, useContext, useState, useMemo, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useMemo, useEffect, ReactNode, useRef } from 'react';
 import { 
   Profile, Expenses, CustomExpense, Child, CpfState, CashflowState, 
   InsuranceState, InvestorState, PropertyState, WealthState, Client, 
@@ -109,6 +109,7 @@ interface ClientContextType {
   
   // Actions
   loadClient: (client: Client) => void;
+  promoteToSaved: (client: Client) => void; // New method for stable ID
   resetClient: () => void;
   generateClientObject: () => Client; // For saving
 }
@@ -119,6 +120,12 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   // State
   const [clientId, setClientId] = useState<string | null>(null);
   const [clientRef, setClientRef] = useState<string | null>(null);
+  
+  // Stable Draft IDs (Prevent Duplicates on Autosave)
+  // These persist across renders even if state updates haven't propagated
+  const draftId = useRef<string>(crypto.randomUUID());
+  const draftRefCode = useRef<string>(`REF-${Math.floor(Math.random()*10000)}`);
+
   const [lastUpdated, setLastUpdated] = useState<string>(new Date().toISOString());
   const [followUp, setFollowUp] = useState<any>({ status: 'new' });
   const [appointments, setAppointments] = useState<any>({});
@@ -210,9 +217,21 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     });
   };
 
+  const promoteToSaved = (saved: Client) => {
+    // Only update identity fields to prevent race conditions with typing form data
+    setClientId(saved.id);
+    if (saved.referenceCode) setClientRef(saved.referenceCode);
+    if (saved.lastUpdated) setLastUpdated(saved.lastUpdated);
+    // We assume the rest of the state (profile, etc) is already ahead or equal to saved because `saved` came from our state
+  };
+
   const resetClient = () => {
     setClientId(null);
     setClientRef(null);
+    // Regenerate stable drafts for new session
+    draftId.current = crypto.randomUUID();
+    draftRefCode.current = `REF-${Math.floor(Math.random()*10000)}`;
+
     setLastUpdated(new Date().toISOString());
     setFollowUp({ status: 'new' });
     setAppointments({});
@@ -240,9 +259,13 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     // This prevents "new" overwriting "New Lead" on save if mismatched
     const derivedStage = STATUS_TO_STAGE[followUp.status] || followUp.status || 'New Lead';
 
+    // Use stable draft ID if clientId is not yet set (prevents duplicates on re-save)
+    const finalId = clientId || draftId.current;
+    const finalRef = clientRef || draftRefCode.current;
+
     return {
-      id: clientId || crypto.randomUUID(),
-      referenceCode: clientRef || `REF-${Math.floor(Math.random()*10000)}`,
+      id: finalId,
+      referenceCode: finalRef,
       profile: { ...profile, children: childrenState },
       expenses,
       customExpenses,
@@ -309,8 +332,8 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       crmState, setCrmState,
       age, cpfData, cashflowData,
       setOwnerId,
-      chatHistory, setChatHistory, // EXPOSED
-      loadClient, resetClient, generateClientObject
+      chatHistory, setChatHistory,
+      loadClient, promoteToSaved, resetClient, generateClientObject
     }}>
       {children}
     </ClientContext.Provider>

@@ -50,6 +50,8 @@ const ClientDrawer: React.FC<ClientDrawerProps> = ({
   const [isDeleting, setIsDeleting] = useState(false);
 
   const isAdmin = currentUser?.role === 'admin' || currentUser?.is_admin === true;
+  const isDirector = currentUser?.role === 'director';
+  const canDeleteClient = isAdmin || isDirector; // Strict delete permission
 
   // ... (keep useEffect, fetchAdvisors, loadTabContent, handleFileUpload, handleDeleteActivity, handleReassign) ...
   useEffect(() => {
@@ -330,7 +332,9 @@ const ClientDrawer: React.FC<ClientDrawerProps> = ({
         </div>
         
         <div className="p-6 border-t border-slate-50 bg-white flex gap-4">
-           <Button variant="ghost" className="flex-1 hover:bg-red-50 hover:text-red-600 transition-colors" onClick={handleDeleteClient} isLoading={isDeleting}>Delete Client</Button>
+           {canDeleteClient && (
+               <Button variant="ghost" className="flex-1 hover:bg-red-50 hover:text-red-600 transition-colors" onClick={handleDeleteClient} isLoading={isDeleting}>Delete Client</Button>
+           )}
            <Button variant="primary" className="flex-[2] bg-indigo-600 hover:bg-indigo-700 border-none" onClick={onOpenFullProfile} leftIcon="↗">Strategic Desk</Button>
         </div>
       </div>
