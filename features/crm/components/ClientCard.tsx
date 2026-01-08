@@ -4,12 +4,13 @@ import { Client, FamilyMember, Policy, UserProfile, Sale, Product } from '../../
 import { analyzeClientMomentum, generateInvestmentReport } from '../../../lib/gemini';
 import { DEFAULT_SETTINGS } from '../../../lib/config';
 import { FinancialTools } from './FinancialTools';
-import { fmtDateTime, fmtSGD } from '../../../lib/helpers';
+import { fmtDateTime, fmtSGD, toNum } from '../../../lib/helpers';
 import { logActivity } from '../../../lib/db/activities';
 import { useToast } from '../../../contexts/ToastContext';
 import { useDialog } from '../../../contexts/DialogContext'; 
 import { db } from '../../../lib/db';
 import { AddSaleModal } from './AddSaleModal';
+import ClosureDeckModal from './ClosureDeckModal'; // Import new modal
 
 interface ClientCardProps {
   client: Client;
@@ -77,8 +78,9 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
   const [reportContent, setReportContent] = useState('');
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
 
-  // Sale Edit State
+  // Sale & Closure State
   const [editingSale, setEditingSale] = useState<Sale | null>(null);
+  const [showClosureDeck, setShowClosureDeck] = useState(false);
 
   // Permission Logic
   const isOwner = client._ownerId === currentUser?.id;
@@ -90,6 +92,12 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
     
   const canDeleteLogs = canDeleteClient || isOwner; // Logs can still be deleted by owner, but client deletion is restricted
 
+  // Extract Tags for UI
+  const campaignTag = (client.tags || []).find(t => t.startsWith('Campaign: '));
+  const campaignName = campaignTag ? campaignTag.replace('Campaign: ', '') : '';
+  const industryTag = (client.tags || []).find(t => t.startsWith('Industry: '));
+  const industryName = industryTag ? industryTag.replace('Industry: ', '') : '';
+
   const handleRefreshAnalysis = async (e: React.MouseEvent) => {
     e.stopPropagation(); 
     setIsAnalyzing(true);
@@ -100,25 +108,46 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
 
   const generateUniqueId = (prefix: string) => `${prefix}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
-  const handleUpdateField = (field: keyof Client, val: any) => {
-      const now = new Date().toISOString();
-      const statusKey = REVERSE_STATUS_MAP[val] || val;
+  const handleUpdateField = (field: keyof Client | string, val: any) => {
+      const now = new Date();
+      
+      // Handle nested profile updates
+      if (field === 'gender' || field === 'monthlyInvestmentAmount') {
+          const newProfile = { ...client.profile, [field]: val };
+          onUpdate({ ...client, profile: newProfile });
+          return;
+      }
+
+      // NEW: Sync Job Title to profile to ensure persistence in Blue Box
+      if (field === 'jobTitle') {
+          const newProfile = { ...client.profile, jobTitle: val };
+          onUpdate({ ...client, jobTitle: val, profile: newProfile });
+          return;
+      }
+
+      // NEW: Handle Next Follow Up Date (Nested in followUp)
+      if (field === 'nextFollowUpDate') {
+          const newFollowUp = { ...(client.followUp || {}), nextFollowUpDate: val };
+          onUpdate({ ...client, followUp: newFollowUp });
+          return;
+      }
 
       if (field === 'stage' && val !== client.stage) {
+          const statusKey = REVERSE_STATUS_MAP[val] || val;
           const logEntry = { 
               id: generateUniqueId('sys'), 
               content: `Stage updated: ${client.stage || 'New'} ➔ ${val}`, 
-              date: now, 
+              date: now.toISOString(), 
               author: 'System' 
           };
           
           onUpdate({ 
              ...client, 
-             [field]: val,
-             followUp: { ...client.followUp, status: statusKey, lastContactedAt: now },
+             stage: val,
+             followUp: { ...client.followUp, status: statusKey, lastContactedAt: now.toISOString() },
              notes: [logEntry, ...(client.notes || [])],
-             lastUpdated: now,
-             stageHistory: [...(client.stageHistory || []), { stage: val, date: now }] 
+             lastUpdated: now.toISOString(),
+             stageHistory: [...(client.stageHistory || []), { stage: val, date: now.toISOString() }] 
           });
           logActivity(client.id, 'status_change', `Manual stage change to ${val}`);
 
@@ -126,18 +155,19 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
           const logEntry = { 
               id: generateUniqueId('sys'), 
               content: `Status updated: ${client.contactStatus || '-'} ➔ ${val}`, 
-              date: now, 
+              date: now.toISOString(), 
               author: 'System' 
           };
           
           onUpdate({
               ...client,
-              [field]: val,
+              contactStatus: val,
               notes: [logEntry, ...(client.notes || [])],
-              lastUpdated: now
+              lastUpdated: now.toISOString()
           });
       
       } else {
+          // General field update
           onUpdate({ ...client, [field]: val });
       }
   };
@@ -335,34 +365,129 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
               <EditableField label="Platform" value={client.platform} onChange={(v:any) => handleUpdateField('platform', v)} type="select" options={DEFAULT_SETTINGS.platforms} />
           </div>
           
-          {onAddSale && (
+          <div className="flex gap-2">
               <button 
-                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); onAddSale(); }} 
-                  className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl shadow-lg shadow-emerald-500/30 transition-all font-bold text-xs flex items-center justify-center gap-2 transform active:scale-[0.98]"
+                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); setShowClosureDeck(true); }} 
+                  className="flex-1 py-3 bg-slate-900 hover:bg-slate-800 text-white rounded-xl shadow-lg transition-all font-bold text-xs flex items-center justify-center gap-2 transform active:scale-[0.98]"
               >
-                  <span>💰 Record Closure / Sale</span>
+                  <span>⚡ Launch Closure Deck</span>
               </button>
-          )}
+              {onAddSale && (
+                  <button 
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); onAddSale(); }} 
+                      className="flex-1 py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl shadow-lg shadow-emerald-500/30 transition-all font-bold text-xs flex items-center justify-center gap-2 transform active:scale-[0.98]"
+                  >
+                      <span>💰 Record Sale</span>
+                  </button>
+              )}
+          </div>
 
           <div className="border-t border-slate-100 my-2"></div>
+          {/* Scheduling Row */}
           <div className="grid grid-cols-2 gap-4">
-              <EditableField label="Next Appt" value={client.firstApptDate} onChange={(v:any) => handleUpdateField('firstApptDate', v)} type="datetime-local" />
-              <EditableField label="Status" value={client.contactStatus} onChange={(v:any) => handleUpdateField('contactStatus', v)} type="select" options={['Uncontacted', 'Attempted', 'Active']} />
+              <EditableField 
+                  label="Next Appt (Firm)" 
+                  value={client.firstApptDate} 
+                  onChange={(v:any) => handleUpdateField('firstApptDate', v)} 
+                  type="datetime-local" 
+              />
+              <EditableField 
+                  label="Next Follow Up (Task)" 
+                  value={client.followUp?.nextFollowUpDate} 
+                  onChange={(v:any) => handleUpdateField('nextFollowUpDate', v)} 
+                  type="date" 
+              />
           </div>
+          
           <div className="border-t border-slate-100 my-2"></div>
           <div className="grid grid-cols-2 gap-4">
+              <EditableField label="Status" value={client.contactStatus} onChange={(v:any) => handleUpdateField('contactStatus', v)} type="select" options={['Uncontacted', 'Attempted', 'Active']} />
               <EditableField label="Phone" value={client.phone} onChange={(v:any) => handleUpdateField('phone', v)} type="text" />
               <EditableField label="Email" value={client.email} onChange={(v:any) => handleUpdateField('email', v)} type="text" />
-              <EditableField label="Job" value={client.jobTitle} onChange={(v:any) => handleUpdateField('jobTitle', v)} type="text" />
               <EditableField label="DOB" value={client.dob} onChange={(v:any) => handleUpdateField('dob', v)} type="date" />
           </div>
+          
+          {/* NEW SECTION: EXPANDED LEAD CONTEXT BOX */}
+          <div className="border-t border-slate-100 my-2"></div>
+          <div className="bg-indigo-50/50 p-5 rounded-xl border border-indigo-100 space-y-4">
+              <div className="flex justify-between items-start">
+                  <h4 className="text-[10px] font-black text-indigo-400 uppercase tracking-widest mt-1">Lead Context & Financials</h4>
+                  {campaignName ? (
+                      <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold bg-indigo-200 text-indigo-800 border border-indigo-300 shadow-sm">
+                          🎁 {campaignName}
+                      </span>
+                  ) : (
+                      <span className="text-[10px] text-slate-400 italic">No Campaign Detected</span>
+                  )}
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                  <EditableField 
+                      label="Job Title" 
+                      value={client.jobTitle || client.company} // Fallback to company if jobTitle is empty
+                      onChange={(v:any) => handleUpdateField('jobTitle', v)} 
+                      type="text"
+                      placeholder="e.g. Manager"
+                  />
+                  <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Industry / Sector</label>
+                      <input 
+                          className="w-full bg-white border border-slate-200 text-slate-700 text-xs rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 transition-all"
+                          value={industryName} 
+                          disabled
+                          placeholder="-"
+                      />
+                  </div>
+                  
+                  <EditableField 
+                      label="Gender" 
+                      value={client.profile?.gender} 
+                      onChange={(v:any) => handleUpdateField('gender', v)} 
+                      type="select" 
+                      options={['male', 'female']} 
+                  />
+                  <EditableField 
+                      label="Reported Retirement Age" 
+                      value={client.retirementAge} 
+                      onChange={(v:any) => handleUpdateField('retirementAge', v)} 
+                      type="number" 
+                      placeholder="65" 
+                  />
+                  
+                  <EditableField 
+                      label="Reported Savings ($)" 
+                      value={client.profile?.monthlyInvestmentAmount} 
+                      onChange={(v:any) => handleUpdateField('monthlyInvestmentAmount', v)} 
+                      type="text" 
+                      placeholder="e.g. 500" 
+                  />
+                   <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Est. Monthly Income</label>
+                      <div className="text-xs font-bold text-slate-700 px-2 py-1.5 bg-slate-100 rounded-lg border border-slate-200">
+                          {fmtSGD(toNum(client.profile.monthlyIncome) || toNum(client.profile.grossSalary))}
+                      </div>
+                  </div>
+              </div>
+
+              <div className="bg-white p-3 rounded-xl border border-indigo-100 shadow-sm">
+                  <label className="text-[9px] font-black text-indigo-400 uppercase tracking-widest block mb-2">
+                      "Why I want to win?" (Context)
+                  </label>
+                  <textarea 
+                      value={client.goals} 
+                      onChange={(e) => handleUpdateField('goals', e.target.value)}
+                      className="w-full text-xs font-medium text-slate-700 bg-transparent outline-none resize-none placeholder-slate-300"
+                      rows={3}
+                      placeholder="Client context, contest entry text, or main financial goals..."
+                  />
+              </div>
+          </div>
+
           <div className="border-t border-slate-100 my-2"></div>
           <div className="space-y-4">
-             <div className="grid grid-cols-2 gap-4">
-                <EditableField label="Retire Age" value={client.retirementAge} onChange={(v:any) => handleUpdateField('retirementAge', v)} type="number" placeholder="65" />
+             <div className="grid grid-cols-1 gap-4">
                 <EditableField label="Tags" value={client.tags?.join(', ')} onChange={(v:any) => handleUpdateField('tags', v.split(',').map((s:string) => s.trim()))} type="text" placeholder="e.g. VIP" />
              </div>
-             <EditableField label="Goals / Why" value={client.goals} onChange={(v:any) => handleUpdateField('goals', v)} type="textarea" placeholder="Client goals..." />
           </div>
           <div className="bg-gradient-to-br from-slate-50 to-blue-50/50 rounded-lg p-3 border border-slate-100 mt-4">
             <div className="flex items-center justify-between mb-1">
@@ -532,6 +657,8 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
             <button onClick={handleWhatsApp} className="flex-1 flex items-center justify-center gap-1.5 py-2 bg-[#25D366] hover:bg-[#128C7E] text-white rounded-lg text-xs font-bold transition-colors shadow-sm">Chat</button>
             <button onClick={handleCalendar} className="flex-1 flex items-center justify-center gap-1.5 py-2 bg-blue-50 text-blue-600 hover:bg-blue-100 border border-blue-100 rounded-lg text-xs font-bold transition-colors shadow-sm">Book</button>
       </div>
+      
+      {/* REPORTS */}
       {reportModalOpen && (
           <div className="absolute inset-0 z-50 bg-white flex flex-col p-4 animate-fade-in" onClick={e => e.stopPropagation()}>
               <div className="flex justify-between items-center mb-4 border-b border-slate-100 pb-2"><h3 className="font-bold text-sm text-slate-800">Generated Report</h3><button onClick={() => setReportModalOpen(false)} className="text-slate-400 hover:text-slate-600">✕</button></div>
@@ -545,7 +672,7 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
           </div>
       )}
 
-      {/* Sale Editing Modal - Only shows when editingSale state is populated */}
+      {/* Sale Editing Modal */}
       {editingSale && (
           <AddSaleModal 
               clientName={client.name}
@@ -556,6 +683,15 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
               initialSale={editingSale}
           />
       )}
+
+      {/* CLOSURE DECK MODAL */}
+      <ClosureDeckModal 
+         isOpen={showClosureDeck}
+         onClose={() => setShowClosureDeck(false)}
+         client={client}
+      />
     </div>
   );
 };
+
+export default ClientCard;

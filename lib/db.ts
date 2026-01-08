@@ -6,11 +6,22 @@ import { adminDb } from './db/admin';
 
 const LOCAL_STORAGE_KEY = 'fa_clients';
 
+// Helper to ensure session exists or refresh it
+const getActiveSession = async () => {
+  if (!supabase) return null;
+  let { data: { session } } = await supabase.auth.getSession();
+  if (!session) {
+    const { data: refreshData } = await supabase.auth.refreshSession();
+    session = refreshData.session;
+  }
+  return session;
+};
+
 export const db = {
   getClients: async (userId?: string): Promise<Client[]> => {
     if (isSupabaseConfigured() && supabase) {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
+        const session = await getActiveSession();
         const user = session?.user;
         if (!user) return [];
 
@@ -142,9 +153,9 @@ export const db = {
       return clientToSave;
     }
 
-    const { data: { session } } = await supabase.auth.getSession();
+    const session = await getActiveSession();
     const authUser = session?.user;
-    if (!authUser) throw new Error("Unauthorized");
+    if (!authUser) throw new Error("Unauthorized: Please refresh page.");
 
     const { _ownerId, _ownerEmail, ...payloadData } = client;
     const validOwnerId = (_ownerId && _ownerId !== 'undefined') ? _ownerId : authUser.id;
@@ -174,26 +185,45 @@ export const db = {
 
   createClientsBulk: async (leads: any[], targetUserId: string): Promise<number> => {
     if (!supabase) return 0;
+    
     const payloads = leads.map(lead => {
-      const id = crypto.randomUUID();
-      const name = lead.name || 'Unnamed Lead';
-      const email = lead.email || '';
-      const phone = lead.phone || '';
+      // Use existing ID if provided (from import tool) or generate new one
+      const id = lead.id && lead.id.length > 10 ? lead.id : crypto.randomUUID();
       
+      // Merge INITIAL_PROFILE with imported profile data to ensure structure
+      const mergedProfile = {
+          ...INITIAL_PROFILE,
+          ...(lead.profile || {}),
+          // Ensure core identity fields are synced
+          name: lead.name || lead.profile?.name || 'Unnamed Lead',
+          email: lead.email || lead.profile?.email || '',
+          phone: lead.phone || lead.profile?.phone || ''
+      };
+
       return {
         id,
         user_id: targetUserId,
         data: {
-          id,
-          name,
-          email,
-          phone,
-          profile: { ...INITIAL_PROFILE, name, email, phone },
+          // 1. Spread Default States First
           expenses: INITIAL_EXPENSES,
           retirement: INITIAL_RETIREMENT,
-          lastUpdated: new Date().toISOString(),
+          cpfState: INITIAL_CPF,
+          cashflowState: INITIAL_CASHFLOW,
+          insuranceState: INITIAL_INSURANCE,
+          investorState: INITIAL_INVESTOR,
+          propertyState: INITIAL_PROPERTY,
+          wealthState: INITIAL_WEALTH,
           followUp: { status: lead.status || 'new' },
-          _ownerId: targetUserId 
+          
+          // 2. Spread Imported Lead Data (This overrides defaults with imported values like jobTitle, goals)
+          ...lead,
+          
+          // 3. Enforce Critical System Fields
+          id,
+          profile: mergedProfile,
+          lastUpdated: new Date().toISOString(),
+          _ownerId: targetUserId,
+          advisorId: targetUserId 
         },
         updated_at: new Date().toISOString()
       };
@@ -208,18 +238,9 @@ export const db = {
     // 1. Force use Supabase if object exists, ignoring flag
     if (supabase) {
       
-      // AUTO-HEAL: Attempt to get session, refresh if needed
-      let { data: { session } } = await supabase.auth.getSession();
+      const session = await getActiveSession();
       if (!session) {
-          const { data: refreshData } = await supabase.auth.refreshSession();
-          session = refreshData.session;
-      }
-      
-      if (!session) {
-          const msg = "Authentication Error: You are not logged in. Please refresh.";
-          console.error(msg);
-          window.alert(msg);
-          throw new Error(msg);
+          throw new Error("Authentication Error: You are not logged in. Please refresh.");
       }
 
       console.log(`[Delete Protocol] Removing ${clientId}...`);
@@ -256,9 +277,7 @@ export const db = {
 
           if (rpcError) {
               console.error("Nuclear Delete Failed:", rpcError);
-              const finalMsg = `DELETE FAILED: ${rpcError.message}. Ensure you have run the 'DB Repair' script (V10.4) in Admin tab.`;
-              window.alert(finalMsg);
-              throw new Error(finalMsg);
+              throw new Error(`DELETE FAILED: ${rpcError.message}. Ensure you have run the 'DB Repair' script (V10.4) in Admin tab.`);
           }
 
           if (rpcData === true) {

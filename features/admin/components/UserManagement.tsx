@@ -22,6 +22,14 @@ const AVAILABLE_MODULES = TAB_DEFINITIONS.filter(t =>
     !['disclaimer', 'dashboard', 'crm', 'reminders', 'report', 'admin'].includes(t.id)
 );
 
+// Helper for generating robust IDs
+const generateId = () => {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    try { return crypto.randomUUID(); } catch(e) {}
+  }
+  return 'team_' + Math.random().toString(36).substr(2, 9);
+};
+
 // Reusable Advisor Row Component
 const AdvisorRow: React.FC<{
   user: Advisor;
@@ -354,7 +362,7 @@ export const UserManagement: React.FC<UserManagementProps> = ({ advisors, teams,
           const managerId = formReportingTo.replace('create_for_', '');
           const manager = advisors.find(a => a.id === managerId);
           if (manager) {
-              const newTeamId = `team_${Date.now()}`;
+              const newTeamId = generateId();
               const newTeam: Team = {
                   id: newTeamId,
                   name: `${manager.name.split(' ')[0]}'s Unit`,
@@ -432,7 +440,7 @@ export const UserManagement: React.FC<UserManagementProps> = ({ advisors, teams,
 
   const handleCreateTeamTab = () => {
       if (!newTeamName || !newTeamLeader) return;
-      const newTeam: Team = { id: `team_${Date.now()}`, name: newTeamName, leaderId: newTeamLeader };
+      const newTeam: Team = { id: generateId(), name: newTeamName, leaderId: newTeamLeader };
       onUpdateTeams([...teams, newTeam]);
       setNewTeamName(''); setNewTeamLeader('');
       setIsCreateUnitOpen(false);
@@ -442,7 +450,7 @@ export const UserManagement: React.FC<UserManagementProps> = ({ advisors, teams,
   const handleCreateTeamForManager = (manager: Advisor) => {
       const name = prompt(`Enter a new Unit name for ${manager.name}:`);
       if (!name) return;
-      const newTeam: Team = { id: `team_${Date.now()}`, name, leaderId: manager.id };
+      const newTeam: Team = { id: generateId(), name, leaderId: manager.id };
       onUpdateTeams([...teams, newTeam]);
   };
 

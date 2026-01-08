@@ -1,43 +1,34 @@
-
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { db } from '../../lib/db';
-import { Client, ContactStatus } from '../../types';
+import { Client, Product, Sale } from '../../types';
 import { useAuth } from '../../contexts/AuthContext';
-import ClientDrawer from '../crm/components/ClientDrawer';
+import { ClientCard } from '../crm/components/ClientCard';
+import { AddSaleModal } from '../crm/components/AddSaleModal';
 import { useToast } from '../../contexts/ToastContext';
 import { logActivity } from '../../lib/db/activities';
-
-// ... (KEEP REVERSE_STATUS_MAP as is) ...
-const REVERSE_STATUS_MAP: Record<string, string> = {
-  'New Lead': 'new',
-  'Contacted': 'contacted',
-  'Picked Up': 'picked_up',
-  'NPU 1': 'npu_1',
-  'NPU 2': 'npu_2',
-  'NPU 3': 'npu_3',
-  'NPU 4': 'npu_4',
-  'NPU 5': 'npu_5',
-  'NPU 6': 'npu_6',
-  'Appt Set': 'appt_set',
-  'Appt Met': 'appt_met',
-  'Proposal': 'proposal',
-  'Pending Decision': 'pending_decision',
-  'Client': 'client',
-  'Case Closed': 'case_closed',
-  'Lost': 'not_keen',
-};
+import { adminDb } from '../../lib/db/admin';
 
 const RemindersTab: React.FC = () => {
   const { user } = useAuth();
   const toast = useToast();
   const [clients, setClients] = useState<Client[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
   
-  // Drawer State
+  // Filter State
+  const [advisorFilter, setAdvisorFilter] = useState<string>('All');
+  
+  // Modal States
   const [selectedClient, setSelectedClient] = useState<Client | null>(null);
-  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [saleClient, setSaleClient] = useState<Client | null>(null);
 
   useEffect(() => {
     refreshData();
+    // Load products for the ClientCard dropdowns
+    const fetchConfig = async () => {
+        const settings = await adminDb.getSystemSettings();
+        if (settings?.products) setProducts(settings.products);
+    };
+    fetchConfig();
   }, [user]);
 
   const refreshData = () => {
@@ -46,185 +37,311 @@ const RemindersTab: React.FC = () => {
     }
   };
 
+  // Derive unique advisors from the loaded clients
+  const availableAdvisors = useMemo(() => {
+      const map = new Map<string, string>();
+      clients.forEach(c => {
+          if (c._ownerId) {
+              // Use email part before @ as name if available, else 'Advisor'
+              const name = c._ownerEmail ? c._ownerEmail.split('@')[0] : `Advisor ${c._ownerId.slice(0,4)}`;
+              map.set(c._ownerId, name);
+          }
+      });
+      return Array.from(map.entries()).map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
+  }, [clients]);
+
+  // Filter clients based on selection
+  const filteredClients = useMemo(() => {
+      if (advisorFilter === 'All') return clients;
+      return clients.filter(c => c._ownerId === advisorFilter);
+  }, [clients, advisorFilter]);
+
+  // Open the full ClientCard modal
   const handleOpenClient = (client: Client) => {
     setSelectedClient(client);
-    setIsDrawerOpen(true);
+  };
+
+  // Handle updates from within the ClientCard
+  const handleFullUpdate = async (updatedClient: Client) => {
+      // Optimistic update
+      setSelectedClient(updatedClient); 
+      setClients(prev => prev.map(c => c.id === updatedClient.id ? updatedClient : c)); 
+      
+      try {
+          await db.saveClient(updatedClient);
+      } catch (e) {
+          toast.error("Failed to save changes");
+          refreshData(); // Revert on error
+      }
   };
 
   const handleDeleteClient = async () => {
       if (!selectedClient) return;
-      // The drawer handles the confirmation dialog UI, but we must handle the logic/errors here
       try {
           await db.deleteClient(selectedClient.id);
           setClients(prev => prev.filter(c => c.id !== selectedClient!.id));
           setSelectedClient(null);
-          setIsDrawerOpen(false);
           toast.success("Client deleted successfully.");
       } catch (e: any) {
           console.error("Delete Failed:", e);
           toast.error(`Delete Failed: ${e.message}`);
-          alert(`FAILED TO DELETE: ${e.message}`); // LOUD FAILURE
       }
   };
 
-  // ... (Keep handleUpdateClient, handleWhatsApp, ReminderCard, etc.) ...
-  const handleUpdateClient = async (id: string, field: string, value: any, section: string = 'root') => {
-    if (!selectedClient) return;
-    
-    let updatedClient = { ...selectedClient };
-    
-    if (field === 'status' && section === 'followUp') {
-        const newStatus = value as ContactStatus;
-        const newStageName = newStatus === 'new' ? 'New Lead' : 
-                 newStatus === 'picked_up' ? 'Picked Up' :
-                 newStatus === 'client' ? 'Client' : 
-                 newStatus === 'case_closed' ? 'Case Closed' :
-                 newStatus === 'proposal' ? 'Proposal' :
-                 newStatus === 'appt_set' ? 'Appt Set' : 
-                 newStatus === 'appt_met' ? 'Appt Met' :
-                 newStatus.includes('npu') ? newStatus.toUpperCase().replace('_', ' ') : 
-                 selectedClient.stage;
-                 
-        const now = new Date().toISOString();
-        const logEntry = {
-            id: `sys_${Date.now()}`,
-            content: `Status updated: ${selectedClient.stage || 'New'} ➔ ${newStageName}`,
-            date: now,
-            author: 'System'
-        };
+  const handleAddSale = async (sale: Sale) => {
+      if (!saleClient) return;
+      
+      const updatedClient = {
+          ...saleClient,
+          sales: [...(saleClient.sales || []), sale],
+          stage: 'Client',
+          followUp: { ...saleClient.followUp, status: 'client' },
+          momentumScore: 100,
+          lastUpdated: new Date().toISOString(),
+          stageHistory: [...(saleClient.stageHistory || []), { stage: 'Client', date: new Date().toISOString() }],
+          notes: [{ id: `sale_${Date.now()}`, content: `Sale Closed: ${sale.productName} ($${sale.premiumAmount})`, date: new Date().toISOString(), author: 'System' }, ...(saleClient.notes || [])]
+      };
 
-        updatedClient = {
-            ...updatedClient,
-            stage: newStageName,
-            lastContact: now,
-            lastUpdated: now,
-            followUp: {
-                ...updatedClient.followUp,
-                status: newStatus,
-                lastContactedAt: now
-            },
-            stageHistory: [...(updatedClient.stageHistory || []), { stage: newStageName, date: now }],
-            notes: [logEntry, ...(updatedClient.notes || [])]
-        };
-        
-        logActivity(updatedClient.id, 'status_change', `Status changed to ${newStageName} via Reminders`);
-        
-    } else {
-        if (section === 'root') {
-            (updatedClient as any)[field] = value;
-        } else if (section === 'profile') {
-            updatedClient.profile = { ...updatedClient.profile, [field]: value };
-        } else if (section === 'followUp') {
-            updatedClient.followUp = { ...updatedClient.followUp, [field]: value };
-        } else if (section === 'appointments') {
-            updatedClient.appointments = { ...updatedClient.appointments, [field]: value };
-        }
-    }
-
-    setSelectedClient(updatedClient);
-    setClients(prev => prev.map(c => c.id === id ? updatedClient : c));
-
-    try {
-        await db.saveClient(updatedClient);
-    } catch (e) {
-        toast.error("Failed to save changes");
-    }
+      setClients(prev => prev.map(c => c.id === updatedClient.id ? updatedClient : c));
+      
+      // If we are currently viewing this client, update the modal too
+      if (selectedClient?.id === updatedClient.id) setSelectedClient(updatedClient);
+      
+      try {
+          await db.saveClient(updatedClient);
+          logActivity(updatedClient.id, 'sale_recorded', `Sale recorded via Reminders: ${sale.productName}`);
+          toast.success("Sale recorded!");
+      } catch (e) {
+          toast.error("Failed to save sale.");
+      }
   };
 
-  const handleWhatsApp = (e: React.MouseEvent, client: Client) => {
+  // --- WISHED / WHATSAPP LOGIC ---
+  
+  const isContactedToday = (client: Client) => {
+      if (!client.lastContact) return false;
+      const contact = new Date(client.lastContact);
+      const today = new Date();
+      return contact.getDate() === today.getDate() && 
+             contact.getMonth() === today.getMonth() && 
+             contact.getFullYear() === today.getFullYear();
+  };
+
+  const handleWhatsApp = async (e: React.MouseEvent, client: Client, isBirthday: boolean = false) => {
     e.stopPropagation();
     const phone = client.profile.phone?.replace(/\D/g, '') || '';
+    
     if (!phone) {
         toast.error("No phone number found");
         return;
     }
-    const url = `https://wa.me/${phone}`;
+
+    // 1. Construct Message
+    let text = '';
+    if (isBirthday) {
+        text = `Happy Birthday ${client.profile.name.split(' ')[0]}! 🎂 Wishing you a fantastic year ahead!`;
+    }
+    
+    // 2. Open WhatsApp
+    const url = `https://wa.me/${phone}${text ? `?text=${encodeURIComponent(text)}` : ''}`;
     window.open(url, '_blank');
+
+    // 3. Mark as "Wished" (Update lastContact)
+    if (isBirthday) {
+        const now = new Date().toISOString();
+        const updatedClient = {
+            ...client,
+            lastContact: now,
+            lastUpdated: now,
+            notes: [{
+                id: `wish_${Date.now()}`,
+                content: 'Sent Birthday Wish 🎂',
+                date: now,
+                author: 'System'
+            }, ...(client.notes || [])]
+        };
+
+        // Optimistic UI Update (Unhighlights immediately)
+        setClients(prev => prev.map(c => c.id === client.id ? updatedClient : c));
+        if (selectedClient?.id === client.id) setSelectedClient(updatedClient);
+
+        await db.saveClient(updatedClient);
+        toast.success("Marked as wished!");
+    }
   };
 
   const now = new Date();
   const currentMonth = now.getMonth();
 
-  const birthdayReminders = clients.filter(c => {
+  // --- FILTERS ---
+
+  const birthdayReminders = filteredClients.filter(c => {
     const checkBirthday = (dobStr?: string) => {
         if (!dobStr) return false;
         const d = new Date(dobStr);
         return d.getMonth() === currentMonth;
     };
     return checkBirthday(c.profile.dob) || (c.familyMembers || []).some(f => checkBirthday(f.dob));
+  }).sort((a, b) => {
+      const dayA = new Date(a.profile.dob || '').getDate() || 32;
+      const dayB = new Date(b.profile.dob || '').getDate() || 32;
+      
+      // Move "Wished" (contacted today) clients to the bottom
+      const wishedA = isContactedToday(a) ? 1 : 0;
+      const wishedB = isContactedToday(b) ? 1 : 0;
+      
+      if (wishedA !== wishedB) return wishedA - wishedB;
+      return dayA - dayB;
   });
 
-  const npuOverdue = clients.filter(c => {
-    if (!c.followUp.status?.includes('NPU')) return false;
-    const lastDate = c.followUp.lastContactedAt || c.lastUpdated;
-    const daysSince = (now.getTime() - new Date(lastDate).getTime()) / (1000 * 3600 * 24);
-    if (c.followUp.status === 'NPU 1') return daysSince > 2;
-    return daysSince > 5; 
+  // UNTOUCHED LEADS LOGIC (New Lead or NPU, >2 Days Inactive)
+  const untouchedLeads = filteredClients.filter(c => {
+    const s = c.followUp.status;
+    const isTargetStage = s === 'new' || (s && s.startsWith('npu'));
+    
+    if (!isTargetStage) return false;
+
+    // Check last interaction (either manual log or system update)
+    const lastActivity = c.followUp.lastContactedAt || c.lastUpdated;
+    // Default to epoch if no date, ensuring it shows up as untouched
+    const lastDate = lastActivity ? new Date(lastActivity) : new Date(0); 
+    
+    const diffTime = now.getTime() - lastDate.getTime();
+    const diffDays = diffTime / (1000 * 3600 * 24);
+    
+    return diffDays > 2;
+  }).sort((a,b) => {
+      // Sort by oldest activity first (most neglected)
+      const dateA = new Date(a.followUp.lastContactedAt || a.lastUpdated).getTime();
+      const dateB = new Date(b.followUp.lastContactedAt || b.lastUpdated).getTime();
+      return dateA - dateB; 
   });
 
-  const pendingOverdue = clients.filter(c => {
+  const pendingOverdue = filteredClients.filter(c => {
     if (c.followUp.status !== 'pending_decision' && c.followUp.status !== 'Pending Decision') return false;
     const lastDate = c.followUp.lastContactedAt || c.lastUpdated;
     const daysSince = (now.getTime() - new Date(lastDate).getTime()) / (1000 * 3600 * 24);
-    return daysSince > 3;
+    return daysSince > 3; 
   });
 
-  const appointments = clients.filter(c => {
+  const appointments = filteredClients.filter(c => {
       if (!c.appointments?.firstApptDate) return false;
       const apptDate = new Date(c.appointments.firstApptDate);
       const diff = (apptDate.getTime() - now.getTime()) / (1000 * 3600 * 24);
-      return diff >= 0 && diff <= 2;
-  });
+      return diff >= 0 && diff <= 2; 
+  }).sort((a,b) => new Date(a.appointments.firstApptDate).getTime() - new Date(b.appointments.firstApptDate).getTime());
 
-  const ReminderCard = ({ title, items, colorClass, icon, badgeColor }: any) => (
-    <div className={`bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex flex-col h-full`}>
-        <div className={`px-5 py-4 border-b border-slate-100 flex items-center gap-3 ${colorClass}`}>
-            <div className={`p-2 rounded-lg bg-white/20`}>{icon}</div>
-            <div>
-                <h3 className="font-bold text-sm">{title}</h3>
-                <p className="text-[10px] opacity-80 uppercase tracking-wider font-bold">Action Required</p>
+  const followUpTasks = filteredClients.filter(c => {
+      if (!c.followUp?.nextFollowUpDate) return false;
+      const target = new Date(c.followUp.nextFollowUpDate);
+      target.setHours(0,0,0,0);
+      const today = new Date(); today.setHours(0,0,0,0);
+      const diffTime = target.getTime() - today.getTime();
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      return diffDays <= 14;
+  }).sort((a, b) => new Date(a.followUp.nextFollowUpDate).getTime() - new Date(b.followUp.nextFollowUpDate).getTime());
+
+  // --- CARD COMPONENT ---
+  const ReminderCard = ({ title, items, colorClass, icon, badgeColor, isBirthdayCard }: any) => (
+    <div className={`bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col h-[calc(100vh-220px)] min-h-[500px]`}>
+        <div className={`px-4 py-3 border-b border-slate-100 flex items-center gap-3 ${colorClass} shrink-0`}>
+            <div className={`p-1.5 rounded-lg bg-white/40 shadow-sm border border-black/5`}>{icon}</div>
+            <div className="flex-1">
+                <h3 className="font-bold text-xs text-slate-800 uppercase tracking-wide">{title}</h3>
             </div>
-            <span className="ml-auto bg-white text-slate-900 px-3 py-1 rounded-full text-xs font-black shadow-sm">{items.length}</span>
+            <span className="bg-white text-slate-900 px-2 py-0.5 rounded-md text-[10px] font-black shadow-sm border border-slate-100">{items.length}</span>
         </div>
-        <div className="flex-1 overflow-y-auto max-h-[300px] custom-scrollbar">
+        
+        <div className="flex-1 overflow-y-auto custom-scrollbar bg-slate-50/30 p-1">
             {items.length === 0 ? (
-                <div className="p-8 text-center text-slate-400 text-xs italic flex flex-col items-center">
-                    <span className="text-2xl mb-2 opacity-30">✨</span>
-                    All caught up.
+                <div className="flex flex-col items-center justify-center h-32 text-center mt-10">
+                    <span className="text-2xl mb-1 opacity-20 grayscale">✨</span>
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">All Clear</p>
                 </div>
             ) : (
-                <div className="divide-y divide-slate-50">
-                    {items.map((c: Client) => (
-                        <div 
-                            key={c.id} 
-                            onClick={() => handleOpenClient(c)}
-                            className="p-4 hover:bg-slate-50 transition-all cursor-pointer group flex items-center justify-between"
-                        >
-                            <div className="flex-1 min-w-0 pr-4">
-                                <div className="flex items-center gap-2 mb-1">
-                                    <p className="text-sm font-bold text-slate-800 truncate">{c.profile.name || c.name}</p>
-                                    <span className={`text-[9px] font-black px-1.5 py-0.5 rounded uppercase tracking-wider ${badgeColor || 'bg-slate-100 text-slate-500'}`}>
-                                        {c.followUp.status?.replace('_', ' ') || 'New'}
-                                    </span>
-                                </div>
-                                <div className="flex items-center gap-3 text-xs text-slate-500">
-                                    <span className="flex items-center gap-1">
-                                        <span className="opacity-50">📞</span> {c.profile.phone || '-'}
-                                    </span>
-                                    <span className="text-slate-300">•</span>
-                                    <span className="opacity-70 italic">Last: {new Date(c.followUp.lastContactedAt || c.lastUpdated).toLocaleDateString()}</span>
-                                </div>
-                            </div>
-                            
-                            <button 
-                                onClick={(e) => handleWhatsApp(e, c)}
-                                className="w-8 h-8 flex items-center justify-center rounded-full bg-emerald-50 text-emerald-600 opacity-0 group-hover:opacity-100 transition-all hover:bg-emerald-500 hover:text-white hover:scale-110 shadow-sm"
-                                title="Quick WhatsApp"
+                <div className="space-y-1">
+                    {items.map((c: Client) => {
+                        // Check if wished today (only for birthday card logic visual)
+                        const wished = isBirthdayCard && isContactedToday(c);
+                        
+                        return (
+                            <div 
+                                key={c.id} 
+                                onClick={() => handleOpenClient(c)}
+                                className={`bg-white p-2.5 rounded-lg border transition-all cursor-pointer group flex items-start gap-2
+                                    ${wished ? 'opacity-50 border-slate-100 grayscale' : 'border-slate-100 hover:border-indigo-300 hover:shadow-sm'}
+                                `}
                             >
-                                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12.031 6.172c-3.181 0-5.767 2.586-5.768 5.766-.001 1.298.38 2.27 1.025 3.312l-.542 2.01 2.036-.53c.96.514 1.95.787 3.25.788h.003c3.181 0 5.767-2.586 5.768-5.766 0-3.18-2.587-5.766-5.768-5.766h-.004zm3.003 8.3c-.12.33-.7.63-1.01.69-.24.05-.55.08-1.53-.33-1.3-.54-2.12-1.85-2.19-1.94-.06-.09-.54-.72-.54-1.37s.34-.97.46-1.1c.12-.13.27-.16.36-.16s.18.01.26.01.21-.04.33.25c.12.29.41 1.01.45 1.09.04.08.07.17.01.28-.06.11-.09.18-.18.29-.06.11-.09.18-.18.29-.09.11-.18.23-.26.3-.09.08-.18.17-.08.34.1.17.44.73.94 1.18.64.57 1.18.75 1.35.83.17.08.27.07.37-.04.1-.11.43-.51.55-.68.12-.17.23-.15.39-.09.16.06 1.03.49 1.2.58.17.09.28.14.32.2.04.06.04.35-.08.68z"/></svg>
-                            </button>
-                        </div>
-                    ))}
+                                <div className="flex-1 min-w-0">
+                                    <div className="flex items-center justify-between gap-2 mb-1">
+                                        <p className={`text-xs font-bold truncate ${wished ? 'text-slate-500 line-through' : 'text-slate-800'}`}>
+                                            {c.profile.name || c.name}
+                                        </p>
+                                        
+                                        {/* Dynamic Date Badge */}
+                                        {isBirthdayCard ? (
+                                            c.profile.dob && (
+                                                <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${wished ? 'bg-slate-100 text-slate-400 border-slate-200' : 'bg-emerald-50 text-emerald-600 border-emerald-100'}`}>
+                                                    {wished ? 'Wished' : `${new Date(c.profile.dob).getDate()} ${new Date(c.profile.dob).toLocaleString('default', {month: 'short'})}`}
+                                                </span>
+                                            )
+                                        ) : title.includes('Tasks') && c.followUp?.nextFollowUpDate ? (
+                                            (() => {
+                                                const d = new Date(c.followUp.nextFollowUpDate); d.setHours(0,0,0,0);
+                                                const today = new Date(); today.setHours(0,0,0,0);
+                                                const isOverdue = d.getTime() < today.getTime();
+                                                const isToday = d.getTime() === today.getTime();
+                                                return (
+                                                    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${isOverdue ? 'bg-red-50 text-red-600 border-red-100' : isToday ? 'bg-amber-50 text-amber-600 border-amber-100' : 'bg-blue-50 text-blue-600 border-blue-100'}`}>
+                                                        {isOverdue ? 'Overdue' : isToday ? 'Today' : d.toLocaleDateString('en-SG', {day: 'numeric', month: 'short'})}
+                                                    </span>
+                                                );
+                                            })()
+                                        ) : title.includes('Appointment') && c.appointments?.firstApptDate ? (
+                                             <span className="text-[9px] font-bold text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-100">
+                                                {new Date(c.appointments.firstApptDate).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                                             </span>
+                                        ) : null}
+                                    </div>
+                                    
+                                    <div className="flex items-center gap-2">
+                                        <span className={`text-[9px] font-bold px-1.5 rounded-sm uppercase tracking-wider ${badgeColor || 'bg-slate-100 text-slate-500'}`}>
+                                            {c.followUp.status?.replace('npu_', 'NPU ')}
+                                        </span>
+                                        <span className="text-[9px] text-slate-400 truncate font-mono">
+                                            {c.profile.phone || '-'}
+                                        </span>
+                                    </div>
+                                    
+                                    {/* Advisor Name if viewing All */}
+                                    {advisorFilter === 'All' && c._ownerEmail && (
+                                        <div className="mt-1 flex items-center gap-1">
+                                            <span className="text-[8px] uppercase font-bold text-slate-300 bg-slate-50 px-1 rounded">
+                                                {c._ownerEmail.split('@')[0]}
+                                            </span>
+                                        </div>
+                                    )}
+                                </div>
+                                
+                                <button 
+                                    onClick={(e) => handleWhatsApp(e, c, isBirthdayCard)}
+                                    className={`w-6 h-6 flex items-center justify-center rounded transition-all shadow-sm shrink-0 self-center 
+                                        ${wished 
+                                            ? 'bg-emerald-100 text-emerald-600 cursor-default' 
+                                            : 'bg-slate-50 text-slate-400 hover:bg-[#25D366] hover:text-white opacity-0 group-hover:opacity-100'
+                                        }`}
+                                    title={wished ? "Already Wished" : "Quick WhatsApp"}
+                                    disabled={wished}
+                                >
+                                    {wished ? (
+                                        <span className="text-xs font-bold">✓</span>
+                                    ) : (
+                                        <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path d="M12.031 6.172c-3.181 0-5.767 2.586-5.768 5.766-.001 1.298.38 2.27 1.025 3.312l-.542 2.01 2.036-.53c.96.514 1.95.787 3.25.788h.003c3.181 0 5.767-2.586 5.768-5.766 0-3.18-2.587-5.766-5.768-5.766h-.004zm3.003 8.3c-.12.33-.7.63-1.01.69-.24.05-.55.08-1.53-.33-1.3-.54-2.12-1.85-2.19-1.94-.06-.09-.54-.72-.54-1.37s.34-.97.46-1.1c.12-.13.27-.16.36-.16s.18.01.26.01.21-.04.33.25c.12.29.41 1.01.45 1.09.04.08.07.17.01.28-.06.11-.09.18-.18.29-.06.11-.09.18-.18.29-.09.11-.18.23-.26.3-.09.08-.18.17-.08.34.1.17.44.73.94 1.18.64.57 1.18.75 1.35.83.17.08.27.07.37-.04.1-.11.43-.51.55-.68.12-.17.23-.15.39-.09.16.06 1.03.49 1.2.58.17.09.28.14.32.2.04.06.04.35-.08.68z"/></svg>
+                                    )}
+                                </button>
+                            </div>
+                        );
+                    })}
                 </div>
             )}
         </div>
@@ -232,60 +349,103 @@ const RemindersTab: React.FC = () => {
   );
 
   return (
-    <div className="p-6 max-w-7xl mx-auto animate-fade-in space-y-8 pb-24">
+    <div className="p-4 md:p-6 max-w-[1800px] mx-auto space-y-4 h-full flex flex-col">
+      <div className="flex flex-col md:flex-row justify-between items-end mb-2 shrink-0 gap-4">
+        <div>
+            <h1 className="text-2xl font-black text-slate-900 flex items-center gap-2">
+                <span>🔔</span> Action Center
+            </h1>
+            <p className="text-slate-500 text-xs font-medium">Daily prioritized bird's eye view.</p>
+        </div>
         
-        <div className="flex justify-between items-end">
-            <div>
-                <h1 className="text-3xl font-black text-slate-900 tracking-tight">Daily Pulse</h1>
-                <p className="text-slate-500 font-medium text-sm mt-1">Focus on what moves the needle today.</p>
-            </div>
-            <button onClick={refreshData} className="text-xs font-bold text-indigo-600 bg-indigo-50 px-3 py-2 rounded-lg hover:bg-indigo-100 transition-colors">
-                ↻ Refresh
+        <div className="flex items-center gap-2">
+            {availableAdvisors.length > 1 && (
+                <div className="relative">
+                    <select 
+                        value={advisorFilter}
+                        onChange={(e) => setAdvisorFilter(e.target.value)}
+                        className="appearance-none bg-white border border-indigo-100 text-slate-700 text-xs font-bold py-1.5 pl-3 pr-8 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 hover:border-indigo-300 transition-all cursor-pointer shadow-sm"
+                    >
+                        <option value="All">All Advisors</option>
+                        {availableAdvisors.map(adv => (
+                            <option key={adv.id} value={adv.id}>{adv.name}</option>
+                        ))}
+                    </select>
+                    <div className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 text-[8px]">▼</div>
+                </div>
+            )}
+            
+            <button onClick={refreshData} className="text-[10px] font-bold text-indigo-600 hover:bg-indigo-50 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1 border border-indigo-100 bg-white shadow-sm">
+                <span>↻</span> Refresh
             </button>
         </div>
+      </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <ReminderCard 
-                title="Immediate Attention (NPU)" 
-                items={npuOverdue} 
-                colorClass="bg-rose-500 text-white" 
-                badgeColor="bg-rose-100 text-rose-700"
-                icon={<svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>} 
-            />
-            <ReminderCard 
-                title="Pending Decisions" 
-                items={pendingOverdue} 
-                colorClass="bg-amber-500 text-white" 
-                badgeColor="bg-amber-100 text-amber-700"
-                icon={<svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>} 
-            />
-            <ReminderCard 
-                title="Appointments (48h)" 
-                items={appointments} 
-                colorClass="bg-indigo-600 text-white" 
-                badgeColor="bg-indigo-100 text-indigo-700"
-                icon={<svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>} 
-            />
-            <ReminderCard 
-                title="Birthdays & Milestones" 
-                items={birthdayReminders} 
-                colorClass="bg-purple-600 text-white" 
-                badgeColor="bg-purple-100 text-purple-700"
-                icon={<svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 15.546c-.523 0-1.046.151-1.5.454a2.704 2.704 0 01-3 0 2.704 2.704 0 00-3 0 2.704 2.704 0 01-3 0 2.704 2.704 0 00-3 0 2.701 2.701 0 00-1.5-.454M9 6v2m3-2v2m3-2v2M9 3h.01M12 3h.01M15 3h.01M21 21v-7a2 2 0 00-2-2H5a2 2 0 00-2 2v7h18zm-3-9v-2a2 2 0 00-2-2H8a2 2 0 00-2 2v2h12z" /></svg>} 
-            />
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4 flex-1 min-h-0">
+        <ReminderCard 
+          title="Appointments (48h)" 
+          items={appointments} 
+          icon="📅" 
+          colorClass="bg-indigo-50 border-indigo-100 text-indigo-800"
+          badgeColor="text-indigo-600 bg-indigo-50 border border-indigo-100"
+        />
+        <ReminderCard 
+          title="Scheduled Tasks" 
+          items={followUpTasks} 
+          icon="📝" 
+          colorClass="bg-blue-50 border-blue-100 text-blue-800"
+          badgeColor="text-blue-600 bg-blue-50 border border-blue-100"
+        />
+        <ReminderCard 
+          title="Untouched Leads (>2 Days)" 
+          items={untouchedLeads} 
+          icon="💤" 
+          colorClass="bg-amber-50 border-amber-100 text-amber-800"
+          badgeColor="text-amber-600 bg-amber-50 border border-amber-100"
+        />
+        <ReminderCard 
+          title="Stalled Closures" 
+          items={pendingOverdue} 
+          icon="⏳" 
+          colorClass="bg-rose-50 border-rose-100 text-rose-800"
+          badgeColor="text-rose-600 bg-rose-50 border border-rose-100"
+        />
+        <ReminderCard 
+          title="Birthdays (Month)" 
+          items={birthdayReminders} 
+          icon="🎂" 
+          colorClass="bg-emerald-50 border-emerald-100 text-emerald-800"
+          badgeColor="text-emerald-600 bg-emerald-50 border border-emerald-100"
+          isBirthdayCard={true} 
+        />
+      </div>
+
+      {selectedClient && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[100] flex items-center justify-center p-4 animate-fade-in" onClick={() => setSelectedClient(null)}>
+            <div className="w-full max-w-2xl h-[85vh] animate-scale-in flex flex-col" onClick={e => e.stopPropagation()}>
+                 <div className="bg-white rounded-xl shadow-2xl h-full overflow-hidden flex flex-col">
+                    <ClientCard 
+                        client={selectedClient} 
+                        products={products}
+                        onUpdate={handleFullUpdate} 
+                        currentUser={user}
+                        onDelete={() => { handleDeleteClient(); setSelectedClient(null); }}
+                        onAddSale={() => setSaleClient(selectedClient)}
+                    />
+                 </div>
+            </div>
         </div>
+      )}
 
-        {selectedClient && (
-            <ClientDrawer 
-                isOpen={isDrawerOpen}
-                onClose={() => { setIsDrawerOpen(false); setSelectedClient(null); refreshData(); }}
-                client={selectedClient}
-                onUpdateField={handleUpdateClient}
-                onStatusUpdate={(c, s) => handleUpdateClient(c.id, 'status', s, 'followUp')}
-                onOpenFullProfile={() => { /* Navigate to Profile Logic */ }}
-                onDelete={handleDeleteClient}
-            />
-        )}
+      {saleClient && (
+          <AddSaleModal 
+              clientName={saleClient.name}
+              products={products} 
+              advisorBanding={user?.bandingPercentage || 50} 
+              onClose={() => setSaleClient(null)}
+              onSave={handleAddSale}
+          />
+      )}
     </div>
   );
 };

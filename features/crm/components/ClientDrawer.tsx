@@ -181,7 +181,6 @@ const ClientDrawer: React.FC<ClientDrawerProps> = ({
       } catch (e: any) {
           console.error("Delete Error:", e);
           toast.error(`Delete Failed: ${e.message}`);
-          alert(`FAILED TO DELETE: ${e.message}`); // LOUD FAILURE
       } finally {
           setIsDeleting(false);
       }

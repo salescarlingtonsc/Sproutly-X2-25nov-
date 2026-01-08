@@ -74,6 +74,10 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
   // Chart State
   const [showCostOfWaiting, setShowCostOfWaiting] = useState(false);
   const [selectedStrategy, setSelectedStrategy] = useState<'conservative' | 'moderate' | 'growth'>('moderate');
+  
+  // Dynamic Simulation State
+  const [delayYears, setDelayYears] = useState(5);
+  const [simulationReturn, setSimulationReturn] = useState(6.0);
 
   // Admin Assignment
   const [adminAdvisors, setAdminAdvisors] = useState<{id: string, email: string}[]>([]);
@@ -139,7 +143,6 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
   };
 
   // --- PERSISTENT INVESTMENT SETTINGS ---
-  // Fix: Default conservative rate to 3% to show visible gap vs bank rate (0.5%)
   const rate1 = profile.investmentRates?.conservative ?? 3.0; 
   const rate2 = profile.investmentRates?.moderate ?? 6.0;
   const rate3 = profile.investmentRates?.growth ?? 9.0;
@@ -147,6 +150,12 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
   const setRate1 = (v: number) => setProfile({...profile, investmentRates: {...(profile.investmentRates || { conservative: 3, moderate: 6, growth: 9 }), conservative: v}});
   const setRate2 = (v: number) => setProfile({...profile, investmentRates: {...(profile.investmentRates || { conservative: 3, moderate: 6, growth: 9 }), moderate: v}});
   const setRate3 = (v: number) => setProfile({...profile, investmentRates: {...(profile.investmentRates || { conservative: 3, moderate: 6, growth: 9 }), growth: v}});
+
+  // Sync simulation return when strategy changes
+  useEffect(() => {
+      const rates = { conservative: rate1, moderate: rate2, growth: rate3 };
+      setSimulationReturn(rates[selectedStrategy]);
+  }, [selectedStrategy, rate1, rate2, rate3]);
 
   // --- CALCULATIONS ---
 
@@ -202,31 +211,22 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
 
     if (monthly <= 0 && startingPrincipal <= 0) return null;
 
-    const rates = {
-       conservative: rate1, 
-       moderate: rate2,     
-       growth: rate3
-    };
-
-    const activeRate = rates[selectedStrategy];
-    
-    // --- SCENARIO 1: START NOW ---
-    const r = activeRate / 100;
+    // Use dynamic simulation return
+    const r = simulationReturn / 100;
     const monthlyRate = r / 12;
     
-    // --- SCENARIO 2: WAIT 5 YEARS ---
-    // For the first 5 years, money just sits in "Bank" (0.5% return)
-    // Then we start the same investment strategy, but 5 years late.
-    const delayYears = 5;
+    // --- SCENARIO 2: WAIT X YEARS ---
+    // Rules: 
+    // 1. Existing Principal sits in Bank (0.5%) for delayYears.
+    // 2. Monthly Contributions are ZERO for delayYears (delaying the start).
+    // 3. At Year X, Principal moves to Market + Monthly Contributions begin.
+    const delayDuration = delayYears;
     const bankRate = 0.005 / 12; // 0.5% p.a.
 
     const maxAge = retirementAge;
     const duration = maxAge - age;
     const chartData = [];
     
-    let nowPV = startingPrincipal;
-    let laterPV = startingPrincipal;
-
     let finalNow = 0;
     let finalLater = 0;
 
@@ -241,25 +241,24 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
 
         // --- CALC LATER ---
         let valLater = 0;
-        if (y < delayYears) {
-            // In the "Delay Phase" - only bank interest, assume user saves the 'monthly' into bank
+        if (y < delayDuration) {
+            // Delay Phase: Principal sits in bank. NO monthly contributions.
             const bankGrowth = Math.pow(1 + bankRate, months);
-            const bankPmtFactor = (bankGrowth - 1) / bankRate;
-            valLater = (startingPrincipal * bankGrowth) + (monthly * bankPmtFactor);
+            valLater = startingPrincipal * bankGrowth;
         } else {
-            // In the "Catch Up Phase"
-            // 1. Calculate the pot size at year 5 (The new Principal)
-            const monthsDelay = delayYears * 12;
-            const bankGrowth5 = Math.pow(1 + bankRate, monthsDelay);
-            const bankPmtFactor5 = (bankGrowth5 - 1) / bankRate;
-            const principalAtYear5 = (startingPrincipal * bankGrowth5) + (monthly * bankPmtFactor5);
+            // Catch Up Phase:
+            // 1. Principal has grown in bank for Delay Period
+            const monthsDelay = delayDuration * 12;
+            const bankGrowthDelayed = Math.pow(1 + bankRate, monthsDelay);
+            const principalAtStart = startingPrincipal * bankGrowthDelayed;
 
-            // 2. Grow that new principal for (y - 5) years at Investment Rate
-            const activeMonths = (y - delayYears) * 12;
+            // 2. Grow that new principal for (y - delay) years at Investment Rate
+            // 3. START monthly contributions now
+            const activeMonths = (y - delayDuration) * 12;
             const growthFactorActive = Math.pow(1 + monthlyRate, activeMonths);
             const pmtFactorActive = (growthFactorActive - 1) / monthlyRate;
             
-            valLater = (principalAtYear5 * growthFactorActive) + (monthly * pmtFactorActive);
+            valLater = (principalAtStart * growthFactorActive) + (monthly * pmtFactorActive);
         }
 
         if (currentSimAge === maxAge) {
@@ -277,7 +276,7 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
     }
     
     return { chartData, finalNow, finalLater, opportunityCost: finalNow - finalLater };
-  }, [profile.monthlyInvestmentAmount, rate1, rate2, rate3, age, retirementAge, investorState?.portfolioValue, cashflowState?.currentSavings, selectedStrategy]);
+  }, [profile.monthlyInvestmentAmount, simulationReturn, delayYears, age, retirementAge, investorState?.portfolioValue, cashflowState?.currentSavings]);
 
   const LIFESTYLES = [
     { label: 'Basic', value: '2500', icon: '⛺', desc: 'Simple needs' },
@@ -552,7 +551,7 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
                      <button 
                         key={style.label}
                         onClick={() => setProfile({...profile, customRetirementExpense: style.value})}
-                        className={`p-3 rounded-xl border text-left transition-all ${toNum(profile.customRetirementExpense) === toNum(style.value) ? 'border-amber-500 bg-amber-50 ring-1 ring-amber-500' : 'border-gray-100 hover:border-amber-200'}`}
+                        className={`p-3 rounded-xl border text-left transition-all ${toNum(profile.customRetirementExpense) === toNum(style.value) ? 'border-amber-50 bg-amber-50 ring-1 ring-amber-500' : 'border-gray-100 hover:border-amber-200'}`}
                      >
                         <div className="text-xl mb-1">{style.icon}</div>
                         <div className="font-bold text-xs text-gray-800">{style.label}</div>
@@ -585,7 +584,7 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
             <div className="absolute top-0 right-0 w-96 h-96 bg-indigo-600/10 rounded-full blur-[100px] pointer-events-none"></div>
             
             {/* Header: Investment Narrative */}
-            <div className="relative z-10 flex flex-col md:flex-row justify-between items-start gap-8 mb-8">
+            <div className="relative z-10 flex flex-col lg:flex-row justify-between items-start gap-8 mb-8">
                <div className="space-y-4 max-w-lg">
                   <div>
                      <div className="inline-flex items-center gap-2 mb-2">
@@ -599,8 +598,9 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
                      </p>
                   </div>
 
-                  <div className="bg-white/5 rounded-2xl p-4 border border-white/10 backdrop-blur-md flex items-center gap-4">
-                     <div className="flex-1">
+                  <div className="bg-white/5 rounded-2xl p-4 border border-white/10 backdrop-blur-md space-y-4">
+                     {/* Monthly Input */}
+                     <div>
                         <label className="text-[10px] font-bold text-indigo-300 uppercase tracking-widest">Monthly Commitment</label>
                         <div className="flex items-center mt-1">
                            <span className="text-xl text-gray-400 mr-1">$</span>
@@ -613,19 +613,57 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
                            />
                         </div>
                      </div>
-                     <div className="h-10 w-px bg-white/10"></div>
-                     <div className="flex-1 pl-2">
-                        <label className="text-[10px] font-bold text-indigo-300 uppercase tracking-widest mb-1 block">Strategy</label>
-                        <div className="flex bg-black/30 p-1 rounded-lg">
-                           {['conservative', 'moderate', 'growth'].map(s => (
-                              <button
-                                 key={s}
-                                 onClick={() => setSelectedStrategy(s as any)}
-                                 className={`flex-1 py-1 text-[9px] font-bold uppercase rounded-md transition-all ${selectedStrategy === s ? 'bg-indigo-500 text-white shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}
+
+                     <div className="h-px bg-white/10 w-full"></div>
+
+                     {/* Strategy Controls - Presets + Custom Slider */}
+                     <div className="grid grid-cols-2 gap-4">
+                        <div>
+                           <label className="text-[10px] font-bold text-indigo-300 uppercase tracking-widest mb-1 block">Target Return</label>
+                           <div className="flex items-center gap-2 mb-2">
+                              <span className="text-xl font-bold text-white">{simulationReturn.toFixed(1)}%</span>
+                              <div className="flex gap-1">
+                                 {['conservative', 'moderate', 'growth'].map(s => (
+                                    <button
+                                       key={s}
+                                       onClick={() => setSelectedStrategy(s as any)}
+                                       className={`w-6 h-6 rounded flex items-center justify-center text-[10px] font-bold uppercase transition-all ${selectedStrategy === s ? 'bg-indigo-500 text-white' : 'bg-slate-700 text-slate-400 hover:text-white'}`}
+                                       title={s}
+                                    >
+                                       {s[0].toUpperCase()}
+                                    </button>
+                                 ))}
+                              </div>
+                           </div>
+                           <input 
+                              type="range" min="1" max="15" step="0.5" 
+                              value={simulationReturn} 
+                              onChange={(e) => setSimulationReturn(Number(e.target.value))}
+                              className="w-full h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                           />
+                        </div>
+
+                        <div>
+                           <label className="text-[10px] font-bold text-indigo-300 uppercase tracking-widest mb-1 block">Delay Impact</label>
+                           <div className="flex items-center gap-2 mb-2">
+                              <span className={`text-xl font-bold ${showCostOfWaiting ? 'text-red-400' : 'text-slate-500'}`}>
+                                 {showCostOfWaiting ? `${delayYears} Yrs` : 'None'}
+                              </span>
+                              <button 
+                                 onClick={() => setShowCostOfWaiting(!showCostOfWaiting)}
+                                 className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase transition-all ${showCostOfWaiting ? 'bg-red-500/20 text-red-400 border border-red-500/30' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'}`}
                               >
-                                 {s === 'conservative' ? 'Low' : s === 'moderate' ? 'Mid' : 'High'}
+                                 {showCostOfWaiting ? 'Active' : 'Enable'}
                               </button>
-                           ))}
+                           </div>
+                           {showCostOfWaiting && (
+                              <input 
+                                 type="range" min="1" max="20" step="1" 
+                                 value={delayYears} 
+                                 onChange={(e) => setDelayYears(Number(e.target.value))}
+                                 className="w-full h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-red-500"
+                              />
+                           )}
                         </div>
                      </div>
                   </div>
@@ -633,13 +671,13 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
 
                {/* Impact Card - Only shows when waiting toggled */}
                <div className={`transition-all duration-500 ${showCostOfWaiting ? 'opacity-100 translate-y-0' : 'opacity-50 translate-y-2 grayscale'}`}>
-                  <div className="bg-red-500/10 border border-red-500/30 p-6 rounded-2xl backdrop-blur-sm text-center min-w-[200px]">
-                     <div className="text-[10px] font-bold text-red-300 uppercase tracking-widest mb-1">Cost of Waiting 5 Years</div>
+                  <div className="bg-red-500/10 border border-red-500/30 p-6 rounded-2xl backdrop-blur-sm text-center min-w-[240px]">
+                     <div className="text-[10px] font-bold text-red-300 uppercase tracking-widest mb-1">Projected Loss ({delayYears} Yrs)</div>
                      <div className="text-3xl font-black text-red-400 tracking-tighter">
                         {compoundingData ? fmtSGD(compoundingData.opportunityCost) : '$0'}
                      </div>
                      <div className="text-[10px] text-red-300/70 mt-2 font-medium">
-                        Wealth Destroyed
+                        Cost of Inaction
                      </div>
                   </div>
                </div>
@@ -648,18 +686,6 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
             <div className="relative z-10">
                {compoundingData ? (
                   <div className="h-full flex flex-col">
-                     {/* Toggle Switch */}
-                     <div className="flex justify-end mb-4">
-                        <label className="flex items-center gap-3 cursor-pointer group">
-                           <span className={`text-xs font-bold transition-colors ${showCostOfWaiting ? 'text-white' : 'text-slate-500'}`}>Show 5-Year Delay Impact</span>
-                           <div className="relative">
-                              <input type="checkbox" className="sr-only" checked={showCostOfWaiting} onChange={() => setShowCostOfWaiting(!showCostOfWaiting)} />
-                              <div className={`w-10 h-5 rounded-full shadow-inner transition-colors ${showCostOfWaiting ? 'bg-red-500' : 'bg-slate-700'}`}></div>
-                              <div className={`absolute left-1 top-1 w-3 h-3 bg-white rounded-full shadow transition-transform ${showCostOfWaiting ? 'translate-x-5' : ''}`}></div>
-                           </div>
-                        </label>
-                     </div>
-
                      <div className="h-[300px] w-full">
                         <ResponsiveContainer width="100%" height="100%">
                            <AreaChart data={compoundingData.chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
@@ -701,7 +727,7 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
                                     strokeWidth={2} 
                                     strokeDasharray="5 5"
                                     fill="url(#colorLater)" 
-                                    name="Wait 5 Years" 
+                                    name={`Wait ${delayYears} Years`} 
                                     animationDuration={1500}
                                  />
                               )}
@@ -713,7 +739,7 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
                         <div className="text-center">
                            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Target Return</div>
                            <div className="text-xl font-bold text-indigo-400">
-                              {selectedStrategy === 'conservative' ? rate1 : selectedStrategy === 'moderate' ? rate2 : rate3}%
+                              {simulationReturn.toFixed(1)}%
                            </div>
                         </div>
                         <div className="text-center">
@@ -721,7 +747,7 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
                            <div className="text-xl font-bold text-white">{fmtSGD(compoundingData.finalNow)}</div>
                         </div>
                         <div className="text-center relative">
-                           <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Wait 5 Years</div>
+                           <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Wait {delayYears} Years</div>
                            <div className={`text-xl font-bold ${showCostOfWaiting ? 'text-red-400 line-through' : 'text-gray-500'}`}>
                               {fmtSGD(compoundingData.finalLater)}
                            </div>

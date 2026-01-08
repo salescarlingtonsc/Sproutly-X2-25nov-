@@ -18,8 +18,23 @@ import { dbTemplates } from '../../lib/db/templates';
 import { aiLearning } from '../../lib/db/aiLearning';
 
 const REPAIR_SQL = `
--- REPAIR SCRIPT V13.0: COMPLETE PERMISSIONS FIX
--- 1. Secure Access Function
+-- REPAIR SCRIPT V14.0: TEAM ASSIGNMENT FIX
+-- 1. Relax Schema for Team Assignments
+-- This allows 'reporting_to' to store Team IDs (text) instead of just User IDs (uuid)
+DO $$ 
+BEGIN
+  -- Alter type to text to support Team IDs
+  ALTER TABLE profiles ALTER COLUMN reporting_to TYPE text;
+  
+  -- Drop Foreign Key if it exists (to allow non-user IDs like 'team_xxx')
+  IF EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE constraint_name = 'profiles_reporting_to_fkey') THEN
+    ALTER TABLE profiles DROP CONSTRAINT profiles_reporting_to_fkey;
+  END IF;
+EXCEPTION
+  WHEN OTHERS THEN RAISE NOTICE 'Schema update skipped/failed: %', SQLERRM;
+END $$;
+
+-- 2. Secure Access Function
 CREATE OR REPLACE FUNCTION get_my_claims()
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -42,7 +57,7 @@ BEGIN
 END;
 $$;
 
--- 2. Reset Policies
+-- 3. Reset Policies
 DROP POLICY IF EXISTS "Profiles_Select_Hierarchy" ON profiles;
 DROP POLICY IF EXISTS "Clients_Select_Hierarchy" ON clients;
 DROP POLICY IF EXISTS "Profiles_Update_Hierarchy" ON profiles;
@@ -53,7 +68,7 @@ DROP POLICY IF EXISTS "Clients_Insert_Policy" ON clients;
 DROP POLICY IF EXISTS "Clients_Update_Policy" ON clients;
 DROP POLICY IF EXISTS "Clients_Delete_Policy" ON clients;
 
--- 3. PROFILES POLICIES
+-- 4. PROFILES POLICIES
 CREATE POLICY "Profiles_Select_Hierarchy" ON profiles FOR SELECT
 USING (
   auth.uid() = id
@@ -92,7 +107,7 @@ USING (
   )
 );
 
--- 4. CLIENTS POLICIES (Data)
+-- 5. CLIENTS POLICIES (Data)
 -- Allow Managers to see clients in their Org (filtered by UI logic)
 CREATE POLICY "Clients_Select_Hierarchy" ON clients FOR SELECT
 USING (
@@ -404,7 +419,7 @@ const AdminTab: React.FC = () => {
       };
 
       try {
-          addLog(`DIAGNOSTIC START (V13.0): ${new Date().toISOString()}`);
+          addLog(`DIAGNOSTIC START (V14.0): ${new Date().toISOString()}`);
           
           let { data: sessionData } = await supabase.auth.getSession();
           if (!sessionData.session) {
@@ -534,7 +549,7 @@ const AdminTab: React.FC = () => {
         </div>
 
         <Modal 
-            isOpen={isRepairOpen} onClose={() => setIsRepairOpen(false)} title="System Diagnostics & Repair (V13.0)"
+            isOpen={isRepairOpen} onClose={() => setIsRepairOpen(false)} title="System Diagnostics & Repair (V14.0)"
             footer={
                <div className="flex gap-2 w-full">
                   <Button variant="ghost" onClick={() => setIsRepairOpen(false)}>Close</Button>
@@ -545,10 +560,10 @@ const AdminTab: React.FC = () => {
         >
             <div className="p-4 bg-slate-900 rounded-xl text-white font-mono text-xs overflow-auto max-h-96">
                 <div className="mb-4 space-y-2">
-                    <p className="text-emerald-400 font-bold uppercase">Instructions (Update Permissions V13.0):</p>
+                    <p className="text-emerald-400 font-bold uppercase">Instructions (Update Permissions V14.0):</p>
                     <p>1. Click "Copy Repair SQL" below.</p>
                     <p>2. Go to Supabase &gt; SQL Editor.</p>
-                    <p>3. Paste and Run. (This fixes Advisor write access).</p>
+                    <p>3. Paste and Run. (This fixes Team Assignment logic).</p>
                     <p>4. Check console for "Hierarchy Schema OK".</p>
                 </div>
                 {diagLog.length > 0 && (
@@ -575,7 +590,7 @@ const AdminTab: React.FC = () => {
                         onClick={copyDebugSql}
                         className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-3 rounded-lg text-xs uppercase font-bold w-full flex items-center justify-center gap-2 shadow-lg"
                     >
-                        <span>📋</span> 1. Copy Repair SQL (V13.0)
+                        <span>📋</span> 1. Copy Repair SQL (V14.0)
                     </button>
                 </div>
             </div>
