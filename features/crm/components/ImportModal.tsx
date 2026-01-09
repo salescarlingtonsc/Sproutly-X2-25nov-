@@ -1,10 +1,11 @@
-import React, { useState, useEffect } from 'react';
+
+import React, { useState, useMemo } from 'react';
 import Modal from '../../../components/ui/Modal';
 import Button from '../../../components/ui/Button';
 import { db } from '../../../lib/db';
-import { supabase } from '../../../lib/supabase';
 import { useAuth } from '../../../contexts/AuthContext';
 import { useToast } from '../../../contexts/ToastContext';
+import { INITIAL_PROFILE, INITIAL_CRM_STATE } from '../../../contexts/ClientContext';
 
 interface ImportModalProps {
   isOpen: boolean;
@@ -12,157 +13,247 @@ interface ImportModalProps {
   onComplete: () => void;
 }
 
+const DESTINATION_FIELDS = [
+  { key: 'name', label: 'Full Name', required: true },
+  { key: 'phone', label: 'Phone', required: false },
+  { key: 'email', label: 'Email', required: false },
+  { key: 'company', label: 'Company / Job Title', required: false },
+  { key: 'status', label: 'Status', required: false },
+  { key: 'notes', label: 'Notes / Context', required: false },
+];
+
 const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, onComplete }) => {
   const { user } = useAuth();
   const toast = useToast();
-  const [data, setData] = useState<any[]>([]);
   const [rawText, setRawText] = useState('');
+  const [step, setStep] = useState<'input' | 'mapping' | 'preview'>('input');
   const [isProcessing, setIsProcessing] = useState(false);
-  const [step, setStep] = useState<'input' | 'preview'>('input');
   
-  // Proxy Import State
-  const [allAdvisors, setAllAdvisors] = useState<{id: string, email: string}[]>([]);
-  const [targetUserId, setTargetUserId] = useState<string>(user?.id || '');
+  // Parsing State
+  const [headers, setHeaders] = useState<string[]>([]);
+  const [rows, setRows] = useState<string[][]>([]);
+  const [mappings, setMappings] = useState<Record<string, string>>({});
 
-  useEffect(() => {
-    if (isOpen && user?.role === 'admin') {
-      fetchAdvisors();
-    }
-    if (user) setTargetUserId(user.id);
-  }, [isOpen, user]);
-
-  const fetchAdvisors = async () => {
-    if (!supabase) return;
-    const { data: profiles } = await supabase.from('profiles').select('id, email').order('email');
-    if (profiles) setAllAdvisors(profiles);
+  const generateUUID = () => {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+      var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+      return v.toString(16);
+    });
   };
-  
+
   const handleParse = () => {
-    if (!rawText.trim()) return;
-    
-    const delimiter = rawText.includes('\t') ? '\t' : ',';
-    const lines = rawText.trim().split('\n');
-    const headers = lines[0].split(delimiter).map(h => h.trim().toLowerCase());
-    
-    const nameIdx = headers.findIndex(h => h.includes('name'));
-    const emailIdx = headers.findIndex(h => h.includes('email'));
-    const phoneIdx = headers.findIndex(h => h.includes('phone') || h.includes('mobile'));
-    const statusIdx = headers.findIndex(h => h.includes('status') || h.includes('stage'));
-
-    const parsed = lines.slice(1).map(line => {
-      const cells = line.split(delimiter);
-      return {
-        name: cells[nameIdx]?.trim() || '',
-        email: cells[emailIdx]?.trim() || '',
-        phone: cells[phoneIdx]?.trim() || '',
-        status: cells[statusIdx]?.trim().toLowerCase() || 'new'
-      };
-    }).filter(row => row.name);
-
-    if (parsed.length === 0) {
-      toast.error("Format error: No names detected. Ensure headers include 'Name'.");
-      return;
+    if (!rawText.trim()) {
+        toast.error("Please paste some data first.");
+        return;
     }
+    
+    const lines = rawText.trim().split('\n');
+    const delimiter = lines[0].includes('\t') ? '\t' : ','; // Auto-detect tab or comma
+    
+    // Parse
+    const parsedHeaders = lines[0].split(delimiter).map(h => h.trim().replace(/^"|"$/g, ''));
+    const parsedRows = lines.slice(1)
+        .map(line => line.split(delimiter).map(cell => cell.trim().replace(/^"|"$/g, '')))
+        .filter(row => row.length > 1 && row.some(cell => cell)); // Skip empty rows
 
-    setData(parsed);
-    setStep('preview');
+    setHeaders(parsedHeaders);
+    setRows(parsedRows);
+
+    // Auto-Map Logic
+    const newMappings: Record<string, string> = {};
+    parsedHeaders.forEach((h, idx) => {
+        const lower = h.toLowerCase();
+        const idxStr = idx.toString();
+        
+        if (lower.includes('name')) newMappings['name'] = idxStr;
+        else if (lower.includes('phone') || lower.includes('mobile')) newMappings['phone'] = idxStr;
+        else if (lower.includes('email')) newMappings['email'] = idxStr;
+        else if (lower.includes('company') || lower.includes('job') || lower.includes('title')) newMappings['company'] = idxStr;
+        else if (lower.includes('status') || lower.includes('stage')) newMappings['status'] = idxStr;
+        else if (lower.includes('note') || lower.includes('remarks') || lower.includes('context')) newMappings['notes'] = idxStr;
+    });
+
+    setMappings(newMappings);
+    setStep('mapping');
+  };
+
+  const getMappedValue = (row: string[], fieldKey: string) => {
+      const colIndex = parseInt(mappings[fieldKey]);
+      if (isNaN(colIndex) || !row[colIndex]) return '';
+      return row[colIndex];
+  };
+
+  const cleanPhoneNumber = (raw: string) => {
+      let cleaned = raw.replace(/[^\d+]/g, '');
+      if (cleaned.startsWith('8') && cleaned.length === 8) cleaned = '+65' + cleaned;
+      if (cleaned.startsWith('9') && cleaned.length === 8) cleaned = '+65' + cleaned;
+      return cleaned;
   };
 
   const handleImport = async () => {
-    if (!targetUserId) {
-        toast.error("Please select a target advisor.");
-        return;
-    }
     setIsProcessing(true);
     try {
-      const count = await db.createClientsBulk(data, targetUserId);
-      const targetEmail = allAdvisors.find(a => a.id === targetUserId)?.email || 'the selected user';
-      toast.success(`Successfully added ${count} leads to ${targetEmail}'s book.`);
+      const newClients = rows.map(row => {
+        const name = getMappedValue(row, 'name') || 'Unknown Lead';
+        const phone = cleanPhoneNumber(getMappedValue(row, 'phone'));
+        const email = getMappedValue(row, 'email');
+        const company = getMappedValue(row, 'company');
+        const statusRaw = getMappedValue(row, 'status').toLowerCase();
+        const notes = getMappedValue(row, 'notes');
+
+        // Normalize status
+        let status = 'new';
+        if (statusRaw.includes('contact')) status = 'contacted';
+        if (statusRaw.includes('client')) status = 'client';
+        if (statusRaw.includes('lost')) status = 'not_keen';
+
+        const id = generateUUID();
+        const now = new Date().toISOString();
+
+        return {
+            ...INITIAL_CRM_STATE,
+            id,
+            advisorId: user?.id,
+            _ownerId: user?.id,
+            name,
+            phone,
+            email,
+            company,
+            lastUpdated: now,
+            lastContact: now,
+            profile: { ...INITIAL_PROFILE, name, phone, email },
+            followUp: { status },
+            notes: notes ? [{ id: `note_${id}`, content: notes, date: now, author: 'Import' }] : []
+        };
+      });
+
+      await db.createClientsBulk(newClients, user?.id || '');
+      toast.success(`Successfully imported ${newClients.length} leads.`);
       onComplete();
       onClose();
     } catch (e: any) {
-      toast.error(`Import failed: ${e.message}`);
+      toast.error("Import failed: " + e.message);
     } finally {
       setIsProcessing(false);
     }
   };
 
-  const selectedAdvisorEmail = allAdvisors.find(a => a.id === targetUserId)?.email || user?.email;
+  const previewData = rows.slice(0, 3);
 
   return (
     <Modal 
       isOpen={isOpen} 
       onClose={onClose} 
-      title="Lead Ingestion Engine"
+      title="Mass Import Utility"
       footer={
-        step === 'input' ? (
-          <>
-            <Button variant="ghost" onClick={onClose}>Cancel</Button>
-            <Button variant="primary" onClick={handleParse} disabled={!rawText}>Analyze Data</Button>
-          </>
-        ) : (
-          <>
-            <Button variant="ghost" onClick={() => setStep('input')}>Back</Button>
-            <Button variant="primary" onClick={handleImport} isLoading={isProcessing}>Commit to {selectedAdvisorEmail?.split('@')[0]}</Button>
-          </>
-        )
+        <div className="flex gap-2 w-full justify-end">
+            {step === 'input' && (
+                <>
+                    <Button variant="ghost" onClick={onClose}>Cancel</Button>
+                    <Button variant="primary" onClick={handleParse} disabled={!rawText}>Next: Map Columns</Button>
+                </>
+            )}
+            {step === 'mapping' && (
+                <>
+                    <Button variant="ghost" onClick={() => setStep('input')}>Back</Button>
+                    <Button variant="primary" onClick={() => setStep('preview')}>Next: Verify</Button>
+                </>
+            )}
+            {step === 'preview' && (
+                <>
+                    <Button variant="ghost" onClick={() => setStep('mapping')}>Back</Button>
+                    <Button variant="primary" onClick={handleImport} isLoading={isProcessing} leftIcon="🚀">Import {rows.length} Leads</Button>
+                </>
+            )}
+        </div>
       }
     >
       <div className="space-y-6">
-        {step === 'input' ? (
-          <>
-            <div className="bg-indigo-50 p-4 rounded-xl border border-indigo-100 flex gap-4 items-start">
-               <div className="text-xl">📥</div>
-               <div>
-                  <h4 className="text-[10px] font-black uppercase text-indigo-900 mb-1">Spreadsheet Ingest</h4>
-                  <p className="text-[11px] text-indigo-700 leading-relaxed">
-                    Copy rows from Google Sheets and paste below. The first row must contain headers (Name, Email, Phone).
-                  </p>
-               </div>
-            </div>
+        
+        {/* PROGRESS STEPPER */}
+        <div className="flex justify-between items-center px-4">
+            <div className={`text-xs font-bold ${step === 'input' ? 'text-indigo-600' : 'text-slate-400'}`}>1. Paste</div>
+            <div className="h-px w-8 bg-slate-200"></div>
+            <div className={`text-xs font-bold ${step === 'mapping' ? 'text-indigo-600' : 'text-slate-400'}`}>2. Map</div>
+            <div className="h-px w-8 bg-slate-200"></div>
+            <div className={`text-xs font-bold ${step === 'preview' ? 'text-indigo-600' : 'text-slate-400'}`}>3. Verify</div>
+        </div>
 
-            {user?.role === 'admin' && (
-              <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Assign Leads To (Advisor)</label>
-                <select 
-                  className="w-full p-3 bg-slate-50 border-2 border-transparent rounded-xl text-sm font-bold focus:bg-white focus:border-indigo-500 outline-none transition-all"
-                  value={targetUserId}
-                  onChange={(e) => setTargetUserId(e.target.value)}
-                >
-                  {allAdvisors.map(adv => (
-                    <option key={adv.id} value={adv.id}>{adv.email} {adv.id === user.id ? '(You)' : ''}</option>
-                  ))}
-                </select>
-              </div>
-            )}
-
-            <textarea
-              className="w-full h-48 p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl text-xs font-mono outline-none focus:bg-white focus:border-indigo-500 transition-all resize-none shadow-inner"
-              placeholder="Paste spreadsheet rows here..."
-              value={rawText}
-              onChange={(e) => setRawText(e.target.value)}
-            />
-          </>
-        ) : (
-          <div className="space-y-4">
-            <div className="flex justify-between items-end px-1">
-                <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Verify Lead Batch ({data.length})</h4>
-                <div className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2 py-1 rounded">Target: {selectedAdvisorEmail}</div>
-            </div>
-            <div className="max-h-64 overflow-y-auto rounded-xl border border-slate-100 divide-y divide-slate-50 shadow-inner custom-scrollbar">
-              {data.map((row, i) => (
-                <div key={i} className="p-3 flex justify-between items-center text-[11px]">
-                  <div>
-                    <span className="font-bold text-slate-800">{row.name}</span>
-                    <span className="text-slate-400 ml-2">{row.email || row.phone}</span>
-                  </div>
-                  <span className="text-[9px] font-black uppercase bg-slate-100 px-2 py-0.5 rounded text-slate-500">{row.status}</span>
+        {step === 'input' && (
+            <div className="space-y-4">
+                <div className="bg-indigo-50 p-4 rounded-xl border border-indigo-100 flex gap-4">
+                    <div className="text-2xl">📋</div>
+                    <div>
+                        <h4 className="font-bold text-indigo-900 text-xs uppercase mb-1">Paste from Excel/Sheets</h4>
+                        <p className="text-xs text-indigo-700 leading-relaxed">Copy your rows (including headers) and paste them below. We support tab-separated and comma-separated formats.</p>
+                    </div>
                 </div>
-              ))}
+                <textarea
+                    className="w-full h-48 p-4 bg-slate-50 border-2 border-slate-200 rounded-xl text-xs font-mono focus:border-indigo-500 focus:outline-none resize-none placeholder-slate-400 whitespace-pre"
+                    placeholder={`Name\tPhone\tEmail\tNotes\nJohn Doe\t91234567\tjohn@email.com\tMet at roadshow...`}
+                    value={rawText}
+                    onChange={(e) => setRawText(e.target.value)}
+                />
             </div>
-            <p className="text-[10px] text-slate-400 italic text-center">Ready to commit. These records will be assigned to the selected advisor's book.</p>
-          </div>
         )}
+
+        {step === 'mapping' && (
+            <div className="space-y-4">
+                <p className="text-xs text-slate-500 font-medium">Match your spreadsheet columns to Sproutly fields.</p>
+                <div className="grid grid-cols-2 gap-4">
+                    {DESTINATION_FIELDS.map(field => (
+                        <div key={field.key} className="space-y-1">
+                            <label className="text-[10px] font-bold text-slate-400 uppercase flex items-center gap-1">
+                                {field.label}
+                                {field.required && <span className="text-red-500">*</span>}
+                            </label>
+                            <select
+                                className={`w-full p-2.5 rounded-lg text-xs font-bold border-2 outline-none transition-all ${mappings[field.key] ? 'border-indigo-100 bg-indigo-50 text-indigo-700' : 'border-slate-200 bg-white text-slate-500'}`}
+                                value={mappings[field.key] || ''}
+                                onChange={(e) => setMappings({...mappings, [field.key]: e.target.value})}
+                            >
+                                <option value="">(Skip)</option>
+                                {headers.map((h, i) => (
+                                    <option key={i} value={i}>{h}</option>
+                                ))}
+                            </select>
+                        </div>
+                    ))}
+                </div>
+            </div>
+        )}
+
+        {step === 'preview' && (
+            <div className="space-y-4">
+                <div className="flex justify-between items-center">
+                    <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider">Data Preview ({rows.length} Rows)</h4>
+                </div>
+                <div className="border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+                    <table className="w-full text-xs text-left">
+                        <thead className="bg-slate-50 border-b border-slate-200 font-bold text-slate-500">
+                            <tr>
+                                <th className="p-3">Name</th>
+                                <th className="p-3">Phone</th>
+                                <th className="p-3">Email</th>
+                                <th className="p-3">Status</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                            {previewData.map((row, i) => (
+                                <tr key={i} className="bg-white">
+                                    <td className="p-3 font-bold text-slate-800">{getMappedValue(row, 'name') || '-'}</td>
+                                    <td className="p-3 font-mono text-slate-600">{getMappedValue(row, 'phone') || '-'}</td>
+                                    <td className="p-3 text-slate-600">{getMappedValue(row, 'email') || '-'}</td>
+                                    <td className="p-3"><span className="bg-slate-100 px-2 py-0.5 rounded uppercase text-[9px] font-bold">New</span></td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+                <p className="text-center text-[10px] text-slate-400 italic">...and {rows.length - 3} more rows.</p>
+            </div>
+        )}
+
       </div>
     </Modal>
   );

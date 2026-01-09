@@ -9,12 +9,25 @@ const LOCAL_STORAGE_KEY = 'fa_clients';
 // Helper to ensure session exists or refresh it
 const getActiveSession = async () => {
   if (!supabase) return null;
-  let { data: { session } } = await supabase.auth.getSession();
-  if (!session) {
-    const { data: refreshData } = await supabase.auth.refreshSession();
-    session = refreshData.session;
+  
+  try {
+    // 1. Try standard getSession
+    let { data: { session }, error } = await supabase.auth.getSession();
+    
+    // 2. If missing or error, force a refresh
+    if (!session || error) {
+      const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
+      if (refreshError) {
+        console.warn("Session refresh failed:", refreshError.message);
+        return null;
+      }
+      session = refreshData.session;
+    }
+    return session;
+  } catch (e) {
+    console.error("Session check exception:", e);
+    return null;
   }
-  return session;
 };
 
 export const db = {
@@ -155,14 +168,26 @@ export const db = {
 
     const session = await getActiveSession();
     const authUser = session?.user;
-    if (!authUser) throw new Error("Unauthorized: Please refresh page.");
+    
+    if (!authUser) {
+       // Attempt one more proactive refresh if getActiveSession failed silently
+       const { data: refreshData } = await supabase.auth.refreshSession();
+       if (!refreshData.session?.user) {
+           throw new Error("Session expired. Please reload or log in.");
+       }
+    }
+
+    // Use specific user ID from session if valid, otherwise fallback
+    const validUserId = session?.user?.id || userId;
+    if (!validUserId) throw new Error("Authentication missing.");
 
     const { _ownerId, _ownerEmail, ...payloadData } = client;
-    const validOwnerId = (_ownerId && _ownerId !== 'undefined') ? _ownerId : authUser.id;
+    // Trust client-side owner ID if present, else default to current user (self)
+    const rowOwnerId = (_ownerId && _ownerId !== 'undefined') ? _ownerId : validUserId;
 
     const payload: any = {
       id: client.id,
-      user_id: validOwnerId, 
+      user_id: rowOwnerId, 
       data: { ...payloadData, lastUpdated: new Date().toISOString() },
       updated_at: new Date().toISOString()
     };
@@ -172,14 +197,14 @@ export const db = {
 
     if (error) throw new Error(`Sync Error: ${error.message}`);
 
-    const isSelf = validOwnerId === authUser.id;
+    const isSelf = rowOwnerId === validUserId;
 
     // We reconstruct the return object from payload since we trusted the client-side ID
     return {
       ...client,
       id: payload.id,
-      _ownerId: validOwnerId,
-      _ownerEmail: isSelf ? authUser.email : (client._ownerEmail || 'Pending Sync...')
+      _ownerId: rowOwnerId,
+      _ownerEmail: isSelf ? session?.user?.email : (client._ownerEmail || 'Pending Sync...')
     };
   },
 
@@ -187,8 +212,9 @@ export const db = {
     if (!supabase) return 0;
     
     const payloads = leads.map(lead => {
-      // Use existing ID if provided (from import tool) or generate new one
-      const id = lead.id && lead.id.length > 10 ? lead.id : crypto.randomUUID();
+      // Validate UUID format or generate new one
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      const id = (lead.id && uuidRegex.test(lead.id)) ? lead.id : crypto.randomUUID();
       
       // Merge INITIAL_PROFILE with imported profile data to ensure structure
       const mergedProfile = {

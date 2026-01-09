@@ -446,11 +446,13 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
                       type="select" 
                       options={['male', 'female']} 
                   />
+                  
+                  {/* Changed to TEXT to support "in 30 years" input */}
                   <EditableField 
                       label="Reported Retirement Age" 
                       value={client.retirementAge} 
                       onChange={(v:any) => handleUpdateField('retirementAge', v)} 
-                      type="number" 
+                      type="text" 
                       placeholder="65" 
                   />
                   

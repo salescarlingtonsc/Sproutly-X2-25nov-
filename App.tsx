@@ -135,7 +135,7 @@ const AppInner: React.FC = () => {
   };
 
   const handleSaveClient = useCallback(async (isAutoSave = false, overrideClient?: Client) => {
-     if (document.hidden && isAutoSave) return;
+     // Allow saving even when hidden to prevent data loss on tab switches
      if (!user || (user.status !== 'approved' && user.status !== 'active')) return;
      
      // STRICT LOCK: Prevent re-entry if already saving (even for autosave)
@@ -192,11 +192,31 @@ const AppInner: React.FC = () => {
         if (!isAutoSave) {
             setSaveStatus('error');
             toast.error(`Save Failed: ${e.message}`);
+        } else {
+            // For autosave, suppress noisy auth errors, but log them
+            if (e.message.includes('Session expired')) {
+                console.warn("Autosave paused: Session expired");
+            } else {
+                // Keep legitimate errors visible
+                toast.error(`Sync: ${e.message}`);
+            }
         }
      } finally {
         isSavingRef.current = false; // UNLOCK
      }
   }, [user, generateClientObject, transferringIds, clientId, promoteToSaved]);
+
+  // --- RE-SYNC ON VISIBILITY CHANGE ---
+  // If user switches tabs/browsers and comes back, ensure we trigger a save if needed
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        handleSaveClient(true);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [handleSaveClient]);
 
   // --- UNIVERSAL AUTO-SAVE LOOP ---
   // Listens to ALL client context state changes
@@ -231,8 +251,10 @@ const AppInner: React.FC = () => {
               await db.saveClient(updatedClient, user?.id);
           } catch (e: any) {
               console.error("Background sync failed", e);
-              // ALERT THE USER if the background save failed
-              toast.error(`Auto-Save Failed: ${e.message}`);
+              // Suppress noisy auth errors on background sync
+              if (!e.message.includes('Session expired')) {
+                  toast.error(`Auto-Save Failed: ${e.message}`);
+              }
           }
       }, 800);
   }, [clientId, loadClient, user]);

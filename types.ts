@@ -342,7 +342,7 @@ export interface Client {
   tags?: string[];
   jobTitle?: string;
   dob?: string;
-  retirementAge?: number;
+  retirementAge?: number | string; // Changed to allow string input
   
   lastUpdated: string;
   followUp: any;

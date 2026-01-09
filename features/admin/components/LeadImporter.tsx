@@ -1,12 +1,12 @@
+
 import React, { useState, useMemo } from 'react';
 import { Advisor, Client, Stage, Sentiment } from '../../../types';
 import { INITIAL_PROFILE, INITIAL_CASHFLOW, INITIAL_RETIREMENT, INITIAL_CRM_STATE, INITIAL_INSURANCE, INITIAL_INVESTOR, INITIAL_PROPERTY, INITIAL_WEALTH, INITIAL_CPF } from '../../../contexts/ClientContext';
 import { toNum, getAge } from '../../../lib/helpers';
-import { GoogleGenAI, Type } from "@google/genai";
 
 interface LeadImporterProps {
   advisors: Advisor[];
-  onImport: (newClients: Client[]) => void;
+  onImport: (newClients: Client[]) => Promise<void> | void;
   onClose: () => void;
 }
 
@@ -18,9 +18,9 @@ const DESTINATION_FIELDS = [
   { key: 'email', label: 'Email Address', required: false },
   { key: 'gender', label: 'Gender', required: false },
   { key: 'dob', label: 'Date of Birth', required: false },
-  { key: 'monthlySavings', label: 'Monthly Savings', required: false },
-  { key: 'retirementAge', label: 'Target Retirement Age', required: false },
-  { key: 'notes', label: 'Context / Survey Answer', required: false },
+  { key: 'monthlySavings', label: 'Monthly Savings (Text)', required: false },
+  { key: 'retirementAge', label: 'Target Retirement Age (Text)', required: false },
+  { key: 'notes', label: 'Context / "Why I want to win?"', required: false },
   { key: 'platform', label: 'Source / Platform', required: false },
   { key: 'campaign', label: 'Campaign Tag', required: false },
 ];
@@ -38,6 +38,7 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onImport, 
   const [globalCampaign, setGlobalCampaign] = useState<string>('');
   const [rawData, setRawData] = useState('');
   const [step, setStep] = useState<'input' | 'mapping' | 'preview'>('input');
+  const [isSubmitting, setIsSubmitting] = useState(false);
   
   // Parsed Raw Data
   const [headers, setHeaders] = useState<string[]>([]);
@@ -47,10 +48,19 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onImport, 
   const [mappings, setMappings] = useState<Record<string, string>>({});
 
   // --- CLEANING UTILS ---
+  const generateUUID = () => {
+      if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+          return crypto.randomUUID();
+      }
+      return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+          var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+          return v.toString(16);
+      });
+  };
   
   const cleanPhoneNumber = (raw: string) => {
       if (!raw) return '';
-      // Specific fix for "p:+65..." format from Excel exports
+      // Fix for "p:+65..." format (Facebook Leads)
       let cleaned = raw.replace(/^p:/i, '').replace(/[^\d+]/g, '');
       
       // Standardize SG numbers
@@ -61,84 +71,85 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onImport, 
       return cleaned;
   };
 
-  const cleanCurrency = (raw: string) => {
-      if (!raw) return '0';
-      // Handles "below_$500", "$1000_to_$2000", "$2000_&_above"
-      const numbers = raw.match(/\d+/g);
-      if (!numbers) return '0';
-      
-      // Strategy: Take the highest number found to be optimistic about potential
-      const max = Math.max(...numbers.map(n => parseInt(n)));
-      return max.toString();
+  const cleanTextData = (raw: string) => {
+      if (!raw) return '';
+      // Replace underscores with spaces for readable text: "below_$500" -> "below $500"
+      return raw.replace(/_/g, ' ').trim();
   };
 
   const safeParseDate = (raw: string) => {
       if (!raw) return '';
       const clean = raw.trim();
       
-      // Check for US format MM/DD/YYYY (e.g. 05/31/1988)
-      // 31 is definitely day, so if 2nd part > 12, it is MM/DD/YYYY
+      // Check for delimited formats (e.g. 2/4/2000 or 05-31-1988)
       const parts = clean.split(/[\/\-]/);
       if (parts.length === 3) {
           const p0 = parseInt(parts[0]);
           const p1 = parseInt(parts[1]);
           const p2 = parseInt(parts[2]);
           
-          const year = p2 > 100 ? p2 : p0 > 100 ? p0 : 2000; // Assume 4 digit year is year
+          // Assume year is the 4-digit one, or the last one if 2-digit year (heuristic)
+          const year = p2 > 100 ? p2 : p0 > 100 ? p0 : 2000;
           
+          // US Format Detection: If 2nd part > 12 (e.g. 05/31/1988), it must be Day, so 1st is Month
           if (p1 > 12) {
-              // Format is MM/DD/YYYY
-              return new Date(year, parts[0] as any - 1, p1).toISOString().split('T')[0];
+              return new Date(year, p0 - 1, p1).toISOString().split('T')[0];
           } 
+          // International Format Detection: If 1st part > 12 (e.g. 31/05/1988), it must be Day
           if (p0 > 12) {
-              // Format is DD/MM/YYYY
               return new Date(year, p1 - 1, p0).toISOString().split('T')[0];
           }
           
-          // Ambiguous cases (e.g. 05/04/1990) -> Default to international DD/MM/YYYY unless known US source
-          // But looking at dataset "05/31/1988", it implies US format sometimes appears.
-          // Let's use JS date constructor which often defaults to MM/DD if ambiguous
-          const d = new Date(clean);
-          if (!isNaN(d.getTime())) return d.toISOString().split('T')[0];
+          // Ambiguous cases (e.g. 2/4/2000) -> Default to international DD/MM/YYYY for SG context
+          // p0 = Day, p1 = Month (e.g. 2nd April)
+          return new Date(year, p1 - 1, p0).toISOString().split('T')[0];
       }
+      
+      // Fallback for ISO strings or other formats JS can parse natively
+      const d = new Date(clean);
+      if (!isNaN(d.getTime())) return d.toISOString().split('T')[0];
+      
       return '';
   };
 
   const parseRetirement = (raw: string, dob: string) => {
-      if (!raw) return '65';
-      const clean = raw.toLowerCase().trim();
+      if (!raw) return '';
+      const clean = cleanTextData(raw); // Get clean text like "in 30 years more maybe"
       
-      // Handle "Never"
-      if (clean.includes('never')) return '100';
+      // Try to extract an age if possible, but default to returning the string
+      // 1. Check if it's purely a number
+      const num = parseFloat(clean);
+      const isPureNumber = !isNaN(num) && String(num) === clean;
 
-      // Handle "In the next X years"
-      const relativeMatch = clean.match(/next (\d+)/);
+      if (isPureNumber) {
+          if (num > 1900 && num < 2200) {
+              // Year -> Age
+              const currentYear = new Date().getFullYear();
+              const currentAge = dob ? getAge(dob) : 30;
+              return (currentAge + (num - currentYear)).toString();
+          }
+          return num.toString();
+      }
+
+      // 2. Handle relative text like "in 30 years" -> Calculate Age
+      const lower = clean.toLowerCase();
+      const relativeMatch = lower.match(/(?:in|next)\s*(\d+)|(\d+)\s*(?:years|more)/);
+      
       if (relativeMatch) {
-          const yearsToGo = parseInt(relativeMatch[1]);
-          const currentAge = dob ? getAge(dob) : 30; // Fallback to 30 if age unknown
+          const yearsToGo = parseInt(relativeMatch[1] || relativeMatch[2]);
+          const currentAge = dob ? getAge(dob) : 30; 
+          // Return valid number age if calculated
           return (currentAge + yearsToGo).toString();
       }
 
-      // Handle "2027" (Year)
-      if (parseInt(clean) > 1900 && parseInt(clean) < 2100) {
-          const currentYear = new Date().getFullYear();
-          const currentAge = dob ? getAge(dob) : 30;
-          const targetYear = parseInt(clean);
-          return (currentAge + (targetYear - currentYear)).toString();
-      }
-
-      // Handle "60" (Age)
-      const numbers = clean.match(/\d+/);
-      if (numbers) return numbers[0];
-
-      return '65';
+      // 3. Fallback: Return raw text (User requested "words typing is allowed")
+      return clean;
   };
 
   const handleParse = () => {
     if (!rawData.trim()) return;
     
     const lines = rawData.trim().split('\n');
-    // Detect delimiter (Tab for Excel copy-paste, Comma for CSV)
     const firstLine = lines[0];
     const delimiter = firstLine.includes('\t') ? '\t' : ',';
 
@@ -153,24 +164,46 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onImport, 
     // INTELLIGENT AUTO-MAPPING
     const newMappings: Record<string, string> = {};
     parsedHeaders.forEach((header, index) => {
-        const h = header.toLowerCase().replace(/_/g, ' ').replace(/[^\w\s]/g, ''); // Normalize
+        // Normalize header for matching (replace underscores with space)
+        // e.g. "my_savings_per_month" -> "my savings per month"
+        const h = header.toLowerCase().replace(/_/g, ' '); 
         const idxStr = index.toString();
         
-        // Exact & Fuzzy Matches based on provided dataset
+        // Exact matches for the user's specific dataset
+        
+        // Name
         if (h.includes('full name') || h === 'name') newMappings['name'] = idxStr;
-        else if (h.includes('job') || h.includes('occupation')) newMappings['jobTitle'] = idxStr;
-        else if (h.includes('phone') || h.includes('mobile')) newMappings['phone'] = idxStr;
-        else if (h.includes('email')) newMappings['email'] = idxStr;
-        else if (h.includes('gender') || h.includes('sex')) newMappings['gender'] = idxStr;
-        else if (h.includes('dob') || h.includes('date of birth')) newMappings['dob'] = idxStr;
         
-        else if (h.includes('savings') || h.includes('investment')) newMappings['monthlySavings'] = idxStr;
-        else if (h.includes('retire')) newMappings['retirementAge'] = idxStr;
-        
+        // Platform (PRIORITY: Match before "notes" to avoid fuzzy overlap)
         else if (h.includes('platform') || h.includes('source')) newMappings['platform'] = idxStr;
         
-        // Context/Notes: Catch-all for long questions (e.g. "why you want to win...")
-        else if (h.length > 30 || h.includes('win') || h.includes('message') || h.includes('comment')) newMappings['notes'] = idxStr;
+        // Job
+        else if (h.includes('job') || h.includes('title')) newMappings['jobTitle'] = idxStr;
+        
+        // Contact
+        else if (h.includes('phone') || h.includes('mobile')) newMappings['phone'] = idxStr;
+        else if (h.includes('email')) newMappings['email'] = idxStr;
+        
+        // Demographics
+        else if (h.includes('gender') || h.includes('sex')) newMappings['gender'] = idxStr;
+        else if (h.includes('dob') || h.includes('birth') || h.includes('date of birth')) newMappings['dob'] = idxStr;
+        
+        // Financials (Catch 'savings' 'investment')
+        else if (h.includes('savings') || h.includes('investment') || h.includes('monthly saving')) newMappings['monthlySavings'] = idxStr;
+        
+        // Retirement (Catch 'retire' 'when do you want')
+        else if (h.includes('retire') || h.includes('when do you want')) newMappings['retirementAge'] = idxStr;
+        
+        // Context/Notes (Catch "in 20 words...", "playstation", "tell us why")
+        else if (
+            h.includes('20 words') ||
+            h.includes('playstation') ||
+            h.includes('tell us why') || 
+            h.length > 35 || // Catch very long question headers
+            h.includes('win') || 
+            h.includes('context') || 
+            h.includes('reason')
+        ) newMappings['notes'] = idxStr;
     });
 
     setMappings(newMappings);
@@ -193,7 +226,7 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onImport, 
               jobTitle: getMappedValue(row, 'jobTitle'),
               phone: cleanPhoneNumber(getMappedValue(row, 'phone')),
               dob,
-              savings: cleanCurrency(getMappedValue(row, 'monthlySavings')),
+              savings: cleanTextData(getMappedValue(row, 'monthlySavings')),
               retirement: parseRetirement(getMappedValue(row, 'retirementAge'), dob),
               notes: getMappedValue(row, 'notes'),
               platform: getMappedValue(row, 'platform')
@@ -201,11 +234,13 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onImport, 
       });
   }, [rows, mappings]);
 
-  const handleImport = () => {
+  const handleImport = async () => {
     if (!selectedAdvisorId) {
       alert('Please select an advisor.');
       return;
     }
+
+    setIsSubmitting(true);
 
     try {
       const newClients: any[] = rows.map((row, idx) => {
@@ -217,46 +252,59 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onImport, 
         const dob = safeParseDate(dobRaw);
         const gender = getMappedValue(row, 'gender').toLowerCase().startsWith('f') ? 'female' : 'male';
         
-        const platform = getMappedValue(row, 'platform') || 'Import';
+        const platformRaw = getMappedValue(row, 'platform');
+        // Normalize platform: ig -> Instagram, fb -> Facebook
+        let platform = 'Import';
+        if (platformRaw) {
+            const p = platformRaw.toLowerCase();
+            if (p === 'ig') platform = 'Instagram';
+            else if (p === 'fb') platform = 'Facebook';
+            else platform = platformRaw;
+        }
+        
         const campaign = getMappedValue(row, 'campaign') || globalCampaign;
         
         const savingsRaw = getMappedValue(row, 'monthlySavings');
-        const savingsClean = cleanCurrency(savingsRaw);
+        // KEEP TEXT for savings as requested ("below $500") -> "below $500"
+        const savingsClean = cleanTextData(savingsRaw);
         
         const retireRaw = getMappedValue(row, 'retirementAge');
+        // Parse retirement age, but allow string return if "text typing" is needed
         const retireClean = parseRetirement(retireRaw, dob);
 
         const notesRaw = getMappedValue(row, 'notes');
         
-        // Construct rich notes
+        // Construct rich notes to preserve raw data history
         const noteEntries = [];
-        if (notesRaw) noteEntries.push({ id: `note_${Date.now()}_${idx}`, content: `Survey Answer: ${notesRaw}`, date: new Date().toISOString(), author: 'System' });
-        if (savingsRaw) noteEntries.push({ id: `note_fin_${idx}`, content: `Declared Savings: ${savingsRaw}`, date: new Date().toISOString(), author: 'System' });
-        if (retireRaw) noteEntries.push({ id: `note_ret_${idx}`, content: `Target Retire: ${retireRaw}`, date: new Date().toISOString(), author: 'System' });
-
+        if (notesRaw) noteEntries.push({ id: `note_${Date.now()}_${idx}`, content: `Context: ${notesRaw}`, date: new Date().toISOString(), author: 'System' });
+        if (savingsRaw) noteEntries.push({ id: `note_fin_${idx}`, content: `Reported Savings: ${savingsClean}`, date: new Date().toISOString(), author: 'System' });
+        
         const tags = ['Imported', platform];
         if (campaign) tags.push(`Campaign: ${campaign}`);
 
         return {
-          id: `imported_${Date.now()}_${idx}`,
+          ...INITIAL_CRM_STATE, // Fix: Spread default state FIRST so it doesn't overwrite data
+          
+          id: generateUUID(),
           advisorId: selectedAdvisorId,
           _ownerId: selectedAdvisorId,
           
           name,
           company: jobTitle, // Map job title to company field for CRM view
           jobTitle,
+          dob, 
           email,
           phone,
           
           stage: Stage.NEW,
-          value: 0, // Unknown value initially
+          value: 0,
           lastContact: new Date().toISOString(),
           sentiment: Sentiment.UNKNOWN,
           momentumScore: 50,
           
-          notes: noteEntries,
+          notes: noteEntries, // Fix: This now correctly takes the generated notes
           tags,
-          goals: notesRaw, // Use the long answer as the "Goal/Context"
+          goals: notesRaw, // Fix: This now correctly takes the context string
           
           milestones: { createdAt: new Date().toISOString() },
           platform,
@@ -269,31 +317,37 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onImport, 
               phone, 
               dob,
               jobTitle,
-              retirementAge: retireClean,
+              // Store as string/text if needed, calculators will try to parse
               monthlyInvestmentAmount: savingsClean,
               tags
           },
           
-          // Initialize financial states with defaults but inject savings if available
-          cashflowState: { ...INITIAL_CASHFLOW, currentSavings: savingsClean !== '0' ? savingsClean : '' },
+          // Initialize financial states with defaults but inject savings if available (cleaned for calculator if possible)
+          // We try to extract a number for the calculator state, but keep text in profile
+          cashflowState: { ...INITIAL_CASHFLOW, currentSavings: savingsClean.replace(/[^0-9.]/g, '') || '' },
           insuranceState: INITIAL_INSURANCE,
           investorState: INITIAL_INVESTOR,
           propertyState: INITIAL_PROPERTY,
           wealthState: INITIAL_WEALTH,
           cpfState: INITIAL_CPF,
-          retirement: { ...INITIAL_RETIREMENT }, // Standard defaults
+          
+          retirement: { ...INITIAL_RETIREMENT }, 
           expenses: {},
           
           followUp: { status: 'new' },
-          ...INITIAL_CRM_STATE
+          
+          // Store string or number here
+          retirementAge: retireClean
         };
       });
 
-      onImport(newClients);
+      await onImport(newClients);
       onClose(); 
     } catch (e) {
       console.error(e);
       alert('Failed to process data. Check console.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -424,19 +478,23 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onImport, 
                               <thead className="text-slate-500 font-bold border-b border-slate-100 bg-slate-50/50">
                                   <tr>
                                       <th className="py-3 px-4">Name</th>
-                                      <th className="py-3 px-4">Phone (Cleaned)</th>
-                                      <th className="py-3 px-4">Job Title</th>
+                                      <th className="py-3 px-4">Platform</th>
+                                      <th className="py-3 px-4">DOB (Reported)</th>
+                                      <th className="py-3 px-4">Phone</th>
+                                      <th className="py-3 px-4">Retirement</th>
                                       <th className="py-3 px-4 text-emerald-600">Savings</th>
-                                      <th className="py-3 px-4 text-indigo-600 max-w-xs">Context (Notes)</th>
+                                      <th className="py-3 px-4 text-indigo-600 max-w-xs">Context ("Why")</th>
                                   </tr>
                               </thead>
                               <tbody className="divide-y divide-slate-50">
                                   {previewData.map((row, i) => (
                                       <tr key={i} className="text-slate-700 hover:bg-slate-50">
                                           <td className="py-3 px-4 font-bold">{row.name || <span className="text-red-400 italic">Missing</span>}</td>
+                                          <td className="py-3 px-4 text-slate-500 font-mono text-[10px] uppercase">{row.platform || '-'}</td>
+                                          <td className="py-3 px-4 text-slate-500 font-mono">{row.dob || '-'}</td>
                                           <td className="py-3 px-4 font-mono text-emerald-600">{row.phone}</td>
-                                          <td className="py-3 px-4">{row.jobTitle || '-'}</td>
-                                          <td className="py-3 px-4 font-mono">${row.savings}</td>
+                                          <td className="py-3 px-4">{row.retirement}</td>
+                                          <td className="py-3 px-4 font-mono">{row.savings}</td>
                                           <td className="py-3 px-4 text-slate-500 italic truncate max-w-xs" title={row.notes}>{row.notes || <span className="text-slate-300">-</span>}</td>
                                       </tr>
                                   ))}
@@ -454,9 +512,20 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onImport, 
                       </button>
                       <button 
                         onClick={handleImport}
+                        disabled={isSubmitting}
                         className="px-8 py-3 bg-indigo-600 text-white rounded-xl font-bold text-sm hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-200 flex items-center gap-2"
                       >
-                        <span>🚀</span> Commit {rows.length} Leads
+                        {isSubmitting ? (
+                            <>
+                                <span className="animate-spin w-4 h-4 border-2 border-white/30 border-t-white rounded-full"></span>
+                                <span>Importing...</span>
+                            </>
+                        ) : (
+                            <>
+                                <span>🚀</span> 
+                                <span>Commit {rows.length} Leads</span>
+                            </>
+                        )}
                       </button>
                   </div>
               </div>
