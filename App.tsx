@@ -37,6 +37,7 @@ import Button from './components/ui/Button';
 import { db } from './lib/db';
 import { logTabUsage } from './lib/db/activities';
 import { Client } from './types';
+import { canAccessTab, TAB_DEFINITIONS } from './lib/config';
 
 const CLIENT_CACHE_KEY = 'sproutly.clients_cache.v1';
 
@@ -92,6 +93,21 @@ const AppInner: React.FC = () => {
     }
     return () => clearInterval(interval);
   }, [user, refreshProfile]);
+
+  // --- PERMISSION ENFORCEMENT & REDIRECT ---
+  useEffect(() => {
+    if (user && (user.status === 'approved' || user.status === 'active')) {
+      // If the current tab is NOT allowed for this user
+      if (!canAccessTab(user, activeTab)) {
+        // Find the first tab they ARE allowed to access
+        const firstAllowed = TAB_DEFINITIONS.find(t => canAccessTab(user, t.id));
+        if (firstAllowed) {
+          console.log(`Redirecting from restricted tab '${activeTab}' to '${firstAllowed.id}'`);
+          setActiveTab(firstAllowed.id);
+        }
+      }
+    }
+  }, [user, activeTab]);
 
   useEffect(() => {
     const heartbeat = setInterval(() => {

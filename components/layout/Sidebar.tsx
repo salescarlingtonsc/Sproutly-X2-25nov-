@@ -54,8 +54,20 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, user, isOpen
             // Filter visible tabs based on permissions
             const visibleTabs = group.tabs.filter(tabId => {
                if (!user) return false;
-               // Admin tab logic handled in canAccessTab, but double check we hide it from groups if needed
-               if (tabId === 'admin' && user.role !== 'admin') return false;
+               
+               // Admin tab logic handled explicitly here for safety
+               if (tabId === 'admin' && user.role !== 'admin' && user.role !== 'director' && !user.isAgencyAdmin && user.role !== 'manager') return false;
+               
+               const accessible = canAccessTab(user, tabId);
+
+               // STRICT MODE: If user has a custom modules array (even empty),
+               // we HIDE tabs they don't have access to, rather than showing them as locked.
+               // This implements the "Strict Override" behavior requested.
+               if (Array.isArray(user.modules)) {
+                   return accessible;
+               }
+
+               // STANDARD MODE: Show all tabs for the group, inaccessible ones will be rendered as "Locked" (Upsell opportunity)
                return true;
             });
 

@@ -50,7 +50,7 @@ export const TAB_DEFINITIONS = [
 ];
 
 export const ALL_AVAILABLE_TABS = TAB_DEFINITIONS.filter(t => 
-  !['disclaimer', 'admin'].includes(t.id)
+  !['admin'].includes(t.id)
 );
 
 export const TAB_GROUPS = [
