@@ -18,7 +18,8 @@ interface ClientCardProps {
   currentUser?: UserProfile | null;
   onDelete?: (id: string) => Promise<void> | void; 
   onAddSale?: () => void;
-  products?: Product[]; // Added prop
+  products?: Product[]; 
+  onClose?: () => void; // New optional prop for modal closing
 }
 
 const REVERSE_STATUS_MAP: Record<string, string> = {
@@ -59,7 +60,7 @@ const EditableField = ({ label, value, onChange, type = 'text', options = [], cl
   );
 };
 
-export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, currentUser, onDelete, onAddSale, products = [] }) => {
+export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, currentUser, onDelete, onAddSale, products = [], onClose }) => {
   const toast = useToast();
   const { confirm } = useDialog(); 
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -304,6 +305,24 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
         toast.error("No phone number found");
         return;
     }
+
+    // Log the call
+    const now = new Date().toISOString();
+    const logEntry = {
+        id: generateUniqueId('call'),
+        content: `Outgoing Call to ${rawPhone}`,
+        date: now,
+        author: 'Me'
+    };
+
+    onUpdate({ 
+        ...client, 
+        lastContact: now,
+        lastUpdated: now,
+        notes: [logEntry, ...(client.notes || [])]
+    });
+    logActivity(client.id, 'call', 'Outgoing call initiated');
+
     window.location.href = `tel:${rawPhone}`;
   };
 
@@ -316,6 +335,24 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
     const template = `Hi ${firstName}, it's Sproutly. I found an opportunity that matches your portfolio. Do you have 5 mins?`;
     const encodedText = encodeURIComponent(template);
     const url = cleanPhone.length >= 8 ? `https://wa.me/${cleanPhone}?text=${encodedText}` : `https://wa.me/?text=${encodedText}`;
+    
+    // Log the chat
+    const now = new Date().toISOString();
+    const logEntry = {
+        id: generateUniqueId('chat'),
+        content: `Opened WhatsApp Chat`,
+        date: now,
+        author: 'Me'
+    };
+
+    onUpdate({ 
+        ...client, 
+        lastContact: now,
+        lastUpdated: now,
+        notes: [logEntry, ...(client.notes || [])]
+    });
+    logActivity(client.id, 'message', 'WhatsApp chat initiated');
+
     window.open(url, '_blank');
   };
 
@@ -346,9 +383,18 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
              <input className="text-lg font-bold text-slate-800 bg-transparent border-b border-transparent hover:border-slate-300 focus:border-emerald-500 focus:outline-none w-full transition-colors" value={client.name} onChange={(e) => handleUpdateField('name', e.target.value)} placeholder="Client Name" />
              <input className="text-xs text-slate-500 bg-transparent border-b border-transparent hover:border-slate-300 focus:border-emerald-500 focus:outline-none w-full mt-1" value={client.company} onChange={(e) => handleUpdateField('company', e.target.value)} placeholder="Company / Organization" />
          </div>
-         <div className={`flex flex-col items-end`}>
-            <div className={`text-sm font-bold px-3 py-1 rounded-full border ${getMomentumColor(client.momentumScore || 0)} mb-1`}>Score: {client.momentumScore || 0}</div>
-            <div className="flex gap-2 text-[10px] text-slate-400"><span>{(client.sales?.length || 0)} Sales</span><span>•</span><span>${(client.value || 0).toLocaleString()} Exp. Revenue</span></div>
+         <div className="flex items-start gap-4">
+            <div className={`flex flex-col items-end`}>
+                <div className={`text-sm font-bold px-3 py-1 rounded-full border ${getMomentumColor(client.momentumScore || 0)} mb-1`}>Score: {client.momentumScore || 0}</div>
+                <div className="flex gap-2 text-[10px] text-slate-400"><span>{(client.sales?.length || 0)} Sales</span><span>•</span><span>${(client.value || 0).toLocaleString()} Exp. Revenue</span></div>
+            </div>
+            {onClose && (
+                <button onClick={(e) => { e.stopPropagation(); onClose(); }} className="text-slate-400 hover:text-slate-600 p-1 hover:bg-slate-200 rounded-full transition-colors" title="Close">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            )}
          </div>
       </div>
       <div className="flex border-b border-slate-100">

@@ -1,7 +1,7 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
 import { Advisor, Team, UserRole, SubscriptionTier } from '../../../types';
-import { TAB_DEFINITIONS } from '../../../lib/config';
+import { ALL_AVAILABLE_TABS, TIER_CONFIG } from '../../../lib/config';
 import { supabase } from '../../../lib/supabase';
 import { adminDb } from '../../../lib/db/admin'; 
 import Modal from '../../../components/ui/Modal'; 
@@ -17,10 +17,6 @@ interface UserManagementProps {
   onUpdateTeams: (teams: Team[]) => void;
   onAddAdvisor: (advisor: Advisor) => void;
 }
-
-const AVAILABLE_MODULES = TAB_DEFINITIONS.filter(t => 
-    !['disclaimer', 'dashboard', 'crm', 'reminders', 'report', 'admin'].includes(t.id)
-);
 
 // Helper for generating robust IDs
 const generateId = () => {
@@ -287,40 +283,6 @@ export const UserManagement: React.FC<UserManagementProps> = ({ advisors, teams,
       return { groups, unassigned };
   }, [activeUsers]);
 
-  // --- ORG TREE CONSTRUCTION (FOR VISUALIZATION) ---
-  const orgTree = useMemo(() => {
-      const relevantDirectors = isDirector 
-          ? globalDirectors 
-          : globalDirectors.filter(d => d.id === currentUser.teamId);
-
-      const tree = relevantDirectors.map(dir => {
-          const directReportManagers = visibleAdvisors.filter(a => a.role === 'manager' && a.teamId === dir.id);
-          
-          const units = directReportManagers.map(mgr => {
-              const team = visibleTeams.find(t => t.leaderId === mgr.id);
-              const members = team ? (groupedAdvisors.groups[team.id] || []) : [];
-              return { manager: mgr, team, members };
-          });
-
-          return { director: dir, units };
-      }).filter(node => node.units.length > 0 || isDirector);
-
-      const assignedManagerIds = new Set(tree.flatMap(d => d.units.map(u => u.manager.id)));
-      
-      const independentManagers = visibleAdvisors.filter(a => 
-          a.role === 'manager' && !assignedManagerIds.has(a.id)
-      );
-      
-      const independentUnits = independentManagers.map(mgr => {
-          const team = visibleTeams.find(t => t.leaderId === mgr.id);
-          const members = team ? (groupedAdvisors.groups[team.id] || []) : [];
-          return { manager: mgr, team, members };
-      });
-
-      return { tree, independentUnits };
-  }, [globalDirectors, visibleAdvisors, visibleTeams, groupedAdvisors, isDirector, currentUser]);
-
-
   const openInviteModal = (prefillTeamId?: string) => {
       setModalType('invite');
       setModalTab('details');
@@ -331,7 +293,11 @@ export const UserManagement: React.FC<UserManagementProps> = ({ advisors, teams,
       setFormStatus('active');
       setFormBanding('50');
       setFormTier('free');
-      setFormModules([]);
+      
+      // PREFILL: Load defaults for 'Free' tier to start
+      const defaultModules = TIER_CONFIG['free'].allowedTabs;
+      setFormModules(defaultModules);
+      
       setFormOrgId(selectedOrgId);
   };
 
@@ -345,7 +311,10 @@ export const UserManagement: React.FC<UserManagementProps> = ({ advisors, teams,
       setFormStatus('active');
       setFormBanding('100');
       setFormTier('diamond');
-      setFormModules([]);
+      
+      // PREFILL: Diamond defaults
+      setFormModules(TIER_CONFIG['diamond'].allowedTabs);
+      
       setFormOrgId(`org_${Date.now()}`); // Generate new Org ID
   };
 
@@ -358,7 +327,6 @@ export const UserManagement: React.FC<UserManagementProps> = ({ advisors, teams,
       
       // Normalize role to lowercase
       let role = (user.role || 'advisor').toLowerCase();
-      // FIX: Map generic/viewer users to 'advisor' so the UI logic works correctly
       if (!['manager', 'director', 'admin'].includes(role)) {
           role = 'advisor';
       }
@@ -368,7 +336,15 @@ export const UserManagement: React.FC<UserManagementProps> = ({ advisors, teams,
       setFormStatus(user.status as 'active' | 'pending' | 'rejected' | 'approved');
       setFormBanding(user.bandingPercentage?.toString() || '0');
       setFormTier(user.subscriptionTier || 'free');
-      setFormModules(user.modules || []);
+      
+      // PREFILL LOGIC:
+      // If user has explicit modules set (array), use them.
+      // If user has modules=null/undefined, fall back to their current tier defaults.
+      // This ensures the UI reflects what they *actually* have access to.
+      const currentTier = user.subscriptionTier || 'free';
+      const defaults = TIER_CONFIG[currentTier as keyof typeof TIER_CONFIG]?.allowedTabs || [];
+      setFormModules(user.modules && Array.isArray(user.modules) ? user.modules : defaults);
+      
       setFormOrgId(user.organizationId || selectedOrgId);
   };
 
@@ -414,7 +390,7 @@ export const UserManagement: React.FC<UserManagementProps> = ({ advisors, teams,
           status: (formStatus === 'active' ? 'approved' : formStatus) as 'active' | 'pending' | 'rejected' | 'approved',
           bandingPercentage: parseFloat(formBanding) || 0,
           subscriptionTier: formTier,
-          modules: formModules,
+          modules: formModules, // Explicitly save the array to enable Strict Override
           organizationId: formOrgId 
       };
 
@@ -448,6 +424,13 @@ export const UserManagement: React.FC<UserManagementProps> = ({ advisors, teams,
       else setFormModules([...formModules, modId]);
   };
 
+  // Function to reset modules to current formTier defaults
+  const resetModulesToTier = () => {
+      const defaults = TIER_CONFIG[formTier as keyof typeof TIER_CONFIG]?.allowedTabs || [];
+      setFormModules(defaults);
+      toast.info(`Reset modules to ${formTier} defaults.`);
+  };
+
   const handleApprove = (user: Advisor) => {
     const banding = parseFloat(bandingInputs[user.id] || '0');
     if (banding <= 0 || isNaN(banding)) { alert("Please enter a valid Banding % before approving."); return; }
@@ -465,27 +448,10 @@ export const UserManagement: React.FC<UserManagementProps> = ({ advisors, teams,
   const handleGoalUpdate = async (user: Advisor, newGoal: string) => {
       try {
           const val = parseFloat(newGoal);
-          // Safely call async parent method without risking crash
           await onUpdateAdvisor({ ...user, annualGoal: isNaN(val) ? 0 : val });
       } catch (e) {
           console.error("Failed to update goal:", e);
       }
-  };
-
-  const handleCreateTeamTab = () => {
-      if (!newTeamName || !newTeamLeader) return;
-      const newTeam: Team = { id: generateId(), name: newTeamName, leaderId: newTeamLeader };
-      onUpdateTeams([...teams, newTeam]);
-      setNewTeamName(''); setNewTeamLeader('');
-      setIsCreateUnitOpen(false);
-      toast.success("Unit created successfully.");
-  };
-
-  const handleCreateTeamForManager = (manager: Advisor) => {
-      const name = prompt(`Enter a new Unit name for ${manager.name}:`);
-      if (!name) return;
-      const newTeam: Team = { id: generateId(), name, leaderId: manager.id };
-      onUpdateTeams([...teams, newTeam]);
   };
 
   const handleDeleteTeam = (id: string) => {
@@ -494,14 +460,6 @@ export const UserManagement: React.FC<UserManagementProps> = ({ advisors, teams,
           const teamUsers = advisors.filter(a => a.teamId === id);
           teamUsers.forEach(u => onUpdateAdvisor({...u, teamId: undefined}));
       }
-  };
-
-  const handleAddToTeam = (advisor: Advisor, teamId: string) => {
-      onUpdateAdvisor({ ...advisor, teamId });
-  };
-
-  const handleRemoveFromTeam = (advisor: Advisor) => {
-      onUpdateAdvisor({ ...advisor, teamId: undefined });
   };
 
   return (
@@ -704,9 +662,12 @@ export const UserManagement: React.FC<UserManagementProps> = ({ advisors, teams,
                     </div>
 
                     <div>
-                        <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Module Permissions</label>
+                        <div className="flex justify-between items-center mb-3">
+                            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest">Module Access Control</label>
+                            <button onClick={resetModulesToTier} className="text-[10px] text-indigo-600 hover:underline">Reset to {formTier} defaults</button>
+                        </div>
                         <div className="grid grid-cols-2 gap-2 max-h-60 overflow-y-auto custom-scrollbar p-1">
-                            {AVAILABLE_MODULES.map(mod => (
+                            {ALL_AVAILABLE_TABS.map(mod => (
                                 <button
                                     key={mod.id}
                                     onClick={() => toggleModule(mod.id)}
@@ -723,9 +684,12 @@ export const UserManagement: React.FC<UserManagementProps> = ({ advisors, teams,
                                 </button>
                             ))}
                         </div>
-                        <p className="text-[10px] text-slate-400 mt-2 italic">
-                            Modules checked here will be visible in the user's sidebar. Uncheck to restrict access.
-                        </p>
+                        <div className="mt-3 bg-amber-50 p-2 rounded border border-amber-100 flex gap-2">
+                            <span className="text-amber-500 text-lg">🔒</span>
+                            <p className="text-[10px] text-amber-800 leading-tight">
+                                <strong>Strict Override:</strong> Checked modules are the ONLY ones this user will see. Unchecking them here hides them even if their Plan Tier normally allows it.
+                            </p>
+                        </div>
                     </div>
                  </div>
              )}

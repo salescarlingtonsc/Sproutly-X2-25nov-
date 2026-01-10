@@ -540,6 +540,7 @@ const CrmTab: React.FC<CrmTabProps> = ({
                         currentUser={user} 
                         onDelete={handleDeleteClientWrapper} 
                         onAddSale={() => setActiveSaleClient(activeDetailClient)} 
+                        onClose={() => setActiveDetailClient(null)}
                     />
                  </div>
             </div>

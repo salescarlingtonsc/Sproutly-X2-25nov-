@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useMemo } from 'react';
 import { db } from '../../lib/db';
 import { Client, Product, Sale } from '../../types';
@@ -431,6 +432,7 @@ const RemindersTab: React.FC = () => {
                         currentUser={user}
                         onDelete={() => { handleDeleteClient(); setSelectedClient(null); }}
                         onAddSale={() => setSaleClient(selectedClient)}
+                        onClose={() => setSelectedClient(null)} // Added
                     />
                  </div>
             </div>

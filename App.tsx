@@ -38,6 +38,8 @@ import { db } from './lib/db';
 import { logTabUsage } from './lib/db/activities';
 import { Client } from './types';
 
+const CLIENT_CACHE_KEY = 'sproutly.clients_cache.v1';
+
 const AppInner: React.FC = () => {
   const { user, signOut, refreshProfile, isLoading } = useAuth();
   const { 
@@ -72,7 +74,8 @@ const AppInner: React.FC = () => {
   useEffect(() => {
     let timer: any;
     if (isLoading) {
-      timer = setTimeout(() => setShowLongLoading(true), 3000);
+      // Show feedback faster (1.5s) to reduce user anxiety during cold starts
+      timer = setTimeout(() => setShowLongLoading(true), 1500);
     } else {
       setShowLongLoading(false);
     }
@@ -100,13 +103,25 @@ const AppInner: React.FC = () => {
   }, [activeTab, user]);
 
   useEffect(() => {
-     if (user && (user.status === 'approved' || user.status === 'active')) loadClientsList();
+     if (user && (user.status === 'approved' || user.status === 'active')) {
+         // 1. Load from Cache Immediate
+         const cached = localStorage.getItem(CLIENT_CACHE_KEY);
+         if (cached) {
+             try {
+                 setClients(JSON.parse(cached));
+             } catch(e) {}
+         }
+         // 2. Fetch Fresh
+         loadClientsList();
+     }
   }, [user]);
 
   const loadClientsList = async () => {
      try {
        const data = await db.getClients(user?.id);
        setClients(data);
+       // Update Cache
+       localStorage.setItem(CLIENT_CACHE_KEY, JSON.stringify(data));
      } catch (e) {
        console.error("Hydration failed.");
      }
@@ -171,8 +186,9 @@ const AppInner: React.FC = () => {
         
         setClients(prev => {
             const exists = prev.find(c => c.id === saved.id);
-            if (exists) return prev.map(c => c.id === saved.id ? saved : c);
-            return [...prev, saved];
+            const newList = exists ? prev.map(c => c.id === saved.id ? saved : c) : [...prev, saved];
+            localStorage.setItem(CLIENT_CACHE_KEY, JSON.stringify(newList)); // Sync Cache
+            return newList;
         });
 
         if (isNewClient) {
@@ -241,7 +257,11 @@ const AppInner: React.FC = () => {
   ]);
 
   const handleUpdateGlobalClient = useCallback((updatedClient: Client) => {
-      setClients(prev => prev.map(c => c.id === updatedClient.id ? updatedClient : c));
+      setClients(prev => {
+          const newList = prev.map(c => c.id === updatedClient.id ? updatedClient : c);
+          localStorage.setItem(CLIENT_CACHE_KEY, JSON.stringify(newList)); // Sync Cache
+          return newList;
+      });
       if (updatedClient.id === clientId) {
           loadClient(updatedClient);
       }

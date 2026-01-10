@@ -17,41 +17,73 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+// Cache key for instant load
+const USER_CACHE_KEY = 'sproutly.user_cache.v1';
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<UserProfile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Hardcoded admin email for safety/recovery
   const ADMIN_EMAIL = 'sales.carlingtonsc@gmail.com';
 
   useEffect(() => {
-    // Safety Timeout: Force stop loading after 8 seconds to prevent infinite hang
-    const safetyTimer = setTimeout(() => {
-      setIsLoading(prev => {
-        if (prev) {
-          console.warn("Auth initialization timed out - Forcing app load.");
-          return false;
-        }
-        return prev;
-      });
-    }, 8000);
+    // 1. INSTANT HYDRATION: Check local cache first
+    const cachedUser = localStorage.getItem(USER_CACHE_KEY);
+    let hasCache = false;
+
+    if (cachedUser) {
+      try {
+        const parsed = JSON.parse(cachedUser);
+        console.log("⚡ Instant Login via Cache");
+        setUser(parsed);
+        setIsLoading(false); 
+        hasCache = true;
+      } catch (e) {
+        console.warn("Cache corrupted");
+      }
+    }
 
     if (!isSupabaseConfigured() || !supabase) {
       setIsLoading(false);
-      clearTimeout(safetyTimer);
       return;
     }
 
     const checkSession = async () => {
       try {
-        const { data: { session }, error } = await supabase.auth.getSession();
+        const { data: { session } } = await supabase.auth.getSession();
+        
         if (session?.user) {
-          await loadUserProfile(session.user.id, session.user.email!);
+          // 2. ZERO-LATENCY FALLBACK
+          // If we have a session but no cache, UNBLOCK UI IMMEDIATELY with a temporary profile
+          // The full profile will lazy-load in the background.
+          if (!hasCache) {
+             const fallbackUser: UserProfile = {
+                id: session.user.id,
+                email: session.user.email!,
+                role: 'advisor', // Temporary safe role
+                status: 'active',
+                subscriptionTier: 'free', 
+                is_admin: false,
+                organizationId: 'org_default'
+             };
+             setUser(fallbackUser);
+             setIsLoading(false); // <--- CRITICAL: Remove loading screen immediately
+          }
+
+          // 3. BACKGROUND SYNC
+          // This will fetch the real roles/permissions and update the UI silently
+          loadUserProfile(session.user.id, session.user.email!);
         } else {
+          // No session
+          if (hasCache) {
+             localStorage.removeItem(USER_CACHE_KEY);
+             setUser(null);
+          }
           setIsLoading(false);
         }
       } catch (err) {
-        setIsLoading(false);
+        console.error("Session check failed", err);
+        if (!hasCache) setIsLoading(false);
       }
     };
 
@@ -61,15 +93,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (event === 'SIGNED_IN' && session?.user) {
         await loadUserProfile(session.user.id, session.user.email!);
       } else if (event === 'SIGNED_OUT') {
+        localStorage.removeItem(USER_CACHE_KEY);
         setUser(null);
-        setIsLoading(false);
-      } else if (event === 'INITIAL_SESSION' && !session) {
         setIsLoading(false);
       }
     });
 
     return () => {
-      clearTimeout(safetyTimer);
       subscription.unsubscribe();
     };
   }, []);
@@ -79,118 +109,73 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (!supabase) return;
       
       const isHardcodedAdmin = email === ADMIN_EMAIL;
-
-      // ---------------------------------------------------------
-      // 1. SMART RECONCILIATION (Handle Pre-Approvals)
-      // Check if an Admin created a placeholder 'invite' profile for this email
-      // that has a different ID (e.g. 'adv_123') than the real Auth UID.
-      // ---------------------------------------------------------
-      const { data: inviteProfile } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('email', email)
-        .neq('id', uid) // ID doesn't match current user
-        .single();
-
-      if (inviteProfile) {
-          console.log("Found pre-approved invite. Merging into real account...");
-          
-          // Merge invite settings into real profile
-          // We prioritize the invite's status, role, banding, and org
-          const updates = {
-              status: inviteProfile.status === 'active' ? 'approved' : inviteProfile.status,
-              role: inviteProfile.role,
-              organization_id: inviteProfile.organization_id,
-              banding_percentage: inviteProfile.banding_percentage,
-              reporting_to: inviteProfile.reporting_to, // Team ID
-              modules: inviteProfile.modules,
-              subscription_tier: inviteProfile.subscription_tier,
-              annual_goal: inviteProfile.annual_goal,
-              is_admin: inviteProfile.is_admin
-          };
-
-          // Apply updates to real profile
-          await supabase.from('profiles').update(updates).eq('id', uid);
-          
-          // Delete the old placeholder to clean up
-          await supabase.from('profiles').delete().eq('id', inviteProfile.id);
-      }
-      // ---------------------------------------------------------
-
-      // 2. Load Final Profile
-      let { data, error } = await supabase
-        .from('profiles')
-        .select('subscription_tier, role, is_admin, extra_slots, status, modules, organization_id')
-        .eq('id', uid)
-        .single();
       
-      if (error) {
-        if (error.message.includes('stack depth')) {
-           console.error("CRITICAL: Auth Recursion Error. Falling back to safe profile state.");
-           // Fallback for admins to allow access to the repair script
-           setUser({
-              id: uid,
-              email: email,
-              subscriptionTier: isHardcodedAdmin ? 'diamond' : 'free',
-              role: isHardcodedAdmin ? 'admin' : 'user',
-              status: isHardcodedAdmin ? 'approved' : 'pending',
-              extraSlots: 0,
-              modules: [],
-              is_admin: isHardcodedAdmin,
-              isAgencyAdmin: isHardcodedAdmin,
-              organizationId: 'org_default'
-           });
-           return;
-        }
-        console.warn("Profile fetch error:", error.message);
+      // Attempt to fetch profile with a short timeout mechanism implicitly handled by Supabase
+      const { data: profileData, error: fetchError } = await supabase
+          .from('profiles')
+          .select('subscription_tier, role, is_admin, extra_slots, status, modules, organization_id')
+          .eq('id', uid)
+          .maybeSingle();
+
+      // Check for invite reconciliations if profile is missing
+      let finalProfileData = profileData;
+      
+      if (!finalProfileData) {
+          const { data: inviteData } = await supabase
+              .from('profiles')
+              .select('*')
+              .eq('email', email)
+              .neq('id', uid)
+              .maybeSingle();
+              
+          if (inviteData) {
+              const updates = {
+                  status: inviteData.status === 'active' ? 'approved' : inviteData.status,
+                  role: inviteData.role,
+                  organization_id: inviteData.organization_id,
+                  banding_percentage: inviteData.banding_percentage,
+                  reporting_to: inviteData.reporting_to,
+                  modules: inviteData.modules,
+                  subscription_tier: inviteData.subscription_tier,
+                  annual_goal: inviteData.annual_goal,
+                  is_admin: inviteData.is_admin
+              };
+              await supabase.from('profiles').update(updates).eq('id', uid);
+              await supabase.from('profiles').delete().eq('id', inviteData.id);
+              finalProfileData = { ...inviteData, ...updates };
+          }
       }
 
-      // Determine final role status (Inclusive Check)
-      // PRIORITY: Hardcoded Email > DB Role
-      const isAdminByData = data?.role === 'admin' || data?.is_admin === true;
-      const finalRole = (isHardcodedAdmin || isAdminByData) ? 'admin' : (data?.role || 'user');
+      // Construct Final Profile
+      const isAdminByData = finalProfileData?.role === 'admin' || finalProfileData?.is_admin === true;
+      const finalRole = (isHardcodedAdmin || isAdminByData) ? 'admin' : (finalProfileData?.role || 'advisor');
       const finalIsAdmin = isHardcodedAdmin || isAdminByData;
+      const finalTier = finalRole === 'admin' ? 'diamond' : ((finalProfileData?.subscription_tier as SubscriptionTier) || 'free');
       
-      const finalTier = finalRole === 'admin' ? 'diamond' : ((data?.subscription_tier as SubscriptionTier) || 'free');
-      
-      // STATUS NORMALIZATION FIX
-      // Treat 'active' same as 'approved' to prevent lockouts
-      let dbStatus = data?.status || 'pending';
+      let dbStatus = finalProfileData?.status || 'pending';
       if (dbStatus === 'active') dbStatus = 'approved'; 
       const finalStatus = (isHardcodedAdmin || dbStatus === 'approved') ? 'approved' : dbStatus;
 
-      const finalSlots = data?.extra_slots || 0;
-      const finalModules = data?.modules || [];
-        
-      setUser({
+      const newUserProfile: UserProfile = {
         id: uid,
         email: email,
         subscriptionTier: finalTier,
         role: finalRole,
         status: finalStatus as 'pending' | 'approved' | 'rejected',
-        extraSlots: finalSlots,
-        modules: finalModules,
+        extraSlots: finalProfileData?.extra_slots || 0,
+        modules: finalProfileData?.modules || [],
         is_admin: finalIsAdmin,
-        isAgencyAdmin: finalIsAdmin, // Ensure this property is set for UI checks
-        organizationId: data?.organization_id
-      });
+        isAgencyAdmin: finalIsAdmin,
+        organizationId: finalProfileData?.organization_id
+      };
+
+      // UPDATE STATE
+      setUser(newUserProfile);
+      localStorage.setItem(USER_CACHE_KEY, JSON.stringify(newUserProfile));
 
     } catch (e) {
-      console.error('Error loading profile', e);
-      // Fail-safe for the specific admin email
-      const isAdmin = email === ADMIN_EMAIL;
-      setUser({ 
-        id: uid, 
-        email, 
-        subscriptionTier: isAdmin ? 'diamond' : 'free', 
-        role: isAdmin ? 'admin' : 'user', 
-        status: isAdmin ? 'approved' : 'pending',
-        extraSlots: 0,
-        modules: [],
-        is_admin: isAdmin,
-        isAgencyAdmin: isAdmin,
-        organizationId: 'org_default'
-      });
+      console.error('Profile sync error', e);
+      // Don't clear user here, keep the fallback session user to prevent logout
     } finally {
       setIsLoading(false);
     }
@@ -211,9 +196,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
      return await supabase.auth.signUp({ 
        email, 
        password,
-       options: {
-         emailRedirectTo: window.location.origin // Ensure redirection back to this app
-       }
+       options: { emailRedirectTo: window.location.origin }
      });
   };
 
@@ -229,6 +212,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const signOut = async () => {
     if (supabase) await supabase.auth.signOut();
+    localStorage.removeItem(USER_CACHE_KEY); 
     setUser(null);
   };
 

@@ -49,6 +49,10 @@ export const TAB_DEFINITIONS = [
   { id: 'admin', label: 'Management', icon: '🔧' }
 ];
 
+export const ALL_AVAILABLE_TABS = TAB_DEFINITIONS.filter(t => 
+  !['disclaimer', 'admin'].includes(t.id)
+);
+
 export const TAB_GROUPS = [
   {
     title: 'Command Center',
@@ -96,27 +100,21 @@ export const DEFAULT_SETTINGS = {
 
 export const canAccessTab = (user: UserProfile | null, tabId: string): boolean => {
   if (!user) return false;
-  // Check for 'active' OR 'approved' status
   const isApproved = user.status === 'approved' || user.status === 'active';
-  
-  // Cast role to string to avoid type overlap errors if UserRole definition is narrowed elsewhere
   const role = user.role as string;
   const isSuperAdmin = role === 'admin' || user.is_admin === true;
   const isManagement = isSuperAdmin || role === 'director' || role === 'manager';
 
-  if (!isApproved && !isSuperAdmin) {
-     return tabId === 'disclaimer';
-  }
-  
+  if (!isApproved && !isSuperAdmin) return tabId === 'disclaimer';
   if (isSuperAdmin) return true;
+  if (tabId === 'admin') return isManagement || role === 'viewer';
   
-  if (tabId === 'admin') {
-      return isManagement || role === 'viewer';
+  // STRICT OVERRIDE: If modules array exists (even empty), use it.
+  if (Array.isArray(user.modules)) {
+    return user.modules.includes(tabId);
   }
-  
-  if (user.modules && Array.isArray(user.modules) && user.modules.length > 0) {
-    if (user.modules.includes(tabId)) return true;
-  }
+
+  // Fallback to Tier
   const currentTier = user.subscriptionTier || 'free';
   const config = TIER_CONFIG[currentTier as keyof typeof TIER_CONFIG] || TIER_CONFIG.free;
   return config.allowedTabs.includes(tabId);
