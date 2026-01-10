@@ -11,10 +11,12 @@ import { TemplateManager } from './components/TemplateManager';
 import ImportModal from './components/ImportModal'; // Import the new modal
 import StatusDropdown from './components/StatusDropdown';
 import Modal from '../../components/ui/Modal';
+import Button from '../../components/ui/Button';
 import { DEFAULT_SETTINGS } from '../../lib/config';
 import { DEFAULT_TEMPLATES } from '../../lib/templates';
 import { useAuth } from '../../contexts/AuthContext';
 import { supabase } from '../../lib/supabase';
+import { db } from '../../lib/db';
 import { logActivity } from '../../lib/db/activities';
 import { useToast } from '../../contexts/ToastContext';
 import { adminDb } from '../../lib/db/admin';
@@ -55,6 +57,12 @@ const CrmTab: React.FC<CrmTabProps> = ({
   const [advisorFilter, setAdvisorFilter] = useState<string>('All');
   const [viewMode, setViewMode] = useState<'cards' | 'list'>('list');
   
+  // Selection State
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [isBulkAssignOpen, setIsBulkAssignOpen] = useState(false);
+  const [bulkAssignTarget, setBulkAssignTarget] = useState('');
+  const [isBulkProcessing, setIsBulkProcessing] = useState(false);
+
   // Live Product State
   const [products, setProducts] = useState<Product[]>(MOCK_PRODUCTS);
 
@@ -142,6 +150,81 @@ const CrmTab: React.FC<CrmTabProps> = ({
       return matchesSearch && matchesStage && matchesAdvisor;
     });
   }, [clients, searchTerm, stageFilter, advisorFilter]);
+
+  // --- BULK ACTION HANDLERS ---
+  const handleToggleSelect = (id: string) => {
+      const newSet = new Set(selectedIds);
+      if (newSet.has(id)) newSet.delete(id);
+      else newSet.add(id);
+      setSelectedIds(newSet);
+  };
+
+  const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
+      if (e.target.checked) {
+          const allIds = filteredClients.map(c => c.id);
+          setSelectedIds(new Set(allIds));
+      } else {
+          setSelectedIds(new Set());
+      }
+  };
+
+  const executeBulkDelete = async () => {
+      if (!confirm(`Are you sure you want to delete ${selectedIds.size} clients? This cannot be undone.`)) return;
+      
+      setIsBulkProcessing(true);
+      try {
+          const idsToDelete = Array.from(selectedIds);
+          for (const id of idsToDelete) {
+              await deleteClient(id);
+          }
+          toast.success(`Deleted ${idsToDelete.length} clients.`);
+          setSelectedIds(new Set());
+      } catch (e: any) {
+          toast.error("Bulk delete partially failed: " + e.message);
+      } finally {
+          setIsBulkProcessing(false);
+      }
+  };
+
+  const executeBulkAssign = async () => {
+      if (!bulkAssignTarget) {
+          toast.error("Please select an advisor.");
+          return;
+      }
+      
+      const targetAdvisor = availableAdvisors.find(a => a.id === bulkAssignTarget);
+      if (!targetAdvisor) return;
+
+      setIsBulkProcessing(true);
+      try {
+          const idsToAssign = Array.from(selectedIds);
+          const promises = idsToAssign.map(async (id) => {
+              const client = clients.find(c => c.id === id);
+              if (client) {
+                  const updated = { 
+                      ...client, 
+                      advisorId: bulkAssignTarget,
+                      _ownerId: bulkAssignTarget,
+                      _ownerEmail: targetAdvisor.name,
+                      lastUpdated: new Date().toISOString()
+                  };
+                  // Direct DB Save to avoid debounce conflicts in loop
+                  await db.saveClient(updated, user?.id);
+                  return updated;
+              }
+          });
+          
+          await Promise.all(promises);
+          toast.success(`Assigned ${idsToAssign.length} clients to ${targetAdvisor.name}`);
+          onRefresh(); // Trigger global refresh
+          setSelectedIds(new Set());
+          setIsBulkAssignOpen(false);
+      } catch (e: any) {
+          toast.error("Bulk assign failed: " + e.message);
+      } finally {
+          setIsBulkProcessing(false);
+      }
+  };
 
   const handleClientUpdate = (updated: Client) => {
       onUpdateGlobalClient(updated);
@@ -296,14 +379,24 @@ const CrmTab: React.FC<CrmTabProps> = ({
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
             {filteredClients.map(client => (
                 <div key={client.id} className="relative group">
-                    <ClientCard 
-                        client={client} 
-                        products={products} 
-                        onUpdate={handleClientUpdate} 
-                        currentUser={user}
-                        onDelete={handleDeleteClientWrapper}
-                        onAddSale={() => setActiveSaleClient(client)}
-                    />
+                    <div className={`absolute top-2 left-2 z-10 ${selectedIds.has(client.id) ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} transition-opacity`}>
+                        <input 
+                            type="checkbox" 
+                            checked={selectedIds.has(client.id)}
+                            onChange={() => handleToggleSelect(client.id)}
+                            className="w-5 h-5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer shadow-sm"
+                        />
+                    </div>
+                    <div className={selectedIds.has(client.id) ? 'ring-2 ring-indigo-500 rounded-xl' : ''}>
+                        <ClientCard 
+                            client={client} 
+                            products={products} 
+                            onUpdate={handleClientUpdate} 
+                            currentUser={user}
+                            onDelete={handleDeleteClientWrapper}
+                            onAddSale={() => setActiveSaleClient(client)}
+                        />
+                    </div>
                     <div className="absolute top-4 right-4 flex gap-1 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity">
                         <button onClick={() => loadClient(client, true)} className="bg-indigo-600 text-white p-1.5 rounded-full shadow-lg hover:bg-indigo-700 transition-colors" title="Full Profile"><svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg></button>
                         <button onClick={() => setActiveSaleClient(client)} className="bg-emerald-500 text-white p-1.5 rounded-full shadow-lg hover:bg-emerald-600 transition-colors" title="Add Sale"><svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg></button>
@@ -322,6 +415,14 @@ const CrmTab: React.FC<CrmTabProps> = ({
                <table className="w-full text-left text-sm">
                    <thead className="bg-slate-50 border-b border-slate-100">
                        <tr>
+                           <th className="px-4 py-3 w-10">
+                               <input 
+                                   type="checkbox" 
+                                   checked={filteredClients.length > 0 && selectedIds.size === filteredClients.length} 
+                                   onChange={handleSelectAll} 
+                                   className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                               />
+                           </th>
                            <th className="px-4 py-3 font-semibold text-slate-500">Name</th>
                            <th className="px-4 py-3 font-semibold text-slate-500">Stage</th>
                            <th className="px-4 py-3 font-semibold text-slate-500">Pipeline</th>
@@ -331,7 +432,15 @@ const CrmTab: React.FC<CrmTabProps> = ({
                    </thead>
                    <tbody className="divide-y divide-slate-100">
                        {filteredClients.map(client => (
-                           <tr key={client.id} className="hover:bg-slate-50 transition-colors group cursor-pointer" onClick={() => setActiveDetailClient(client)}>
+                           <tr key={client.id} className={`hover:bg-slate-50 transition-colors group cursor-pointer ${selectedIds.has(client.id) ? 'bg-indigo-50/20' : ''}`} onClick={() => setActiveDetailClient(client)}>
+                               <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
+                                   <input 
+                                       type="checkbox" 
+                                       checked={selectedIds.has(client.id)} 
+                                       onChange={() => handleToggleSelect(client.id)}
+                                       className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                                   />
+                               </td>
                                <td className="px-4 py-3">
                                    <div className="font-bold text-slate-800">{client.name}</div>
                                    <div className="text-xs text-slate-400">{client.company}</div>
@@ -368,6 +477,44 @@ const CrmTab: React.FC<CrmTabProps> = ({
            </div>
         </div>
       )}
+
+      {/* Floating Bulk Action Bar */}
+      {selectedIds.size > 0 && (
+          <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-6 py-3 rounded-full shadow-2xl z-50 flex items-center gap-6 animate-in slide-in-from-bottom-4 border border-slate-700">
+             <span className="font-bold text-sm">{selectedIds.size} Selected</span>
+             <div className="h-4 w-px bg-slate-700"></div>
+             <div className="flex gap-2">
+                <button onClick={() => setIsBulkAssignOpen(true)} className="text-xs font-bold hover:text-indigo-400 transition-colors px-2 py-1">Assign To...</button>
+                {canDeleteClient && (
+                    <button onClick={executeBulkDelete} disabled={isBulkProcessing} className="text-xs font-bold hover:text-red-400 transition-colors px-2 py-1 flex items-center gap-2">
+                       {isBulkProcessing ? <span className="animate-spin">↻</span> : <span>Delete</span>}
+                    </button>
+                )}
+                <button onClick={() => setSelectedIds(new Set())} className="text-xs text-slate-500 hover:text-white transition-colors ml-2 px-2 py-1">Clear</button>
+             </div>
+          </div>
+      )}
+
+      {/* Bulk Assign Modal */}
+      <Modal isOpen={isBulkAssignOpen} onClose={() => setIsBulkAssignOpen(false)} title={`Assign ${selectedIds.size} Clients`}>
+          <div className="space-y-4">
+              <p className="text-sm text-slate-600">Select the new portfolio custodian for these clients.</p>
+              <select 
+                  className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-indigo-500"
+                  value={bulkAssignTarget}
+                  onChange={(e) => setBulkAssignTarget(e.target.value)}
+              >
+                  <option value="">Select Advisor...</option>
+                  {availableAdvisors.map(adv => (
+                      <option key={adv.id} value={adv.id}>{adv.name}</option>
+                  ))}
+              </select>
+              <div className="flex justify-end gap-2 pt-4">
+                  <Button variant="ghost" onClick={() => setIsBulkAssignOpen(false)}>Cancel</Button>
+                  <Button variant="primary" onClick={executeBulkAssign} isLoading={isBulkProcessing} disabled={!bulkAssignTarget}>Confirm Assignment</Button>
+              </div>
+          </div>
+      </Modal>
 
       {activeWhatsAppClient && <WhatsAppModal client={activeWhatsAppClient} templates={templates} onClose={() => setActiveWhatsAppClient(null)} />}
       {activeCommentsClient && <CommentsModal client={activeCommentsClient} onClose={() => setActiveCommentsClient(null)} onAddNote={(note) => handleAddNote(activeCommentsClient.id, note)} />}

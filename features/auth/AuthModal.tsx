@@ -113,7 +113,12 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialError }) 
       const { data, error } = await signUpWithPassword(email, password);
       if (error) {
         setStatus('error');
-        setMessage(error.message);
+        // Handle specific Supabase "Rate Limit" error for email
+        if (error.message && (error.message.includes('Error sending confirmation email') || error.status === 429)) {
+             setMessage('High traffic detected. The email service is currently busy (Rate Limit). Please try again in 15 minutes.');
+        } else {
+             setMessage(error.message);
+        }
       } else {
         if (data?.user && !data.session) {
           setStatus('sent');

@@ -18,23 +18,31 @@ import { dbTemplates } from '../../lib/db/templates';
 import { aiLearning } from '../../lib/db/aiLearning';
 
 const REPAIR_SQL = `
--- REPAIR SCRIPT V14.0: TEAM ASSIGNMENT FIX
--- 1. Relax Schema for Team Assignments
--- This allows 'reporting_to' to store Team IDs (text) instead of just User IDs (uuid)
+-- REPAIR SCRIPT V17.0: COMPREHENSIVE SCHEMA FIX
 DO $$ 
 BEGIN
-  -- Alter type to text to support Team IDs
-  ALTER TABLE profiles ALTER COLUMN reporting_to TYPE text;
+  -- 1. Add annual_goal if missing
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'profiles' AND column_name = 'annual_goal') THEN
+      ALTER TABLE profiles ADD COLUMN annual_goal numeric DEFAULT 0;
+  END IF;
+
+  -- 2. Add organization_id if missing
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'profiles' AND column_name = 'organization_id') THEN
+      ALTER TABLE profiles ADD COLUMN organization_id text DEFAULT 'org_default';
+  END IF;
   
-  -- Drop Foreign Key if it exists (to allow non-user IDs like 'team_xxx')
+  -- 3. Ensure reporting_to is text (for team IDs)
+  ALTER TABLE profiles ALTER COLUMN reporting_to TYPE text;
+
+  -- 4. Drop constraint if exists to prevent FK errors
   IF EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE constraint_name = 'profiles_reporting_to_fkey') THEN
     ALTER TABLE profiles DROP CONSTRAINT profiles_reporting_to_fkey;
   END IF;
 EXCEPTION
-  WHEN OTHERS THEN RAISE NOTICE 'Schema update skipped/failed: %', SQLERRM;
+  WHEN OTHERS THEN RAISE NOTICE 'Schema update error: %', SQLERRM;
 END $$;
 
--- 2. Secure Access Function
+-- 5. Secure Access Function
 CREATE OR REPLACE FUNCTION get_my_claims()
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -57,18 +65,17 @@ BEGIN
 END;
 $$;
 
--- 3. Reset Policies
+-- 6. Reset Policies
 DROP POLICY IF EXISTS "Profiles_Select_Hierarchy" ON profiles;
 DROP POLICY IF EXISTS "Clients_Select_Hierarchy" ON clients;
 DROP POLICY IF EXISTS "Profiles_Update_Hierarchy" ON profiles;
 DROP POLICY IF EXISTS "Profiles_Insert_Hierarchy" ON profiles;
 DROP POLICY IF EXISTS "Profiles_Delete_Hierarchy" ON profiles;
--- Drop existing client write policies if any
 DROP POLICY IF EXISTS "Clients_Insert_Policy" ON clients;
 DROP POLICY IF EXISTS "Clients_Update_Policy" ON clients;
 DROP POLICY IF EXISTS "Clients_Delete_Policy" ON clients;
 
--- 4. PROFILES POLICIES
+-- 7. PROFILES POLICIES
 CREATE POLICY "Profiles_Select_Hierarchy" ON profiles FOR SELECT
 USING (
   auth.uid() = id
@@ -107,8 +114,7 @@ USING (
   )
 );
 
--- 5. CLIENTS POLICIES (Data)
--- Allow Managers to see clients in their Org (filtered by UI logic)
+-- 8. CLIENTS POLICIES
 CREATE POLICY "Clients_Select_Hierarchy" ON clients FOR SELECT
 USING (
   user_id = auth.uid()
@@ -123,14 +129,12 @@ USING (
   )
 );
 
--- Allow Advisors to Insert their own clients
 CREATE POLICY "Clients_Insert_Policy" ON clients FOR INSERT
 WITH CHECK (
   auth.uid() = user_id
   OR (get_my_claims()->>'is_admin')::boolean = true
 );
 
--- Allow Advisors to Update their own clients
 CREATE POLICY "Clients_Update_Policy" ON clients FOR UPDATE
 USING (
   auth.uid() = user_id
@@ -145,7 +149,6 @@ USING (
   )
 );
 
--- Allow Advisors to Delete their own clients
 CREATE POLICY "Clients_Delete_Policy" ON clients FOR DELETE
 USING (
   auth.uid() = user_id
@@ -160,6 +163,7 @@ USING (
   )
 );
 
+-- Reload Schema Cache
 NOTIFY pgrst, 'reload config';
 `;
 
@@ -201,6 +205,7 @@ const AdminTab: React.FC = () => {
   const [subscription, setSubscription] = useState<Subscription>(MOCK_SUBSCRIPTION);
   
   const [loading, setLoading] = useState(true);
+  const [errorState, setErrorState] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [isRepairOpen, setIsRepairOpen] = useState(false);
   const [diagLog, setDiagLog] = useState<string[]>([]);
@@ -216,9 +221,19 @@ const AdminTab: React.FC = () => {
   const fetchData = async () => {
     if (!supabase || !user) return;
     setLoading(true);
+    setErrorState(null);
     try {
         // 1. Get Full Current User Profile First (To determine Organization Scope)
-        const { data: myself } = await supabase.from('profiles').select('*').eq('id', user.id).single();
+        const { data: myself, error: meErr } = await supabase.from('profiles').select('*').eq('id', user.id).single();
+        
+        if (meErr) {
+            // If profile missing, trigger repair context
+            if (meErr.code === 'PGRST116') {
+               console.warn("User profile not found. UI will be restricted.");
+            } else {
+               throw meErr;
+            }
+        }
         
         let userOrgId = 'org_default';
         let isSuperAdmin = false;
@@ -250,7 +265,15 @@ const AdminTab: React.FC = () => {
             profileQuery = profileQuery.eq('organization_id', userOrgId);
         }
 
-        const { data: profiles } = await profileQuery;
+        const { data: profiles, error: profErr } = await profileQuery;
+        
+        if (profErr) {
+            // Handle undefined column error specifically
+            if (profErr.code === '42703') {
+                throw new Error("Database Schema outdated (missing columns). Run DB Repair.");
+            }
+            throw profErr;
+        }
 
         if (profiles) {
             const mappedAdvisors: Advisor[] = profiles.map(p => ({
@@ -289,6 +312,11 @@ const AdminTab: React.FC = () => {
 
     } catch (e: any) {
         console.error("Sync Error:", e);
+        setErrorState(e.message || "Failed to load admin data.");
+        // Auto-open repair if schema error
+        if (e.message?.includes('Schema') || e.message?.includes('column')) {
+            setIsRepairOpen(true);
+        }
     } finally {
         setLoading(false);
         setTimeout(() => { isInitialMount.current = false; }, 1000);
@@ -296,7 +324,7 @@ const AdminTab: React.FC = () => {
   };
 
   useEffect(() => {
-      if (isInitialMount.current || loading) return;
+      if (isInitialMount.current || loading || errorState) return;
       const timer = setTimeout(async () => {
           setSaveStatus('saving');
           try {
@@ -308,7 +336,7 @@ const AdminTab: React.FC = () => {
           }
       }, 1500);
       return () => clearTimeout(timer);
-  }, [products, teams, settings, subscription, loading]);
+  }, [products, teams, settings, subscription, loading, errorState]);
 
   const handleUpdateAdvisor = async (updatedAdvisor: Advisor) => {
       setAdvisors(prev => prev.map(a => a.id === updatedAdvisor.id ? updatedAdvisor : a));
@@ -327,11 +355,22 @@ const AdminTab: React.FC = () => {
           
           if (error) {
               console.error("Profile update failed:", error);
-              // FIXED: Extract error message string to avoid [object Object]
-              const errMsg = error.message || (typeof error === 'object' ? JSON.stringify(error) : String(error));
+              
+              const msg = error.message || '';
+              const code = error.code || '';
+
+              // Handle Schema Cache Error (Missing Column)
+              // PGRST204 = Column not found in schema cache
+              // 42703 = Undefined column
+              if (code === 'PGRST204' || code === '42703' || msg.includes("annual_goal")) {
+                 toast.error("Database Schema Outdated. Auto-opening Repair Tool.");
+                 setIsRepairOpen(true);
+                 return;
+              }
+
+              const errMsg = msg || (typeof error === 'object' ? JSON.stringify(error) : String(error));
               toast.error(`Failed to update profile: ${errMsg}`);
-              // In production, we might revert the optimistic update here
-              throw error;
+              // Do not re-throw to avoid unhandled promise rejection in UI components
           }
       }
   };
@@ -419,7 +458,7 @@ const AdminTab: React.FC = () => {
       };
 
       try {
-          addLog(`DIAGNOSTIC START (V14.0): ${new Date().toISOString()}`);
+          addLog(`DIAGNOSTIC START (V17.0): ${new Date().toISOString()}`);
           
           let { data: sessionData } = await supabase.auth.getSession();
           if (!sessionData.session) {
@@ -433,9 +472,9 @@ const AdminTab: React.FC = () => {
           if (funcErr) addLog("Secure Function Missing. Run Repair SQL.", 'error');
           else addLog("Secure Function OK.", 'success');
 
-          const { error: colError } = await supabase.from('profiles').select('organization_id').limit(1);
-          if (colError) addLog("Schema missing 'organization_id'. Run SQL.", 'error');
-          else addLog("Hierarchy Schema OK.", 'success');
+          const { error: colError } = await supabase.from('profiles').select('organization_id, annual_goal').limit(1);
+          if (colError) addLog("Schema missing columns (org/goal). Run SQL.", 'error');
+          else addLog("Schema Columns OK.", 'success');
 
           setDiagStatus('success');
           addLog("SYSTEM CHECK COMPLETE.", 'success');
@@ -493,6 +532,22 @@ const AdminTab: React.FC = () => {
       organizationId: 'org_default'
   };
 
+  if (errorState && !isRepairOpen) {
+      return (
+          <div className="p-20 text-center flex flex-col items-center justify-center h-full">
+              <div className="text-4xl mb-4">⚠️</div>
+              <h2 className="text-xl font-bold text-slate-800 mb-2">Load Failed</h2>
+              <p className="text-slate-500 max-w-md mx-auto mb-6">{errorState}</p>
+              <button 
+                  onClick={() => setIsRepairOpen(true)}
+                  className="px-6 py-3 bg-indigo-600 text-white rounded-lg font-bold shadow-lg hover:bg-indigo-700"
+              >
+                  Open Database Repair Tool
+              </button>
+          </div>
+      );
+  }
+
   return (
     <div className="flex flex-col h-full bg-slate-50 font-sans">
         <div className="bg-white border-b border-slate-200 px-8 py-4 flex items-center justify-between sticky top-0 z-30">
@@ -531,7 +586,7 @@ const AdminTab: React.FC = () => {
                 <UserManagement 
                     advisors={advisors} teams={teams} currentUser={activeUser} 
                     onUpdateAdvisor={handleUpdateAdvisor} onDeleteAdvisor={handleDeleteAdvisor} onUpdateTeams={setTeams} 
-                    onAddAdvisor={handleAddAdvisor} // Use the new persistent handler
+                    onAddAdvisor={handleAddAdvisor} 
                 />
             )}
             {activeTab === 'settings' && (
@@ -549,7 +604,7 @@ const AdminTab: React.FC = () => {
         </div>
 
         <Modal 
-            isOpen={isRepairOpen} onClose={() => setIsRepairOpen(false)} title="System Diagnostics & Repair (V14.0)"
+            isOpen={isRepairOpen} onClose={() => setIsRepairOpen(false)} title="System Diagnostics & Repair (V17.0)"
             footer={
                <div className="flex gap-2 w-full">
                   <Button variant="ghost" onClick={() => setIsRepairOpen(false)}>Close</Button>
@@ -560,11 +615,11 @@ const AdminTab: React.FC = () => {
         >
             <div className="p-4 bg-slate-900 rounded-xl text-white font-mono text-xs overflow-auto max-h-96">
                 <div className="mb-4 space-y-2">
-                    <p className="text-emerald-400 font-bold uppercase">Instructions (Update Permissions V14.0):</p>
+                    <p className="text-emerald-400 font-bold uppercase">Instructions (Update Schema V17.0):</p>
                     <p>1. Click "Copy Repair SQL" below.</p>
                     <p>2. Go to Supabase &gt; SQL Editor.</p>
-                    <p>3. Paste and Run. (This fixes Team Assignment logic).</p>
-                    <p>4. Check console for "Hierarchy Schema OK".</p>
+                    <p>3. Paste and Run. (This adds missing 'annual_goal' & 'organization_id' columns).</p>
+                    <p>4. Check console for "Schema Columns OK".</p>
                 </div>
                 {diagLog.length > 0 && (
                     <div className="space-y-1 mb-4 border-t border-slate-700 pt-4">
@@ -590,7 +645,7 @@ const AdminTab: React.FC = () => {
                         onClick={copyDebugSql}
                         className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-3 rounded-lg text-xs uppercase font-bold w-full flex items-center justify-center gap-2 shadow-lg"
                     >
-                        <span>📋</span> 1. Copy Repair SQL (V14.0)
+                        <span>📋</span> 1. Copy Repair SQL (V17.0)
                     </button>
                 </div>
             </div>

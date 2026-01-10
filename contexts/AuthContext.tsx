@@ -80,10 +80,47 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       
       const isHardcodedAdmin = email === ADMIN_EMAIL;
 
-      // Select both role and is_admin boolean
+      // ---------------------------------------------------------
+      // 1. SMART RECONCILIATION (Handle Pre-Approvals)
+      // Check if an Admin created a placeholder 'invite' profile for this email
+      // that has a different ID (e.g. 'adv_123') than the real Auth UID.
+      // ---------------------------------------------------------
+      const { data: inviteProfile } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('email', email)
+        .neq('id', uid) // ID doesn't match current user
+        .single();
+
+      if (inviteProfile) {
+          console.log("Found pre-approved invite. Merging into real account...");
+          
+          // Merge invite settings into real profile
+          // We prioritize the invite's status, role, banding, and org
+          const updates = {
+              status: inviteProfile.status === 'active' ? 'approved' : inviteProfile.status,
+              role: inviteProfile.role,
+              organization_id: inviteProfile.organization_id,
+              banding_percentage: inviteProfile.banding_percentage,
+              reporting_to: inviteProfile.reporting_to, // Team ID
+              modules: inviteProfile.modules,
+              subscription_tier: inviteProfile.subscription_tier,
+              annual_goal: inviteProfile.annual_goal,
+              is_admin: inviteProfile.is_admin
+          };
+
+          // Apply updates to real profile
+          await supabase.from('profiles').update(updates).eq('id', uid);
+          
+          // Delete the old placeholder to clean up
+          await supabase.from('profiles').delete().eq('id', inviteProfile.id);
+      }
+      // ---------------------------------------------------------
+
+      // 2. Load Final Profile
       let { data, error } = await supabase
         .from('profiles')
-        .select('subscription_tier, role, is_admin, extra_slots, status, modules')
+        .select('subscription_tier, role, is_admin, extra_slots, status, modules, organization_id')
         .eq('id', uid)
         .single();
       
@@ -100,17 +137,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               extraSlots: 0,
               modules: [],
               is_admin: isHardcodedAdmin,
-              isAgencyAdmin: isHardcodedAdmin
+              isAgencyAdmin: isHardcodedAdmin,
+              organizationId: 'org_default'
            });
            return;
         }
-        // Don't throw, just use fallback if profile missing
         console.warn("Profile fetch error:", error.message);
-      }
-
-      // Auto-create for new users if not found
-      if (!data && !error) { 
-         // Logic mainly for first-time login if trigger didn't fire
       }
 
       // Determine final role status (Inclusive Check)
@@ -139,7 +171,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         extraSlots: finalSlots,
         modules: finalModules,
         is_admin: finalIsAdmin,
-        isAgencyAdmin: finalIsAdmin // Ensure this property is set for UI checks
+        isAgencyAdmin: finalIsAdmin, // Ensure this property is set for UI checks
+        organizationId: data?.organization_id
       });
 
     } catch (e) {
@@ -155,7 +188,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         extraSlots: 0,
         modules: [],
         is_admin: isAdmin,
-        isAgencyAdmin: isAdmin
+        isAgencyAdmin: isAdmin,
+        organizationId: 'org_default'
       });
     } finally {
       setIsLoading(false);
@@ -174,7 +208,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   
   const signUpWithPassword = async (email: string, password: string) => {
      if (!supabase) return { data: null, error: { message: 'Supabase not configured' } };
-     return await supabase.auth.signUp({ email, password });
+     return await supabase.auth.signUp({ 
+       email, 
+       password,
+       options: {
+         emailRedirectTo: window.location.origin // Ensure redirection back to this app
+       }
+     });
   };
 
   const signInWithGoogle = async () => {

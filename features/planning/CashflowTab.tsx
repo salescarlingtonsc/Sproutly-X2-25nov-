@@ -2,7 +2,7 @@
 import React, { useMemo, useState } from 'react';
 import { useClient } from '../../contexts/ClientContext';
 import { useAi } from '../../contexts/AiContext';
-import { toNum, fmtSGD, monthNames } from '../../lib/helpers';
+import { toNum, fmtSGD, monthNames, parseDob } from '../../lib/helpers';
 import LineChart from '../../components/common/LineChart';
 import PageHeader from '../../components/layout/PageHeader';
 import SectionCard from '../../components/layout/SectionCard';
@@ -29,7 +29,8 @@ const CashflowTab: React.FC = () => {
     setCashflowState((prev) => ({ ...prev, [key]: value }));
   };
 
-  const currentAge = age;
+  // Safe fallback if DOB is missing
+  const currentAge = age || 30; 
   const currentYear = new Date().getFullYear();
 
   // --- HANDLERS ---
@@ -48,7 +49,29 @@ const CashflowTab: React.FC = () => {
   // --- CALCULATION ENGINE ---
   const monthlyProjection = useMemo(() => {
     if (!cashflowData) return [];
-    const currentMonth = new Date().getMonth();
+    
+    // Date Setup
+    const now = new Date();
+    const startYear = now.getFullYear();
+    const startMonth = now.getMonth();
+    
+    // Parse DOB for exact age calculation
+    const dobDate = profile.dob ? parseDob(profile.dob) : null;
+    
+    // Helper to get exact age at a specific future date
+    const getExactAge = (targetDate: Date) => {
+        if (!dobDate) return currentAge + (targetDate.getFullYear() - startYear) + (targetDate.getMonth() - startMonth)/12;
+        
+        let years = targetDate.getFullYear() - dobDate.getFullYear();
+        let m = targetDate.getMonth() - dobDate.getMonth();
+        if (m < 0 || (m === 0 && targetDate.getDate() < dobDate.getDate())) {
+            years--;
+        }
+        // Return float age
+        const months = (targetDate.getFullYear() - dobDate.getFullYear()) * 12 + (targetDate.getMonth() - dobDate.getMonth());
+        return months / 12;
+    };
+
     const targetAge = parseInt(projectToAge) || 100;
     const totalMonths = Math.max(1, (targetAge - currentAge) * 12);
     const projection: any[] = [];
@@ -75,13 +98,23 @@ const CashflowTab: React.FC = () => {
       monthlyInvestment = (effectiveTakeHome - totalMonthlyExpenses) * (investmentPercent / 100);
     }
 
+    // Accumulators for Annual View
+    let yearlyIncomeAccumulator = 0;
+    let yearlyWithdrawalAccumulator = 0;
+    let yearlyNetAccumulator = 0;
+
     for (let m = 0; m < totalMonths; m++) {
-      const ageAtMonth = currentAge + m / 12;
-      const monthIndex = (currentMonth + m) % 12;
-      const year = currentYear + Math.floor((currentMonth + m) / 12);
+      // Calculate Date for this step
+      const stepDate = new Date(startYear, startMonth + m, 1);
+      const stepYear = stepDate.getFullYear();
+      const stepMonthIndex = stepDate.getMonth();
+      
+      // Calculate Exact Age based on DOB if available
+      const ageAtMonth = getExactAge(stepDate);
+      const flooredAge = Math.floor(ageAtMonth);
       
       // Career Events logic
-      const events = careerEvents.filter(e => Math.floor(ageAtMonth) === toNum(e.age) && monthIndex === (e.month||0));
+      const events = careerEvents.filter(e => Math.floor(ageAtMonth) === toNum(e.age) && stepMonthIndex === (e.month||0));
       events.forEach(e => {
          const amt = toNum(e.amount);
          if (e.type === 'increment') currentActiveIncome += amt;
@@ -91,8 +124,7 @@ const CashflowTab: React.FC = () => {
       });
       if (isCareerPaused) { pauseMonthsRemaining--; if (pauseMonthsRemaining <= 0) isCareerPaused = false; }
 
-      // Interest only earns on positive balance, usually banks don't pay interest on debt (they charge it).
-      // For simplicity in this projection, we only apply interest if balance > 0.
+      // Interest
       const interestEarned = balance > 0 ? balance * monthlyInterestRate : 0;
       balance += interestEarned;
       
@@ -104,8 +136,8 @@ const CashflowTab: React.FC = () => {
 
       // Add. Income
       additionalIncomes.forEach(i => {
-         const startM = (toNum(i.startAge) - currentAge)*12 + (toNum(i.startMonth)-currentMonth);
-         const endM = i.endAge ? (toNum(i.endAge)-currentAge)*12 + ((i.endMonth||11)-currentMonth) : 9999;
+         const startM = (toNum(i.startAge) - currentAge)*12 + (toNum(i.startMonth)-startMonth);
+         const endM = i.endAge ? (toNum(i.endAge)-currentAge)*12 + ((i.endMonth||11)-startMonth) : 9999;
          if (m >= startM && m <= endM) {
             if (i.type === 'onetime' && m === startM) additionalIncome += toNum(i.amount);
             if (i.type === 'recurring') {
@@ -120,8 +152,8 @@ const CashflowTab: React.FC = () => {
 
       // Withdrawals
       withdrawals.forEach(w => {
-         const startM = (toNum(w.startAge) - currentAge)*12 + (toNum(w.startMonth)-currentMonth);
-         const endM = w.endAge ? (toNum(w.endAge)-currentAge)*12 + ((w.endMonth||11)-currentMonth) : 9999;
+         const startM = (toNum(w.startAge) - currentAge)*12 + (toNum(w.startMonth)-startMonth);
+         const endM = w.endAge ? (toNum(w.endAge)-currentAge)*12 + ((w.endMonth||11)-startMonth) : 9999;
          
          if (w.type === 'onetime') {
              if (m === startM) withdrawalAmount += toNum(w.amount);
@@ -148,17 +180,37 @@ const CashflowTab: React.FC = () => {
       const net = totalIncome - withdrawalAmount - (isRetired ? 0 : monthlyInvestment);
       balance += net;
 
+      // Accumulate for Annual Stats
+      yearlyIncomeAccumulator += totalIncome;
+      yearlyWithdrawalAccumulator += withdrawalAmount;
+      yearlyNetAccumulator += net;
+
+      // Determine cycle end based on actual year change logic or just 12 month blocks?
+      // 12 month blocks is safer for "Annual" view consistency
+      const isCycleEnd = (m + 1) % 12 === 0 || m === totalMonths - 1;
+
       projection.push({
-         age: Math.floor(ageAtMonth),
-         monthName: monthNames[monthIndex],
-         year,
+         age: flooredAge,
+         ageFloat: ageAtMonth,
+         monthName: monthNames[stepMonthIndex],
+         year: stepYear,
          totalIncome,
          withdrawal: withdrawalAmount,
          interestEarned,
          netCashflow: net,
          balance: balance, // Allow negative to show debt
-         isCareerPaused
+         isCareerPaused,
+         // Snapshots
+         annualIncomeSnapshot: yearlyIncomeAccumulator,
+         annualWithdrawalSnapshot: yearlyWithdrawalAccumulator,
+         annualNetSnapshot: yearlyNetAccumulator
       });
+
+      if (isCycleEnd) {
+          yearlyIncomeAccumulator = 0;
+          yearlyWithdrawalAccumulator = 0;
+          yearlyNetAccumulator = 0;
+      }
     }
     return projection;
   }, [cashflowData, currentSavings, projectToAge, additionalIncomes, withdrawals, careerEvents, bankInterestRate, profile, expenses, customExpenses, cpfData, currentAge, customBaseIncome, retirement.investmentPercent]);
@@ -212,6 +264,17 @@ const CashflowTab: React.FC = () => {
          {/* 1. INITIALIZATION PANEL (UPDATED) */}
          <SectionCard title="Initialization" className="lg:col-span-1 flex flex-col h-full">
             <div className="space-y-4 flex-1">
+               {/* AGE TAG (NEW) */}
+               <div className="bg-slate-50 p-3 rounded-xl border border-slate-100 mb-2">
+                  <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Current Client Age</div>
+                  <div className="flex justify-between items-center">
+                      <span className="text-xl font-black text-slate-700">{age} Years</span>
+                      <span className="text-[10px] font-mono text-slate-400 bg-white px-2 py-1 rounded border border-slate-200">
+                          Born: {profile.dob ? new Date(profile.dob).getFullYear() : '?'}
+                      </span>
+                  </div>
+               </div>
+
                <LabeledText 
                   label="Starting Bank Balance ($)" 
                   value={currentSavings} 
@@ -508,9 +571,15 @@ const CashflowTab: React.FC = () => {
                         <td className="p-4 font-bold text-gray-700 bg-gray-50/30">
                            {ledgerView === 'yearly' ? `Age ${row.age}` : `Age ${row.age} - ${row.monthName}`}
                         </td>
-                        <td className="p-4 text-right text-emerald-600">{fmtSGD(row.totalIncome)}</td>
-                        <td className="p-4 text-right text-red-500">{fmtSGD(Math.abs(row.withdrawal))}</td>
-                        <td className={`p-4 text-right font-bold ${row.netCashflow < 0 ? 'text-red-500' : 'text-indigo-600'}`}>{fmtSGD(row.netCashflow)}</td>
+                        <td className="p-4 text-right text-emerald-600">
+                            {fmtSGD(ledgerView === 'yearly' ? row.annualIncomeSnapshot : row.totalIncome)}
+                        </td>
+                        <td className="p-4 text-right text-red-500">
+                            {fmtSGD(Math.abs(ledgerView === 'yearly' ? row.annualWithdrawalSnapshot : row.withdrawal))}
+                        </td>
+                        <td className={`p-4 text-right font-bold ${(ledgerView === 'yearly' ? row.annualNetSnapshot : row.netCashflow) < 0 ? 'text-red-500' : 'text-indigo-600'}`}>
+                            {fmtSGD(ledgerView === 'yearly' ? row.annualNetSnapshot : row.netCashflow)}
+                        </td>
                         <td className={`p-4 text-right font-mono font-bold ${row.balance < 0 ? 'text-red-600' : 'text-slate-700'}`}>{fmtSGD(row.balance)}</td>
                      </tr>
                   ))}

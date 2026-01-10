@@ -297,6 +297,16 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
       setReportContent(text); setIsGeneratingReport(false);
   };
 
+  const handleCall = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const rawPhone = client.phone || client.profile?.phone || '';
+    if (!rawPhone) {
+        toast.error("No phone number found");
+        return;
+    }
+    window.location.href = `tel:${rawPhone}`;
+  };
+
   const handleWhatsApp = (e: React.MouseEvent) => {
     e.stopPropagation();
     const rawPhone = client.phone || client.profile?.phone || '';
@@ -656,6 +666,7 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
       )}
       </div>
       <div className="p-3 border-t border-slate-100 bg-slate-50 flex gap-2 shrink-0">
+            <button onClick={handleCall} className="flex-1 flex items-center justify-center gap-1.5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold transition-colors shadow-sm">Call</button>
             <button onClick={handleWhatsApp} className="flex-1 flex items-center justify-center gap-1.5 py-2 bg-[#25D366] hover:bg-[#128C7E] text-white rounded-lg text-xs font-bold transition-colors shadow-sm">Chat</button>
             <button onClick={handleCalendar} className="flex-1 flex items-center justify-center gap-1.5 py-2 bg-blue-50 text-blue-600 hover:bg-blue-100 border border-blue-100 rounded-lg text-xs font-bold transition-colors shadow-sm">Book</button>
       </div>
