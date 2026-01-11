@@ -1,3 +1,4 @@
+
 export const toNum = (val: any, def = 0): number => {
   const n = parseFloat(String(val).replace(/[^0-9.-]/g, ''));
   return isNaN(n) ? def : n;
@@ -15,6 +16,14 @@ export const monthNames = [
 
 export const parseDob = (iso: string): Date | null => {
   if (!iso) return null;
+  // Parse manually to avoid UTC shifts
+  const cleanIso = iso.substring(0, 10); // Handle "YYYY-MM-DDTHH:mm..."
+  if (/^\d{4}-\d{2}-\d{2}$/.test(cleanIso)) {
+      const [y, m, d] = cleanIso.split('-').map(Number);
+      if (!isNaN(y) && !isNaN(m) && !isNaN(d)) {
+          return new Date(y, m - 1, d);
+      }
+  }
   const d = new Date(iso);
   return isNaN(d.getTime()) ? null : d;
 };
@@ -27,15 +36,33 @@ export const monthsSinceDob = (dob: Date, refYear: number, refMonth: number): nu
 
 export const getAge = (dobIso: string): number => {
   if (!dobIso) return 0;
-  const dob = parseDob(dobIso);
-  if (!dob) return 0;
+  
   const today = new Date();
-  let age = today.getFullYear() - dob.getFullYear();
-  const m = today.getMonth() - dob.getMonth();
-  if (m < 0 || (m === 0 && today.getDate() < dob.getDate())) {
-    age--;
+  let birthDate: Date;
+
+  // AGGRESSIVE FIX: Ignore timezones completely.
+  // Take the first 10 characters (YYYY-MM-DD) and force Local Time construction.
+  // This prevents '1997-01-01' (UTC) becoming '1996-12-31' (Local).
+  const cleanDob = String(dobIso).substring(0, 10);
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(cleanDob)) {
+      const [y, m, d] = cleanDob.split('-').map(Number);
+      birthDate = new Date(y, m - 1, d);
+  } else {
+      birthDate = new Date(dobIso);
   }
-  return age;
+
+  if (isNaN(birthDate.getTime())) return 0;
+
+  let age = today.getFullYear() - birthDate.getFullYear();
+  const m = today.getMonth() - birthDate.getMonth();
+  
+  // Precise day check
+  if (m < 0 || (m === 0 && today.getDate() < birthDate.getDate())) {
+      age--;
+  }
+  
+  return Math.max(0, age);
 };
 
 export const safeArray = <T>(arr: any): T[] => {

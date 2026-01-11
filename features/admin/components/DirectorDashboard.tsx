@@ -50,6 +50,11 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
       return advisors.filter(a => a.teamId === myTeam.id);
   }, [advisors, teams, currentUser]);
 
+  // Active advisors only for dropdowns
+  const activeManagedAdvisors = useMemo(() => {
+      return managedAdvisors.filter(a => a.status === 'active' || a.status === 'approved');
+  }, [managedAdvisors]);
+
   const managedClients = useMemo(() => {
       const managedAdvisorIds = managedAdvisors.map(a => a.id);
       return clients.filter(c => c.advisorId && managedAdvisorIds.includes(c.advisorId));
@@ -336,7 +341,7 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
     <div className="p-8 bg-slate-50 min-h-full animate-fade-in">
       {showImporter && (
         <LeadImporter 
-          advisors={managedAdvisors} 
+          advisors={activeManagedAdvisors} // Use Active List
           onClose={() => setShowImporter(false)} 
           onImport={onImport} 
         />
@@ -401,7 +406,7 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
                       <tr className="text-slate-500 text-[10px] uppercase font-bold text-left"><th className="py-3 px-2">Advisor</th><th className="py-3 px-2 text-right">Annual Goal ($)</th></tr>
                    </thead>
                    <tbody className="divide-y divide-slate-50">
-                      {managedAdvisors.map((adv) => (
+                      {activeManagedAdvisors.map((adv) => (
                          <tr key={adv.id} className="hover:bg-slate-50">
                             <td className="py-3 px-2 flex items-center gap-3">
                                 <div className="w-7 h-7 rounded-full bg-slate-200 flex items-center justify-center text-[10px] font-bold text-slate-600">{adv.avatar}</div>
@@ -772,7 +777,7 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
                     className="bg-slate-50 border border-slate-200 rounded-lg text-sm px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-slate-900/10"
                   >
                     <option value="all">All My Agents</option>
-                    {managedAdvisors.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                    {activeManagedAdvisors.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
                   </select>
                 </div>
                 <button 
@@ -825,7 +830,7 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
                              className="bg-white border border-slate-200 text-slate-600 text-xs rounded-lg px-2 py-1.5 focus:ring-2 focus:ring-indigo-500 outline-none"
                            >
                              <option value="" disabled>Re-assign...</option>
-                             {managedAdvisors.map(adv => (
+                             {activeManagedAdvisors.map(adv => (
                                <option key={adv.id} value={adv.id}>{adv.name}</option>
                              ))}
                            </select>

@@ -110,6 +110,11 @@ const DashboardTab: React.FC<DashboardTabProps> = ({ user, clients, onNewClient,
       return getFYProgress(annualGoal, clients);
   }, [user.annualGoal, clients]);
 
+  // --- ACTIVE LEADS CALCULATION ---
+  const activeLeadsCount = useMemo(() => {
+      return clients.filter(c => !['client', 'case_closed', 'not_keen'].includes(c.followUp.status || '')).length;
+  }, [clients]);
+
   const calculatePeriodStats = (offset: number) => {
       const { start, end } = getDateRange(timeFilter, offset);
       let commission = 0;

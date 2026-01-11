@@ -8,7 +8,7 @@ import { CommentsModal } from './components/CommentsModal';
 import { AddSaleModal } from './components/AddSaleModal';
 import CallSessionModal from './components/CallSessionModal';
 import { TemplateManager } from './components/TemplateManager';
-import ImportModal from './components/ImportModal'; // Import the new modal
+import ImportModal from './components/ImportModal';
 import StatusDropdown from './components/StatusDropdown';
 import Modal from '../../components/ui/Modal';
 import Button from '../../components/ui/Button';
@@ -73,7 +73,7 @@ const CrmTab: React.FC<CrmTabProps> = ({
   const [activeDetailClient, setActiveDetailClient] = useState<Client | null>(null);
   const [isCallSessionOpen, setIsCallSessionOpen] = useState(false);
   const [isTemplateManagerOpen, setIsTemplateManagerOpen] = useState(false);
-  const [isImportOpen, setIsImportOpen] = useState(false); // New state for Import Modal
+  const [isImportOpen, setIsImportOpen] = useState(false);
   
   // All Advisors List (For Filter)
   const [allAdvisors, setAllAdvisors] = useState<{id: string, name: string}[]>([]);
@@ -83,6 +83,10 @@ const CrmTab: React.FC<CrmTabProps> = ({
 
   const isAdmin = user?.role === 'admin' || user?.is_admin === true;
   const isDirector = user?.role === 'director';
+  const isManager = user?.role === 'manager';
+  
+  // Capability Check: Can this user manage/view team members?
+  const canManageTeam = isAdmin || isDirector || isManager;
   const canDeleteClient = isAdmin || isDirector;
 
   // SYNC PRODUCTS FROM ADMIN SETTINGS
@@ -106,22 +110,29 @@ const CrmTab: React.FC<CrmTabProps> = ({
     }
   }, [selectedClientId, clients]);
 
-  // Fetch all advisors if Admin to populate filter fully
+  // Fetch all advisors if Manager/Director/Admin to populate filter fully
   useEffect(() => {
-    if (isAdmin && supabase) {
+    if (canManageTeam && supabase) {
         const fetchAllProfiles = async () => {
-            const { data } = await supabase.from('profiles').select('id, email').order('email');
+            let query = supabase.from('profiles').select('id, email, organization_id').order('email');
+            
+            // Scope by Organization if not Super Admin
+            if (!isAdmin && user?.organizationId) {
+                query = query.eq('organization_id', user.organizationId);
+            }
+
+            const { data } = await query;
             if (data) {
                 setAllAdvisors(data.map(p => ({ id: p.id, name: p.email })));
             }
         };
         fetchAllProfiles();
     }
-  }, [isAdmin]);
+  }, [canManageTeam, isAdmin, user?.organizationId]);
 
   // Combined Advisor List
   const availableAdvisors = useMemo(() => {
-    if (isAdmin && allAdvisors.length > 0) return allAdvisors;
+    if (canManageTeam && allAdvisors.length > 0) return allAdvisors;
 
     const map = new Map<string, string>();
     clients.forEach(c => {
@@ -131,7 +142,7 @@ const CrmTab: React.FC<CrmTabProps> = ({
       }
     });
     return Array.from(map.entries()).map(([id, name]) => ({ id, name })).sort((a,b) => a.name.localeCompare(b.name));
-  }, [clients, allAdvisors, isAdmin]);
+  }, [clients, allAdvisors, canManageTeam]);
 
   const filteredClients = useMemo(() => {
     return clients.filter(client => {
@@ -180,7 +191,8 @@ const CrmTab: React.FC<CrmTabProps> = ({
           toast.success(`Deleted ${idsToDelete.length} clients.`);
           setSelectedIds(new Set());
       } catch (e: any) {
-          toast.error("Bulk delete partially failed: " + e.message);
+          const msg = e instanceof Error ? e.message : String(e);
+          toast.error("Bulk delete partially failed: " + msg);
       } finally {
           setIsBulkProcessing(false);
       }
@@ -198,29 +210,37 @@ const CrmTab: React.FC<CrmTabProps> = ({
       setIsBulkProcessing(true);
       try {
           const idsToAssign = Array.from(selectedIds);
-          const promises = idsToAssign.map(async (id) => {
-              const client = clients.find(c => c.id === id);
-              if (client) {
-                  const updated = { 
-                      ...client, 
-                      advisorId: bulkAssignTarget,
-                      _ownerId: bulkAssignTarget,
-                      _ownerEmail: targetAdvisor.name,
-                      lastUpdated: new Date().toISOString()
-                  };
-                  // Direct DB Save to avoid debounce conflicts in loop
-                  await db.saveClient(updated, user?.id);
-                  return updated;
-              }
-          });
+          let successCount = 0;
           
-          await Promise.all(promises);
-          toast.success(`Assigned ${idsToAssign.length} clients to ${targetAdvisor.name}`);
-          onRefresh(); // Trigger global refresh
-          setSelectedIds(new Set());
-          setIsBulkAssignOpen(false);
+          // Execute sequentially to prevent race conditions and ensure RPC stability
+          for (const id of idsToAssign) {
+              try {
+                  // Use robust RPC transfer which bypasses RLS if needed
+                  await db.transferOwnership(id, bulkAssignTarget);
+                  successCount++;
+              } catch (rawErr) {
+                  const innerErr = rawErr as any;
+                  console.error(`Failed to transfer ${id}`, innerErr);
+                  
+                  // If RPC fails (e.g. missing function), notify user specifically
+                  const msg = innerErr instanceof Error ? innerErr.message : String(innerErr);
+                  if (msg.includes('function') && msg.includes('does not exist')) {
+                      throw new Error("Missing 'transfer_client_owner' SQL function. Run DB Repair in Admin tab.");
+                  }
+              }
+          }
+          
+          if (successCount > 0) {
+              toast.success(`Transferred ${successCount} clients to ${targetAdvisor.name}`);
+              onRefresh(); // Trigger global refresh
+              setSelectedIds(new Set());
+              setIsBulkAssignOpen(false);
+          } else {
+              throw new Error("Transfer failed. Please check permissions or DB connection.");
+          }
       } catch (e: any) {
-          toast.error("Bulk assign failed: " + e.message);
+          const msg = e instanceof Error ? e.message : String(e);
+          toast.error("Bulk assign failed: " + msg);
       } finally {
           setIsBulkProcessing(false);
       }
@@ -319,7 +339,8 @@ const CrmTab: React.FC<CrmTabProps> = ({
           toast.success("Client deleted successfully.");
       } catch (error: any) {
           console.error("Failed to delete client:", error);
-          toast.error(`Delete Failed: ${error.message}`);
+          const msg = error instanceof Error ? error.message : String(error);
+          toast.error(`Delete Failed: ${msg}`);
       }
   };
 
@@ -480,17 +501,20 @@ const CrmTab: React.FC<CrmTabProps> = ({
 
       {/* Floating Bulk Action Bar */}
       {selectedIds.size > 0 && (
-          <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-6 py-3 rounded-full shadow-2xl z-50 flex items-center gap-6 animate-in slide-in-from-bottom-4 border border-slate-700">
-             <span className="font-bold text-sm">{selectedIds.size} Selected</span>
-             <div className="h-4 w-px bg-slate-700"></div>
+          <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-white/80 backdrop-blur-xl border border-slate-200 shadow-2xl rounded-full px-6 py-3 z-50 flex items-center gap-6 animate-in slide-in-from-bottom-4 ring-1 ring-black/5">
+             <div className="flex items-center gap-2">
+                <span className="flex items-center justify-center w-6 h-6 bg-slate-900 text-white rounded-full text-xs font-bold">{selectedIds.size}</span>
+                <span className="text-xs font-bold text-slate-700">Selected</span>
+             </div>
+             <div className="h-4 w-px bg-slate-300"></div>
              <div className="flex gap-2">
-                <button onClick={() => setIsBulkAssignOpen(true)} className="text-xs font-bold hover:text-indigo-400 transition-colors px-2 py-1">Assign To...</button>
+                <button onClick={() => setIsBulkAssignOpen(true)} className="px-3 py-1.5 rounded-full text-xs font-bold bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition-colors">Assign To...</button>
                 {canDeleteClient && (
-                    <button onClick={executeBulkDelete} disabled={isBulkProcessing} className="text-xs font-bold hover:text-red-400 transition-colors px-2 py-1 flex items-center gap-2">
+                    <button onClick={executeBulkDelete} disabled={isBulkProcessing} className="px-3 py-1.5 rounded-full text-xs font-bold bg-red-50 text-red-600 hover:bg-red-100 transition-colors flex items-center gap-2">
                        {isBulkProcessing ? <span className="animate-spin">↻</span> : <span>Delete</span>}
                     </button>
                 )}
-                <button onClick={() => setSelectedIds(new Set())} className="text-xs text-slate-500 hover:text-white transition-colors ml-2 px-2 py-1">Clear</button>
+                <button onClick={() => setSelectedIds(new Set())} className="px-3 py-1.5 rounded-full text-xs font-bold text-slate-500 hover:bg-slate-100 transition-colors">Clear</button>
              </div>
           </div>
       )}

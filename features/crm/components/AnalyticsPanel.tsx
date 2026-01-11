@@ -49,8 +49,12 @@ export const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ clients }) => {
   ];
 
   const totalPipeline = clients.reduce((acc, c) => acc + (c.value || 0), 0);
-  const totalClients = clients.length;
-  const avgDeal = totalClients > 0 ? totalPipeline / totalClients : 0;
+  
+  // Filter for TRUE Active Leads (Exclude Won/Lost)
+  const activeLeads = clients.filter(c => !['client', 'case_closed', 'not_keen'].includes(c.followUp.status || ''));
+  const activeLeadsCount = activeLeads.length;
+  
+  const avgDeal = activeLeadsCount > 0 ? totalPipeline / activeLeadsCount : 0;
 
   return (
     <div className={`bg-white rounded-2xl shadow-sm border border-slate-100 mb-6 transition-all duration-300 overflow-hidden ${isCollapsed ? 'p-4' : 'p-6'}`}>
@@ -60,7 +64,7 @@ export const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ clients }) => {
             {isCollapsed && (
                 <div className="flex items-center gap-4 text-sm text-slate-500 fade-in">
                     <span className="bg-slate-50 px-2 py-0.5 rounded border border-slate-200">Pipeline: <b>${(totalPipeline/1000).toFixed(0)}k</b></span>
-                    <span className="bg-slate-50 px-2 py-0.5 rounded border border-slate-200">Active: <b>{totalClients}</b></span>
+                    <span className="bg-slate-50 px-2 py-0.5 rounded border border-slate-200">Active: <b>{activeLeadsCount}</b></span>
                 </div>
             )}
         </div>
@@ -82,7 +86,7 @@ export const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ clients }) => {
                 </div>
                 <div className="p-4 bg-slate-50 rounded-xl border border-slate-100">
                     <p className="text-xs lg:text-sm text-slate-500 mb-1">Active Leads</p>
-                    <p className="text-xl lg:text-2xl font-bold text-slate-900">{totalClients}</p>
+                    <p className="text-xl lg:text-2xl font-bold text-slate-900">{activeLeadsCount}</p>
                 </div>
                 <div className="p-4 bg-slate-50 rounded-xl border border-slate-100">
                     <p className="text-xs lg:text-sm text-slate-500 mb-1">Avg Revenue / Lead</p>

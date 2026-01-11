@@ -390,14 +390,22 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
             <div className="absolute inset-0 bg-gradient-to-tr from-transparent via-white/5 to-transparent skew-x-12 translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-1000"></div>
             
             <div className="relative z-10">
-               <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/10 border border-white/20 text-[10px] font-bold uppercase tracking-widest text-indigo-200 mb-6 backdrop-blur-md">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                  Active Income Engine
+               <div className="flex justify-between items-start mb-6">
+                   <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/10 border border-white/20 text-[10px] font-bold uppercase tracking-widest text-indigo-200 backdrop-blur-md">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                      Active Income Engine
+                   </div>
+                   {/* Age Indicator */}
+                   <div className="text-right opacity-80">
+                      <div className="text-3xl font-black text-white leading-none tracking-tighter">{age}</div>
+                      <div className="text-[9px] font-bold text-indigo-300 uppercase tracking-widest">Current Age</div>
+                   </div>
                </div>
                
                <div className="space-y-1">
                   <h2 className="text-sm font-medium text-slate-400 uppercase tracking-wider">Your #1 Asset</h2>
-                  <h1 className="text-4xl md:text-5xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-white via-indigo-100 to-indigo-300 tracking-tight drop-shadow-sm">
+                  {/* FIX: Removed text-transparent bg-clip-text to ensure white text visibility on all browsers */}
+                  <h1 className="text-4xl md:text-5xl font-extrabold text-white tracking-tight drop-shadow-sm">
                      {humanCapital > 0 ? fmtSGD(humanCapital).split('.')[0] : '$0'}
                   </h1>
                </div>
@@ -405,7 +413,7 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
 
             <div className="relative z-10 mt-8 pt-6 border-t border-white/10">
                <p className="text-xs text-slate-400 leading-relaxed">
-                  This is the <strong className="text-white">economic value</strong> of your future work until age {retirementAge}. It is your most valuable asset—and the most fragile.
+                  This is the <strong className="text-white">economic value</strong> of your future work ({yearsToRetirement} years until age {retirementAge}). It is your most valuable asset—and the most fragile.
                </p>
             </div>
          </div>

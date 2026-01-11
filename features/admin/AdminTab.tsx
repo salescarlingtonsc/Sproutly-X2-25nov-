@@ -18,31 +18,28 @@ import { dbTemplates } from '../../lib/db/templates';
 import { aiLearning } from '../../lib/db/aiLearning';
 
 const REPAIR_SQL = `
--- REPAIR SCRIPT V17.0: COMPREHENSIVE SCHEMA FIX
+-- REPAIR SCRIPT V22.0: MASS TRANSFER PROTOCOL
+-- Adds secure RPC function for client ownership transfer & fixes policies.
+
 DO $$ 
 BEGIN
-  -- 1. Add annual_goal if missing
+  -- 1. Schema Checks
   IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'profiles' AND column_name = 'annual_goal') THEN
       ALTER TABLE profiles ADD COLUMN annual_goal numeric DEFAULT 0;
   END IF;
 
-  -- 2. Add organization_id if missing
   IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'profiles' AND column_name = 'organization_id') THEN
       ALTER TABLE profiles ADD COLUMN organization_id text DEFAULT 'org_default';
   END IF;
   
-  -- 3. Ensure reporting_to is text (for team IDs)
   ALTER TABLE profiles ALTER COLUMN reporting_to TYPE text;
 
-  -- 4. Drop constraint if exists to prevent FK errors
   IF EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE constraint_name = 'profiles_reporting_to_fkey') THEN
     ALTER TABLE profiles DROP CONSTRAINT profiles_reporting_to_fkey;
   END IF;
-EXCEPTION
-  WHEN OTHERS THEN RAISE NOTICE 'Schema update error: %', SQLERRM;
 END $$;
 
--- 5. Secure Access Function
+-- 2. SECURE FUNCTIONS
 CREATE OR REPLACE FUNCTION get_my_claims()
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -59,111 +56,112 @@ BEGIN
     'is_admin', (role = 'admin' OR is_admin = true)
   ) INTO claims
   FROM profiles
-  WHERE id = auth.uid();
+  WHERE id = (select auth.uid());
   
   RETURN coalesce(claims, '{}'::jsonb);
 END;
 $$;
 
--- 6. Reset Policies
-DROP POLICY IF EXISTS "Profiles_Select_Hierarchy" ON profiles;
-DROP POLICY IF EXISTS "Clients_Select_Hierarchy" ON clients;
-DROP POLICY IF EXISTS "Profiles_Update_Hierarchy" ON profiles;
-DROP POLICY IF EXISTS "Profiles_Insert_Hierarchy" ON profiles;
-DROP POLICY IF EXISTS "Profiles_Delete_Hierarchy" ON profiles;
-DROP POLICY IF EXISTS "Clients_Insert_Policy" ON clients;
-DROP POLICY IF EXISTS "Clients_Update_Policy" ON clients;
-DROP POLICY IF EXISTS "Clients_Delete_Policy" ON clients;
+-- NEW: Secure Client Transfer Function (Bypasses RLS for clean handovers)
+CREATE OR REPLACE FUNCTION transfer_client_owner(p_client_id uuid, p_new_user_id uuid)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  UPDATE clients
+  SET user_id = p_new_user_id,
+      updated_at = now(),
+      data = jsonb_set(
+        jsonb_set(data, '{_ownerId}', to_jsonb(p_new_user_id::text)),
+        '{advisorId}', to_jsonb(p_new_user_id::text)
+      )
+  WHERE id = p_client_id;
+END;
+$$;
 
--- 7. PROFILES POLICIES
-CREATE POLICY "Profiles_Select_Hierarchy" ON profiles FOR SELECT
-USING (
-  auth.uid() = id
-  OR (get_my_claims()->>'is_admin')::boolean = true
-  OR (
-    (get_my_claims()->>'role') IN ('director', 'manager')
-    AND organization_id = (get_my_claims()->>'org_id')
-  )
-);
+-- 3. DROP LEGACY POLICIES
+-- Clean sweep to prevent conflicts
+DROP POLICY IF EXISTS "Admins manage teams" ON teams;
+DROP POLICY IF EXISTS "Everyone can view teams" ON teams;
+DROP POLICY IF EXISTS "Teams_Read" ON teams;
+DROP POLICY IF EXISTS "Teams_Write" ON teams;
 
-CREATE POLICY "Profiles_Update_Hierarchy" ON profiles FOR UPDATE
-USING (
-  auth.uid() = id
-  OR (get_my_claims()->>'is_admin')::boolean = true
-  OR (
-    (get_my_claims()->>'role') IN ('director', 'manager')
-    AND organization_id = (get_my_claims()->>'org_id')
-  )
-);
+DROP POLICY IF EXISTS "Fields_Owner_All" ON client_field_values;
+DROP POLICY IF EXISTS "Fields_Select" ON client_field_values;
+DROP POLICY IF EXISTS "Fields_Modify" ON client_field_values;
 
-CREATE POLICY "Profiles_Insert_Hierarchy" ON profiles FOR INSERT
-WITH CHECK (
-  (get_my_claims()->>'is_admin')::boolean = true
-  OR (
-    (get_my_claims()->>'role') IN ('director', 'manager')
-    AND organization_id = (get_my_claims()->>'org_id')
-  )
-);
+DROP POLICY IF EXISTS "Manage knowledge base" ON sproutly_knowledge;
+DROP POLICY IF EXISTS "Knowledge_Select" ON sproutly_knowledge;
+DROP POLICY IF EXISTS "Knowledge_Manage" ON sproutly_knowledge;
+DROP POLICY IF EXISTS "Knowledge_Read" ON sproutly_knowledge;
+DROP POLICY IF EXISTS "Knowledge_Write" ON sproutly_knowledge;
 
-CREATE POLICY "Profiles_Delete_Hierarchy" ON profiles FOR DELETE
-USING (
-  (get_my_claims()->>'is_admin')::boolean = true
-  OR (
-    (get_my_claims()->>'role') = 'director' 
-    AND organization_id = (get_my_claims()->>'org_id')
-  )
-);
+DROP POLICY IF EXISTS "Org_Settings_Read" ON organization_settings;
+DROP POLICY IF EXISTS "Org_Settings_Write" ON organization_settings;
 
--- 8. CLIENTS POLICIES
-CREATE POLICY "Clients_Select_Hierarchy" ON clients FOR SELECT
-USING (
-  user_id = auth.uid()
-  OR (get_my_claims()->>'is_admin')::boolean = true
-  OR (
-    (get_my_claims()->>'role') IN ('director', 'manager')
-    AND EXISTS (
-      SELECT 1 FROM profiles owner
-      WHERE owner.id = clients.user_id
-      AND owner.organization_id = (get_my_claims()->>'org_id')
-    )
-  )
-);
+DROP POLICY IF EXISTS "Templates_Manage" ON message_templates;
 
-CREATE POLICY "Clients_Insert_Policy" ON clients FOR INSERT
-WITH CHECK (
-  auth.uid() = user_id
-  OR (get_my_claims()->>'is_admin')::boolean = true
-);
+DROP POLICY IF EXISTS "Files_Select" ON client_files;
+DROP POLICY IF EXISTS "Files_Insert" ON client_files;
+DROP POLICY IF EXISTS "Files_Delete" ON client_files;
 
-CREATE POLICY "Clients_Update_Policy" ON clients FOR UPDATE
-USING (
-  auth.uid() = user_id
-  OR (get_my_claims()->>'is_admin')::boolean = true
-  OR (
-    (get_my_claims()->>'role') IN ('director', 'manager')
-    AND EXISTS (
-      SELECT 1 FROM profiles owner
-      WHERE owner.id = clients.user_id
-      AND owner.organization_id = (get_my_claims()->>'org_id')
-    )
-  )
-);
+DROP POLICY IF EXISTS "Activities_Select" ON activities;
+DROP POLICY IF EXISTS "Activities_Insert" ON activities;
+DROP POLICY IF EXISTS "Activities_Delete" ON activities;
 
-CREATE POLICY "Clients_Delete_Policy" ON clients FOR DELETE
-USING (
-  auth.uid() = user_id
-  OR (get_my_claims()->>'is_admin')::boolean = true
-  OR (
-    (get_my_claims()->>'role') IN ('director')
-    AND EXISTS (
-      SELECT 1 FROM profiles owner
-      WHERE owner.id = clients.user_id
-      AND owner.organization_id = (get_my_claims()->>'org_id')
-    )
-  )
-);
+-- 4. RE-CREATE GRANULAR POLICIES
 
--- Reload Schema Cache
+-- TEAMS
+CREATE POLICY "Teams_Read" ON teams FOR SELECT USING (true);
+CREATE POLICY "Teams_Insert" ON teams FOR INSERT WITH CHECK ((get_my_claims()->>'is_admin')::boolean = true);
+CREATE POLICY "Teams_Update" ON teams FOR UPDATE USING ((get_my_claims()->>'is_admin')::boolean = true);
+CREATE POLICY "Teams_Delete" ON teams FOR DELETE USING ((get_my_claims()->>'is_admin')::boolean = true);
+
+-- FIELDS
+CREATE POLICY "Fields_Select" ON client_field_values FOR SELECT
+USING ( user_id = (select auth.uid()) OR (get_my_claims()->>'is_admin')::boolean = true );
+CREATE POLICY "Fields_Insert" ON client_field_values FOR INSERT
+WITH CHECK ( user_id = (select auth.uid()) OR (get_my_claims()->>'is_admin')::boolean = true );
+CREATE POLICY "Fields_Update" ON client_field_values FOR UPDATE
+USING ( user_id = (select auth.uid()) OR (get_my_claims()->>'is_admin')::boolean = true );
+CREATE POLICY "Fields_Delete" ON client_field_values FOR DELETE
+USING ( user_id = (select auth.uid()) OR (get_my_claims()->>'is_admin')::boolean = true );
+
+-- KNOWLEDGE
+CREATE POLICY "Knowledge_Read" ON sproutly_knowledge FOR SELECT USING (true);
+CREATE POLICY "Knowledge_Insert" ON sproutly_knowledge FOR INSERT WITH CHECK ((get_my_claims()->>'is_admin')::boolean = true);
+CREATE POLICY "Knowledge_Update" ON sproutly_knowledge FOR UPDATE USING ((get_my_claims()->>'is_admin')::boolean = true);
+CREATE POLICY "Knowledge_Delete" ON sproutly_knowledge FOR DELETE USING ((get_my_claims()->>'is_admin')::boolean = true);
+
+-- SETTINGS
+CREATE POLICY "Org_Settings_Read" ON organization_settings FOR SELECT USING (true);
+CREATE POLICY "Org_Settings_Update" ON organization_settings FOR UPDATE USING ((get_my_claims()->>'is_admin')::boolean = true);
+CREATE POLICY "Org_Settings_Insert" ON organization_settings FOR INSERT WITH CHECK ((get_my_claims()->>'is_admin')::boolean = true);
+
+-- TEMPLATES
+CREATE POLICY "Templates_Select" ON message_templates FOR SELECT USING (user_id = (select auth.uid()));
+CREATE POLICY "Templates_Insert" ON message_templates FOR INSERT WITH CHECK (user_id = (select auth.uid()));
+CREATE POLICY "Templates_Update" ON message_templates FOR UPDATE USING (user_id = (select auth.uid()));
+CREATE POLICY "Templates_Delete" ON message_templates FOR DELETE USING (user_id = (select auth.uid()));
+
+-- FILES
+CREATE POLICY "Files_Select" ON client_files FOR SELECT
+USING ( user_id = (select auth.uid()) OR (get_my_claims()->>'is_admin')::boolean = true );
+CREATE POLICY "Files_Insert" ON client_files FOR INSERT
+WITH CHECK ( user_id = (select auth.uid()) OR (get_my_claims()->>'is_admin')::boolean = true );
+CREATE POLICY "Files_Delete" ON client_files FOR DELETE
+USING ( user_id = (select auth.uid()) OR (get_my_claims()->>'is_admin')::boolean = true );
+
+-- ACTIVITIES
+CREATE POLICY "Activities_Select" ON activities FOR SELECT
+USING ( user_id = (select auth.uid()) OR (get_my_claims()->>'is_admin')::boolean = true );
+CREATE POLICY "Activities_Insert" ON activities FOR INSERT
+WITH CHECK ( user_id = (select auth.uid()) OR (get_my_claims()->>'is_admin')::boolean = true );
+CREATE POLICY "Activities_Delete" ON activities FOR DELETE
+USING ( user_id = (select auth.uid()) OR (get_my_claims()->>'is_admin')::boolean = true );
+
 NOTIFY pgrst, 'reload config';
 `;
 
@@ -458,7 +456,7 @@ const AdminTab: React.FC = () => {
       };
 
       try {
-          addLog(`DIAGNOSTIC START (V17.0): ${new Date().toISOString()}`);
+          addLog(`DIAGNOSTIC START (V22.0): ${new Date().toISOString()}`);
           
           let { data: sessionData } = await supabase.auth.getSession();
           if (!sessionData.session) {
@@ -515,7 +513,7 @@ const AdminTab: React.FC = () => {
 
   const copyDebugSql = () => {
       navigator.clipboard.writeText(REPAIR_SQL);
-      toast.success("Repair SQL copied to clipboard.");
+      toast.success("Repair SQL (V22.0) copied to clipboard.");
   };
 
   if (loading && !isRepairOpen) return <div className="p-20 text-center"><div className="animate-spin w-10 h-10 border-4 border-indigo-600 border-t-transparent rounded-full mx-auto"></div><p className="mt-4 text-slate-400 text-sm animate-pulse">Syncing Admin Core...</p></div>;
@@ -604,21 +602,21 @@ const AdminTab: React.FC = () => {
         </div>
 
         <Modal 
-            isOpen={isRepairOpen} onClose={() => setIsRepairOpen(false)} title="System Diagnostics & Repair (V17.0)"
+            isOpen={isRepairOpen} onClose={() => setIsRepairOpen(false)} title="System Diagnostics & Repair (V22.0)"
             footer={
                <div className="flex gap-2 w-full">
                   <Button variant="ghost" onClick={() => setIsRepairOpen(false)}>Close</Button>
-                  <Button variant="secondary" onClick={copyDebugSql}>2. Copy SQL</Button>
+                  <Button variant="secondary" onClick={copyDebugSql}>2. Copy SQL (V22.0)</Button>
                   <Button variant="accent" onClick={runDiagnostics} isLoading={diagStatus === 'running'}>3. Run Check</Button>
                </div>
             }
         >
             <div className="p-4 bg-slate-900 rounded-xl text-white font-mono text-xs overflow-auto max-h-96">
                 <div className="mb-4 space-y-2">
-                    <p className="text-emerald-400 font-bold uppercase">Instructions (Update Schema V17.0):</p>
-                    <p>1. Click "Copy Repair SQL" below.</p>
+                    <p className="text-emerald-400 font-bold uppercase">Instructions (Deep Clean V22.0):</p>
+                    <p>1. Click "Copy SQL" below.</p>
                     <p>2. Go to Supabase &gt; SQL Editor.</p>
-                    <p>3. Paste and Run. (This adds missing 'annual_goal' & 'organization_id' columns).</p>
+                    <p>3. Paste and Run. (This installs the transfer protocol & fixes policies).</p>
                     <p>4. Check console for "Schema Columns OK".</p>
                 </div>
                 {diagLog.length > 0 && (
@@ -645,7 +643,7 @@ const AdminTab: React.FC = () => {
                         onClick={copyDebugSql}
                         className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-3 rounded-lg text-xs uppercase font-bold w-full flex items-center justify-center gap-2 shadow-lg"
                     >
-                        <span>📋</span> 1. Copy Repair SQL (V17.0)
+                        <span>📋</span> 1. Copy Repair SQL (V22.0)
                     </button>
                 </div>
             </div>

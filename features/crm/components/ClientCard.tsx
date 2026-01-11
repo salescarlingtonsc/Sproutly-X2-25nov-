@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import { Client, FamilyMember, Policy, UserProfile, Sale, Product } from '../../../types';
 import { analyzeClientMomentum, generateInvestmentReport } from '../../../lib/gemini';
@@ -41,6 +40,14 @@ const REVERSE_STATUS_MAP: Record<string, string> = {
   'Lost': 'not_keen',
 };
 
+const CAMPAIGN_OPTIONS = [
+    "PS5 Giveaway", 
+    "DJI Drone", 
+    "Dyson Airwrap", 
+    "Retirement eBook", 
+    "Tax Masterclass"
+];
+
 const EditableField = ({ label, value, onChange, type = 'text', options = [], className = '', placeholder = '-' }: any) => {
   const displayValue = type === 'datetime-local' && value && typeof value === 'string' ? (value.length > 16 ? value.substring(0, 16) : value) : (value || '');
   return (
@@ -65,6 +72,7 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
   const { confirm } = useDialog(); 
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [activeTab, setActiveTab] = useState<'overview' | 'closures' | 'logs' | 'family' | 'policies' | 'tools'>('overview');
+  const [isEditingCampaign, setIsEditingCampaign] = useState(false);
   
   const [newMemberName, setNewMemberName] = useState('');
   const [newMemberRole, setNewMemberRole] = useState<'Father'|'Mother'|'Child'|'Other'>('Child');
@@ -108,6 +116,14 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
   };
 
   const generateUniqueId = (prefix: string) => `${prefix}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+  const updateCampaign = (newCampaign: string) => {
+      const currentTags = client.tags || [];
+      const otherTags = currentTags.filter(t => !t.startsWith('Campaign: '));
+      const newTags = newCampaign ? [...otherTags, `Campaign: ${newCampaign}`] : otherTags;
+      onUpdate({ ...client, tags: newTags });
+      setIsEditingCampaign(false);
+  };
 
   const handleUpdateField = (field: keyof Client | string, val: any) => {
       const now = new Date();
@@ -468,12 +484,24 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
           <div className="bg-indigo-50/50 p-5 rounded-xl border border-indigo-100 space-y-4">
               <div className="flex justify-between items-start">
                   <h4 className="text-[10px] font-black text-indigo-400 uppercase tracking-widest mt-1">Lead Context & Financials</h4>
-                  {campaignName ? (
-                      <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold bg-indigo-200 text-indigo-800 border border-indigo-300 shadow-sm">
-                          🎁 {campaignName}
-                      </span>
+                  {isEditingCampaign ? (
+                      <select 
+                          className="text-[10px] font-bold bg-white border border-indigo-200 text-indigo-800 rounded px-2 py-1 outline-none"
+                          value={campaignName}
+                          onChange={(e) => updateCampaign(e.target.value)}
+                          onBlur={() => setIsEditingCampaign(false)}
+                          autoFocus
+                      >
+                          <option value="">No Campaign</option>
+                          {CAMPAIGN_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
+                      </select>
                   ) : (
-                      <span className="text-[10px] text-slate-400 italic">No Campaign Detected</span>
+                      <button 
+                          onClick={() => setIsEditingCampaign(true)}
+                          className={`inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold border shadow-sm transition-all ${campaignName ? 'bg-indigo-200 text-indigo-800 border-indigo-300' : 'bg-white text-slate-400 border-slate-200 hover:text-indigo-600 hover:border-indigo-300'}`}
+                      >
+                          {campaignName ? `🎁 ${campaignName}` : '＋ Assign Campaign'}
+                      </button>
                   )}
               </div>
 
