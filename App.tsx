@@ -172,6 +172,8 @@ const AppInner: React.FC = () => {
      if (isAutoSave) {
         if (!isHydratedRef.current) return; // Block if not hydrated
         if (document.visibilityState !== 'visible') return; // Block if hidden
+        // NEW: Network Check - Don't autosave if offline
+        if (typeof navigator !== 'undefined' && !navigator.onLine) return;
      }
      
      // 3. Block if transfer in progress
@@ -203,7 +205,15 @@ const AppInner: React.FC = () => {
 
      try {
         const isNewClient = !clientId;
-        const saved = await db.saveClient(clientData, user.id);
+        
+        // NEW: Timeout Wrapper. 
+        // If Supabase hangs (e.g. socket reconnect issue), we reject after 15s to unblock the UI.
+        const savePromise = db.saveClient(clientData, user.id);
+        const timeoutPromise = new Promise<never>((_, reject) => 
+            setTimeout(() => reject(new Error('Network timeout (15s)')), 15000)
+        );
+
+        const saved = await Promise.race([savePromise, timeoutPromise]) as Client;
         
         setClients(prev => {
             const exists = prev.find(c => c.id === saved.id);
@@ -229,10 +239,13 @@ const AppInner: React.FC = () => {
             setSaveStatus('error');
             toast.error(`Save Failed: ${e.message}`);
         } else {
+            // Suppress background errors to avoid spamming user
             if (e.message.includes('Session expired')) {
                 console.warn("Autosave paused: Session expired");
+            } else if (e.message.includes('timeout')) {
+                console.warn("Autosave skipped: Network slow");
             } else {
-                toast.error(`Sync: ${e.message}`);
+                console.warn("Autosave minor error:", e.message);
             }
         }
      } finally {
