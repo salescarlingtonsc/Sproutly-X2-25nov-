@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+
+import React, { useState, useEffect } from 'react';
 import { Client, FamilyMember, Policy, UserProfile, Sale, Product } from '../../../types';
 import { analyzeClientMomentum, generateInvestmentReport } from '../../../lib/gemini';
 import { DEFAULT_SETTINGS } from '../../../lib/config';
@@ -9,7 +10,8 @@ import { useToast } from '../../../contexts/ToastContext';
 import { useDialog } from '../../../contexts/DialogContext'; 
 import { db } from '../../../lib/db';
 import { AddSaleModal } from './AddSaleModal';
-import ClosureDeckModal from './ClosureDeckModal'; // Import new modal
+import ClosureDeckModal from './ClosureDeckModal'; 
+import { adminDb } from '../../../lib/db/admin'; 
 
 interface ClientCardProps {
   client: Client;
@@ -18,7 +20,7 @@ interface ClientCardProps {
   onDelete?: (id: string) => Promise<void> | void; 
   onAddSale?: () => void;
   products?: Product[]; 
-  onClose?: () => void; // New optional prop for modal closing
+  onClose?: () => void; 
 }
 
 const REVERSE_STATUS_MAP: Record<string, string> = {
@@ -40,13 +42,7 @@ const REVERSE_STATUS_MAP: Record<string, string> = {
   'Lost': 'not_keen',
 };
 
-const CAMPAIGN_OPTIONS = [
-    "PS5 Giveaway", 
-    "DJI Drone", 
-    "Dyson Airwrap", 
-    "Retirement eBook", 
-    "Tax Masterclass"
-];
+const DEFAULT_CAMPAIGNS = ["PS5 Giveaway", "Retirement eBook", "Tax Masterclass"];
 
 const EditableField = ({ label, value, onChange, type = 'text', options = [], className = '', placeholder = '-' }: any) => {
   const displayValue = type === 'datetime-local' && value && typeof value === 'string' ? (value.length > 16 ? value.substring(0, 16) : value) : (value || '');
@@ -74,6 +70,10 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
   const [activeTab, setActiveTab] = useState<'overview' | 'closures' | 'logs' | 'family' | 'policies' | 'tools'>('overview');
   const [isEditingCampaign, setIsEditingCampaign] = useState(false);
   
+  // New: Dynamic Campaigns State
+  const [campaignOptions, setCampaignOptions] = useState<string[]>(DEFAULT_CAMPAIGNS);
+  
+  // ... (Keeping all other state variables from original file: newMemberName, etc.) ...
   const [newMemberName, setNewMemberName] = useState('');
   const [newMemberRole, setNewMemberRole] = useState<'Father'|'Mother'|'Child'|'Other'>('Child');
   const [newMemberDob, setNewMemberDob] = useState('');
@@ -99,13 +99,27 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
     currentUser?.role === 'director' || 
     currentUser?.is_admin === true;
     
-  const canDeleteLogs = canDeleteClient || isOwner; // Logs can still be deleted by owner, but client deletion is restricted
+  const canDeleteLogs = canDeleteClient || isOwner; 
 
   // Extract Tags for UI
   const campaignTag = (client.tags || []).find(t => t.startsWith('Campaign: '));
   const campaignName = campaignTag ? campaignTag.replace('Campaign: ', '') : '';
   const industryTag = (client.tags || []).find(t => t.startsWith('Industry: '));
   const industryName = industryTag ? industryTag.replace('Industry: ', '') : '';
+
+  // Load Campaigns on Mount with Organization Context
+  useEffect(() => {
+      const loadSettings = async () => {
+          // Pass current user's org ID to get correct campaigns
+          const settings = await adminDb.getSystemSettings(currentUser?.organizationId);
+          if (settings?.appSettings?.campaigns && settings.appSettings.campaigns.length > 0) {
+              setCampaignOptions(settings.appSettings.campaigns);
+          } else {
+              setCampaignOptions(DEFAULT_SETTINGS.campaigns || DEFAULT_CAMPAIGNS);
+          }
+      };
+      loadSettings();
+  }, [currentUser?.organizationId]);
 
   const handleRefreshAnalysis = async (e: React.MouseEvent) => {
     e.stopPropagation(); 
@@ -128,21 +142,18 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
   const handleUpdateField = (field: keyof Client | string, val: any) => {
       const now = new Date();
       
-      // Handle nested profile updates
       if (field === 'gender' || field === 'monthlyInvestmentAmount') {
           const newProfile = { ...client.profile, [field]: val };
           onUpdate({ ...client, profile: newProfile });
           return;
       }
 
-      // NEW: Sync Job Title to profile to ensure persistence in Blue Box
       if (field === 'jobTitle') {
           const newProfile = { ...client.profile, jobTitle: val };
           onUpdate({ ...client, jobTitle: val, profile: newProfile });
           return;
       }
 
-      // NEW: Handle Next Follow Up Date (Nested in followUp)
       if (field === 'nextFollowUpDate') {
           const newFollowUp = { ...(client.followUp || {}), nextFollowUpDate: val };
           onUpdate({ ...client, followUp: newFollowUp });
@@ -184,11 +195,11 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
           });
       
       } else {
-          // General field update
           onUpdate({ ...client, [field]: val });
       }
   };
 
+  // ... (Keep existing handlers for family members, notes, sales, etc.) ...
   const handleAddFamilyMember = () => {
       if (!newMemberName) return;
       const newMember: FamilyMember = { id: generateUniqueId('fam'), name: newMemberName, role: newMemberRole, dob: newMemberDob };
@@ -256,7 +267,6 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
       }
   };
 
-  // --- SALE MANAGEMENT ---
   const handleUpdateSale = (updatedSale: Sale) => {
       const sales = [...(client.sales || [])];
       const index = sales.findIndex(s => s.id === updatedSale.id);
@@ -280,8 +290,6 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
   };
 
   const handleDeleteClientAction = async () => {
-      console.log("Delete Initiated for:", client.id);
-      
       const isConfirmed = await confirm({
           title: "Delete Client Dossier?",
           message: `Are you sure you want to permanently delete ${client.name || 'this client'}? This includes all files, notes, and history. This cannot be undone.`,
@@ -321,8 +329,6 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
         toast.error("No phone number found");
         return;
     }
-
-    // Log the call
     const now = new Date().toISOString();
     const logEntry = {
         id: generateUniqueId('call'),
@@ -330,7 +336,6 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
         date: now,
         author: 'Me'
     };
-
     onUpdate({ 
         ...client, 
         lastContact: now,
@@ -338,7 +343,6 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
         notes: [logEntry, ...(client.notes || [])]
     });
     logActivity(client.id, 'call', 'Outgoing call initiated');
-
     window.location.href = `tel:${rawPhone}`;
   };
 
@@ -352,7 +356,6 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
     const encodedText = encodeURIComponent(template);
     const url = cleanPhone.length >= 8 ? `https://wa.me/${cleanPhone}?text=${encodedText}` : `https://wa.me/?text=${encodedText}`;
     
-    // Log the chat
     const now = new Date().toISOString();
     const logEntry = {
         id: generateUniqueId('chat'),
@@ -360,7 +363,6 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
         date: now,
         author: 'Me'
     };
-
     onUpdate({ 
         ...client, 
         lastContact: now,
@@ -368,7 +370,6 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
         notes: [logEntry, ...(client.notes || [])]
     });
     logActivity(client.id, 'message', 'WhatsApp chat initiated');
-
     window.open(url, '_blank');
   };
 
@@ -486,14 +487,14 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
                   <h4 className="text-[10px] font-black text-indigo-400 uppercase tracking-widest mt-1">Lead Context & Financials</h4>
                   {isEditingCampaign ? (
                       <select 
-                          className="text-[10px] font-bold bg-white border border-indigo-200 text-indigo-800 rounded px-2 py-1 outline-none"
+                          className="text-[10px] font-bold bg-white border border-indigo-200 text-indigo-800 rounded px-2 py-1 outline-none cursor-pointer"
                           value={campaignName}
                           onChange={(e) => updateCampaign(e.target.value)}
                           onBlur={() => setIsEditingCampaign(false)}
                           autoFocus
                       >
                           <option value="">No Campaign</option>
-                          {CAMPAIGN_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
+                          {campaignOptions.map(c => <option key={c} value={c}>{c}</option>)}
                       </select>
                   ) : (
                       <button 
@@ -595,6 +596,7 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
       </div>
       )}
 
+      {/* ... (Rest of the tabs remain the same: closures, logs, tools, policies, family) ... */}
       {activeTab === 'closures' && (
           <div onClick={e => e.stopPropagation()}>
               <div className="space-y-3 mb-4">

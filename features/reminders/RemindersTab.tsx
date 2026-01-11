@@ -26,7 +26,8 @@ const RemindersTab: React.FC = () => {
     refreshData();
     // Load products for the ClientCard dropdowns
     const fetchConfig = async () => {
-        const settings = await adminDb.getSystemSettings();
+        // Pass organization ID to fetch specific products
+        const settings = await adminDb.getSystemSettings(user?.organizationId);
         if (settings?.products) setProducts(settings.products);
     };
     fetchConfig();

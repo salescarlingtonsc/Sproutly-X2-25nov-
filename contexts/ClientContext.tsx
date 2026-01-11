@@ -1,4 +1,3 @@
-
 import React, { createContext, useContext, useState, useMemo, useEffect, ReactNode, useRef } from 'react';
 import { 
   Profile, Expenses, CustomExpense, Child, CpfState, CashflowState, 
@@ -304,7 +303,6 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       email: profile.email,
       phone: profile.phone,
       jobTitle: profile.jobTitle || '',
-      dob: profile.dob,
       retirementAge: toNum(profile.retirementAge),
       tags: profile.tags || [],
       

@@ -14,12 +14,10 @@ import { AiKnowledgeManager } from './components/AiKnowledgeManager';
 import Button from '../../components/ui/Button';
 import Modal from '../../components/ui/Modal';
 import { fetchGlobalActivity, Activity } from '../../lib/db/activities';
-import { dbTemplates } from '../../lib/db/templates';
-import { aiLearning } from '../../lib/db/aiLearning';
 
 const REPAIR_SQL = `
--- REPAIR SCRIPT V22.0: MASS TRANSFER PROTOCOL
--- Adds secure RPC function for client ownership transfer & fixes policies.
+-- REPAIR SCRIPT V22.1: MULTI-TENANT CONFIGURATION
+-- Creates settings table if missing and fixes policies.
 
 DO $$ 
 BEGIN
@@ -37,6 +35,18 @@ BEGIN
   IF EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE constraint_name = 'profiles_reporting_to_fkey') THEN
     ALTER TABLE profiles DROP CONSTRAINT profiles_reporting_to_fkey;
   END IF;
+
+  -- 1b. Create Organization Settings Table (If Missing)
+  CREATE TABLE IF NOT EXISTS organization_settings (
+      id text PRIMARY KEY,
+      data jsonb DEFAULT '{}'::jsonb,
+      updated_at timestamptz DEFAULT now(),
+      updated_by uuid
+  );
+  
+  -- Enable RLS on Settings
+  ALTER TABLE organization_settings ENABLE ROW LEVEL SECURITY;
+
 END $$;
 
 -- 2. SECURE FUNCTIONS
@@ -100,6 +110,8 @@ DROP POLICY IF EXISTS "Knowledge_Write" ON sproutly_knowledge;
 
 DROP POLICY IF EXISTS "Org_Settings_Read" ON organization_settings;
 DROP POLICY IF EXISTS "Org_Settings_Write" ON organization_settings;
+DROP POLICY IF EXISTS "Org_Settings_Update" ON organization_settings;
+DROP POLICY IF EXISTS "Org_Settings_Insert" ON organization_settings;
 
 DROP POLICY IF EXISTS "Templates_Manage" ON message_templates;
 
@@ -135,7 +147,7 @@ CREATE POLICY "Knowledge_Insert" ON sproutly_knowledge FOR INSERT WITH CHECK ((g
 CREATE POLICY "Knowledge_Update" ON sproutly_knowledge FOR UPDATE USING ((get_my_claims()->>'is_admin')::boolean = true);
 CREATE POLICY "Knowledge_Delete" ON sproutly_knowledge FOR DELETE USING ((get_my_claims()->>'is_admin')::boolean = true);
 
--- SETTINGS
+-- SETTINGS (Organization Scoped)
 CREATE POLICY "Org_Settings_Read" ON organization_settings FOR SELECT USING (true);
 CREATE POLICY "Org_Settings_Update" ON organization_settings FOR UPDATE USING ((get_my_claims()->>'is_admin')::boolean = true);
 CREATE POLICY "Org_Settings_Insert" ON organization_settings FOR INSERT WITH CHECK ((get_my_claims()->>'is_admin')::boolean = true);
@@ -182,8 +194,13 @@ const MOCK_SUBSCRIPTION: Subscription = {
 };
 
 const DEFAULT_SETTINGS: AppSettings = {
-    platforms: ['IG', 'FB', 'LinkedIn', 'Roadshow', 'Referral', 'Cold'],
-    statuses: ['New Lead', 'Contacted', 'Appt Set', 'Client', 'Lost'],
+    statuses: [
+      'New Lead', 'Contacted', 'Picked Up', 
+      'NPU 1', 'NPU 2', 'NPU 3', 'NPU 4', 'NPU 5', 'NPU 6',
+      'Appt Set', 'Appt Met', 'Proposal', 'Pending Decision', 'Client', 'Case Closed', 'Lost'
+    ],
+    platforms: ['IG', 'FB', 'LinkedIn', 'Roadshow', 'Referral', 'Cold', 'Personal', 'Other'],
+    campaigns: ["PS5 Giveaway", "DJI Drone", "Dyson Airwrap", "Retirement eBook", "Tax Masterclass"],
     benchmarks: { callsPerWeek: 50, apptsPerWeek: 15 }
 };
 
@@ -209,9 +226,13 @@ const AdminTab: React.FC = () => {
   const [diagLog, setDiagLog] = useState<string[]>([]);
   const [diagStatus, setDiagStatus] = useState<'idle' | 'running' | 'success' | 'failure'>('idle');
   const [manualDeleteId, setManualDeleteId] = useState('');
+  
+  // Organization Context State
+  const [availableOrgs, setAvailableOrgs] = useState<string[]>([]);
+  const [configOrg, setConfigOrg] = useState<string>('');
+  const [isCreatingOrg, setIsCreatingOrg] = useState(false);
+  
   const isInitialMount = useRef(true);
-
-  // Use a local ref to track the CURRENT USER's full profile to guide fetching
   const [fullCurrentUser, setFullCurrentUser] = useState<Advisor | null>(null);
 
   useEffect(() => { fetchData(); }, [user]);
@@ -221,11 +242,9 @@ const AdminTab: React.FC = () => {
     setLoading(true);
     setErrorState(null);
     try {
-        // 1. Get Full Current User Profile First (To determine Organization Scope)
         const { data: myself, error: meErr } = await supabase.from('profiles').select('*').eq('id', user.id).single();
         
         if (meErr) {
-            // If profile missing, trigger repair context
             if (meErr.code === 'PGRST116') {
                console.warn("User profile not found. UI will be restricted.");
             } else {
@@ -252,13 +271,34 @@ const AdminTab: React.FC = () => {
                 subscriptionTier: myself.subscription_tier || 'free',
                 teamId: myself.reporting_to
             });
+
+            // Initialize available Orgs (Combine from Profiles and Settings)
+            if (isSuperAdmin) {
+                // 1. Get from Profiles
+                const { data: profileOrgs } = await supabase.from('profiles').select('organization_id');
+                // 2. Get from Settings Table
+                const { data: settingsOrgs } = await supabase.from('organization_settings').select('id');
+                
+                const distinct = new Set<string>();
+                distinct.add('org_default');
+                if (profileOrgs) profileOrgs.forEach(p => p.organization_id && distinct.add(p.organization_id));
+                if (settingsOrgs) settingsOrgs.forEach(s => distinct.add(s.id));
+                
+                const sortedOrgs = Array.from(distinct).sort();
+                setAvailableOrgs(sortedOrgs);
+            } else {
+                setAvailableOrgs([userOrgId]);
+            }
         }
 
-        // 2. Fetch Profiles (Scoped by Organization)
+        // Initialize target org if not set
+        if (!configOrg) {
+            setConfigOrg(userOrgId);
+        }
+        // Load initial settings
+        await loadSettingsForOrg(configOrg || userOrgId);
+
         let profileQuery = supabase.from('profiles').select('*');
-        
-        // ISOLATION LOGIC: 
-        // If not Super Admin, ONLY fetch profiles in the SAME Organization.
         if (!isSuperAdmin) {
             profileQuery = profileQuery.eq('organization_id', userOrgId);
         }
@@ -266,7 +306,6 @@ const AdminTab: React.FC = () => {
         const { data: profiles, error: profErr } = await profileQuery;
         
         if (profErr) {
-            // Handle undefined column error specifically
             if (profErr.code === '42703') {
                 throw new Error("Database Schema outdated (missing columns). Run DB Repair.");
             }
@@ -284,7 +323,7 @@ const AdminTab: React.FC = () => {
                 avatar: (p.email?.[0] || 'U').toUpperCase(),
                 joinedAt: p.created_at,
                 organizationId: p.organization_id || 'org_default',
-                teamId: p.reporting_to, // In our schema, reporting_to holds the Team ID for advisors
+                teamId: p.reporting_to,
                 isAgencyAdmin: p.role === 'admin' || p.is_admin,
                 subscriptionTier: p.subscription_tier || 'free',
                 modules: p.modules || [],
@@ -293,25 +332,14 @@ const AdminTab: React.FC = () => {
             setAdvisors(mappedAdvisors);
         }
 
-        // 3. Fetch Clients (Filtered by DB logic, but we reload here)
         const allClients = await db.getClients(); 
         setClients(allClients);
-        
-        // 4. Settings
-        const sysSettings = await adminDb.getSystemSettings();
-        if (sysSettings) {
-            setProducts(sysSettings.products || MOCK_PRODUCTS);
-            setTeams(sysSettings.teams || MOCK_TEAMS);
-            setSettings(sysSettings.appSettings || DEFAULT_SETTINGS);
-            if (sysSettings.subscription) setSubscription(sysSettings.subscription);
-        }
         const logs = await fetchGlobalActivity(500); 
         setActivities(logs);
 
     } catch (e: any) {
         console.error("Sync Error:", e);
         setErrorState(e.message || "Failed to load admin data.");
-        // Auto-open repair if schema error
         if (e.message?.includes('Schema') || e.message?.includes('column')) {
             setIsRepairOpen(true);
         }
@@ -321,20 +349,61 @@ const AdminTab: React.FC = () => {
     }
   };
 
+  const loadSettingsForOrg = async (orgId: string) => {
+      const sysSettings = await adminDb.getSystemSettings(orgId);
+      if (sysSettings) {
+          setProducts(sysSettings.products || MOCK_PRODUCTS);
+          setTeams(sysSettings.teams || MOCK_TEAMS);
+          
+          const mergedSettings = {
+              ...DEFAULT_SETTINGS,
+              ...(sysSettings.appSettings || {})
+          };
+          if (!mergedSettings.campaigns || mergedSettings.campaigns.length === 0) {
+              mergedSettings.campaigns = DEFAULT_SETTINGS.campaigns;
+          }
+          setSettings(mergedSettings);
+          if (sysSettings.subscription) setSubscription(sysSettings.subscription);
+      } else {
+          // Defaults for new orgs
+          setSettings(DEFAULT_SETTINGS);
+          setProducts(MOCK_PRODUCTS);
+          setTeams(MOCK_TEAMS);
+      }
+  };
+
+  const handleOrgSwitch = async (newOrg: string) => {
+      if (newOrg === 'NEW') {
+          const customId = prompt("Enter new Organization ID (e.g. agency_x):");
+          if (customId) {
+              const cleanId = customId.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+              setAvailableOrgs(prev => [...prev, cleanId].sort());
+              setConfigOrg(cleanId);
+              await loadSettingsForOrg(cleanId);
+          }
+          return;
+      }
+      setConfigOrg(newOrg);
+      await loadSettingsForOrg(newOrg);
+  };
+
   useEffect(() => {
       if (isInitialMount.current || loading || errorState) return;
       const timer = setTimeout(async () => {
           setSaveStatus('saving');
           try {
-              await adminDb.saveSystemSettings({ products, teams, appSettings: settings, subscription });
+              // Save to CURRENTLY SELECTED Org Context
+              await adminDb.saveSystemSettings({ products, teams, appSettings: settings, subscription }, configOrg);
+              
               setSaveStatus('saved');
               setTimeout(() => setSaveStatus('idle'), 2000);
           } catch (e) {
+              console.error("Save failed:", e);
               setSaveStatus('error');
           }
       }, 1500);
       return () => clearTimeout(timer);
-  }, [products, teams, settings, subscription, loading, errorState]);
+  }, [products, teams, settings, subscription, loading, errorState, configOrg]);
 
   const handleUpdateAdvisor = async (updatedAdvisor: Advisor) => {
       setAdvisors(prev => prev.map(a => a.id === updatedAdvisor.id ? updatedAdvisor : a));
@@ -353,33 +422,16 @@ const AdminTab: React.FC = () => {
           
           if (error) {
               console.error("Profile update failed:", error);
-              
-              const msg = error.message || '';
-              const code = error.code || '';
-
-              // Handle Schema Cache Error (Missing Column)
-              // PGRST204 = Column not found in schema cache
-              // 42703 = Undefined column
-              if (code === 'PGRST204' || code === '42703' || msg.includes("annual_goal")) {
-                 toast.error("Database Schema Outdated. Auto-opening Repair Tool.");
-                 setIsRepairOpen(true);
-                 return;
-              }
-
-              const errMsg = msg || (typeof error === 'object' ? JSON.stringify(error) : String(error));
-              toast.error(`Failed to update profile: ${errMsg}`);
-              // Do not re-throw to avoid unhandled promise rejection in UI components
+              toast.error(`Failed to update profile: ${error.message}`);
           }
       }
   };
 
   const handleAddAdvisor = async (newAdvisor: Advisor) => {
-      // Optimistic update
       setAdvisors(prev => [...prev, newAdvisor]);
-      
       if (supabase) {
           const { error } = await supabase.from('profiles').insert({
-              id: newAdvisor.id, // Will fail if ID not valid UUID matching auth, but good for tracking
+              id: newAdvisor.id,
               email: newAdvisor.email,
               role: newAdvisor.role,
               status: newAdvisor.status,
@@ -390,9 +442,7 @@ const AdminTab: React.FC = () => {
               modules: newAdvisor.modules,
               is_admin: newAdvisor.isAgencyAdmin
           });
-
           if (error) {
-              // Graceful degradation for "Invite" scenarios
               console.warn("DB Insert Skipped (Auth Constraint):", error.message);
               toast.info("Invite sent. Profile will sync when user logs in.");
           } else {
@@ -406,12 +456,9 @@ const AdminTab: React.FC = () => {
       if (supabase && user) {
           try {
               await supabase.from('clients').update({ user_id: user.id }).eq('user_id', id);
-              
               const { error, data } = await supabase.from('profiles').delete().eq('id', id).select('id');
-              
               if (error) throw error;
               if (!data || data.length === 0) throw new Error("Delete failed (Silent Failure). Check permissions.");
-
               setAdvisors(prev => prev.filter(a => a.id !== id));
               toast.success("Advisor deleted.");
           } catch (e: any) {
@@ -446,7 +493,6 @@ const AdminTab: React.FC = () => {
       if (!supabase || !user) return;
       setDiagStatus('running');
       setDiagLog([]);
-      
       const logs: string[] = [];
       const addLog = (msg: string, status: 'info'|'success'|'error'|'warn' = 'info') => {
           const icon = status === 'success' ? '✅' : status === 'error' ? '❌' : status === 'warn' ? '⚠️' : 'ℹ️';
@@ -454,29 +500,28 @@ const AdminTab: React.FC = () => {
           logs.push(line);
           setDiagLog(prev => [...prev, line]);
       };
-
       try {
-          addLog(`DIAGNOSTIC START (V22.0): ${new Date().toISOString()}`);
-          
+          addLog(`DIAGNOSTIC START (V22.1): ${new Date().toISOString()}`);
           let { data: sessionData } = await supabase.auth.getSession();
           if (!sessionData.session) {
               addLog("Session stale. Refreshing...", 'warn');
               await supabase.auth.refreshSession();
               sessionData = await supabase.auth.getSession();
           }
-
-          // Check Secure Function
           const { error: funcErr } = await supabase.rpc('get_my_claims');
           if (funcErr) addLog("Secure Function Missing. Run Repair SQL.", 'error');
           else addLog("Secure Function OK.", 'success');
-
           const { error: colError } = await supabase.from('profiles').select('organization_id, annual_goal').limit(1);
           if (colError) addLog("Schema missing columns (org/goal). Run SQL.", 'error');
           else addLog("Schema Columns OK.", 'success');
+          
+          // Check Settings Table
+          const { error: setErr } = await supabase.from('organization_settings').select('id').limit(1);
+          if (setErr) addLog("Settings Table Missing/Access Denied. Run SQL.", 'error');
+          else addLog("Settings Table OK.", 'success');
 
           setDiagStatus('success');
           addLog("SYSTEM CHECK COMPLETE.", 'success');
-
       } catch (e: any) {
           setDiagStatus('failure');
           addLog(`CRITICAL FAILURE: ${e.message}`, 'error');
@@ -499,7 +544,6 @@ const AdminTab: React.FC = () => {
             .delete()
             .eq('id', manualDeleteId)
             .select('id');
-
           if (!clientErr && clientData && clientData.length > 0) {
               toast.success("Deleted from Clients (Standard).");
               setManualDeleteId('');
@@ -513,7 +557,7 @@ const AdminTab: React.FC = () => {
 
   const copyDebugSql = () => {
       navigator.clipboard.writeText(REPAIR_SQL);
-      toast.success("Repair SQL (V22.0) copied to clipboard.");
+      toast.success("Repair SQL (V22.1) copied to clipboard.");
   };
 
   if (loading && !isRepairOpen) return <div className="p-20 text-center"><div className="animate-spin w-10 h-10 border-4 border-indigo-600 border-t-transparent rounded-full mx-auto"></div><p className="mt-4 text-slate-400 text-sm animate-pulse">Syncing Admin Core...</p></div>;
@@ -529,6 +573,11 @@ const AdminTab: React.FC = () => {
       isAgencyAdmin: true,
       organizationId: 'org_default'
   };
+
+  const isSuperAdmin = activeUser.role === 'admin' || activeUser.isAgencyAdmin;
+
+  // Filter advisors for Settings Tab (only show those in current config scope)
+  const settingsAdvisors = advisors.filter(a => a.organizationId === configOrg);
 
   if (errorState && !isRepairOpen) {
       return (
@@ -561,9 +610,36 @@ const AdminTab: React.FC = () => {
             </div>
             
             <div className="flex items-center gap-4">
+               {isSuperAdmin ? (
+                   <div className="flex items-center gap-2 bg-slate-50 px-2 py-1.5 rounded-lg border border-slate-200">
+                       <span className="text-[10px] font-bold text-slate-400 uppercase">Context:</span>
+                       <select 
+                           value={configOrg} 
+                           onChange={(e) => handleOrgSwitch(e.target.value)}
+                           className="bg-transparent text-xs font-bold text-indigo-700 outline-none cursor-pointer"
+                       >
+                           {availableOrgs.map(o => <option key={o} value={o}>{o}</option>)}
+                           <option value="NEW">+ New Config Scope</option>
+                       </select>
+                   </div>
+               ) : (
+                   <span className="text-[10px] font-bold text-slate-400 bg-slate-50 px-2 py-1 rounded border border-slate-200">
+                       Configuring: <span className="text-indigo-600">{configOrg}</span>
+                   </span>
+               )}
+
                <div className="flex items-center gap-2">
                   {saveStatus === 'saving' && <span className="text-[10px] text-indigo-500 font-bold animate-pulse">☁️ Syncing...</span>}
                   {saveStatus === 'saved' && <span className="text-[10px] text-emerald-600 font-bold">✓ Saved</span>}
+                  {saveStatus === 'error' && (
+                        <button 
+                            onClick={() => setIsRepairOpen(true)}
+                            className="text-[10px] text-red-600 font-bold flex items-center gap-1 bg-red-50 px-2 py-1 rounded-full hover:bg-red-100 transition-colors"
+                            title="Click to troubleshoot"
+                        >
+                           ⚠️ <span className="hidden sm:inline">Failed</span>
+                        </button>
+                  )}
                </div>
                <div className="h-6 w-px bg-slate-200"></div>
                <button onClick={() => setIsRepairOpen(true)} className="text-xs text-white bg-rose-600 font-bold hover:bg-rose-700 px-3 py-1.5 rounded-lg flex items-center gap-1 shadow-sm">
@@ -589,8 +665,8 @@ const AdminTab: React.FC = () => {
             )}
             {activeTab === 'settings' && (
                 <AdminSettings 
-                    products={products} settings={settings} advisors={advisors} 
-                    onUpdateProducts={setProducts} onUpdateSettings={setSettings} onUpdateAdvisors={(updated) => setAdvisors(updated)}
+                    products={products} settings={settings} advisors={settingsAdvisors} 
+                    onUpdateProducts={setProducts} onUpdateSettings={setSettings} onUpdateAdvisors={(updated) => setAdvisors(prev => prev.map(p => updated.find(u => u.id === p.id) || p))}
                 />
             )}
             {activeTab === 'ai_brain' && <AiKnowledgeManager />}
@@ -602,22 +678,22 @@ const AdminTab: React.FC = () => {
         </div>
 
         <Modal 
-            isOpen={isRepairOpen} onClose={() => setIsRepairOpen(false)} title="System Diagnostics & Repair (V22.0)"
+            isOpen={isRepairOpen} onClose={() => setIsRepairOpen(false)} title="System Diagnostics & Repair (V22.1)"
             footer={
                <div className="flex gap-2 w-full">
                   <Button variant="ghost" onClick={() => setIsRepairOpen(false)}>Close</Button>
-                  <Button variant="secondary" onClick={copyDebugSql}>2. Copy SQL (V22.0)</Button>
+                  <Button variant="secondary" onClick={copyDebugSql}>2. Copy SQL (V22.1)</Button>
                   <Button variant="accent" onClick={runDiagnostics} isLoading={diagStatus === 'running'}>3. Run Check</Button>
                </div>
             }
         >
             <div className="p-4 bg-slate-900 rounded-xl text-white font-mono text-xs overflow-auto max-h-96">
                 <div className="mb-4 space-y-2">
-                    <p className="text-emerald-400 font-bold uppercase">Instructions (Deep Clean V22.0):</p>
+                    <p className="text-emerald-400 font-bold uppercase">Instructions (Deep Clean V22.1):</p>
                     <p>1. Click "Copy SQL" below.</p>
                     <p>2. Go to Supabase &gt; SQL Editor.</p>
-                    <p>3. Paste and Run. (This installs the transfer protocol & fixes policies).</p>
-                    <p>4. Check console for "Schema Columns OK".</p>
+                    <p>3. Paste and Run. (This creates the Organization Settings table & fixes policies).</p>
+                    <p>4. Check console for "System Check Complete".</p>
                 </div>
                 {diagLog.length > 0 && (
                     <div className="space-y-1 mb-4 border-t border-slate-700 pt-4">
@@ -643,7 +719,7 @@ const AdminTab: React.FC = () => {
                         onClick={copyDebugSql}
                         className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-3 rounded-lg text-xs uppercase font-bold w-full flex items-center justify-center gap-2 shadow-lg"
                     >
-                        <span>📋</span> 1. Copy Repair SQL (V22.0)
+                        <span>📋</span> 1. Copy Repair SQL (V22.1)
                     </button>
                 </div>
             </div>

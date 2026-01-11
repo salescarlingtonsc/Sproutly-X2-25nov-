@@ -1,128 +1,89 @@
 
-import { SubscriptionTier, Expenses, UserProfile } from '../types';
-
-export const TIER_CONFIG = {
-  free: {
-    label: 'Free Trial',
-    clientLimit: 5,
-    allowedTabs: ['disclaimer', 'dashboard', 'profile', 'crm', 'reminders', 'life_events', 'report'], 
-    color: 'gray'
-  },
-  platinum: {
-    label: 'Platinum',
-    clientLimit: 15, 
-    allowedTabs: ['disclaimer', 'dashboard', 'profile', 'children', 'cashflow', 'insurance', 'crm', 'reminders', 'life_events', 'report'], 
-    color: 'indigo'
-  },
-  diamond: {
-    label: 'Diamond',
-    clientLimit: 50, 
-    allowedTabs: ['disclaimer', 'dashboard', 'profile', 'life_events', 'children', 'cpf', 'cashflow', 'insurance', 'retirement', 'investor', 'wealth', 'property', 'vision', 'analytics', 'crm', 'reminders', 'report'],
-    color: 'emerald'
-  },
-  organisation: {
-    label: 'Organisation',
-    clientLimit: 500, 
-    allowedTabs: ['disclaimer', 'dashboard', 'profile', 'life_events', 'children', 'cpf', 'cashflow', 'insurance', 'retirement', 'investor', 'wealth', 'property', 'vision', 'analytics', 'crm', 'reminders', 'report'],
-    color: 'purple'
-  }
-};
-
-export const TAB_DEFINITIONS = [
-  { id: 'disclaimer', label: 'Protocol', icon: '⚖️' },
-  { id: 'dashboard', label: 'Dashboard', icon: '🚀' }, 
-  { id: 'crm', label: 'My Clients', icon: '📋' },
-  { id: 'reminders', label: 'Reminders', icon: '🔔' },
-  { id: 'profile', label: 'Profile', icon: '👤' },
-  { id: 'life_events', label: 'Life Events', icon: '⚡' },
-  { id: 'children', label: 'Children', icon: '👶' },
-  { id: 'cpf', label: 'CPF', icon: '💰' },
-  { id: 'cashflow', label: 'Cashflow', icon: '📊' },
-  { id: 'insurance', label: 'Insurance', icon: '🛡️' },
-  { id: 'retirement', label: 'Retirement', icon: '🏖️' },
-  { id: 'investor', label: 'Portfolio', icon: '📈' },
-  { id: 'wealth', label: 'Wealth Tool', icon: '💎' },
-  { id: 'property', label: 'Real Estate', icon: '🏠' },
-  { id: 'vision', label: 'Vision Board', icon: '🎥' },
-  { id: 'analytics', label: 'Intelligence', icon: '🧠' },
-  { id: 'report', label: 'Deliverable', icon: '📄' }, 
-  { id: 'admin', label: 'Management', icon: '🔧' }
-];
-
-export const ALL_AVAILABLE_TABS = TAB_DEFINITIONS.filter(t => 
-  !['admin'].includes(t.id)
-);
-
-export const TAB_GROUPS = [
-  {
-    title: 'Command Center',
-    tabs: ['dashboard', 'crm', 'reminders']
-  },
-  {
-    title: 'Discovery',
-    tabs: ['profile', 'children', 'life_events']
-  },
-  {
-    title: 'Financial Core',
-    tabs: ['cashflow', 'cpf', 'insurance', 'retirement']
-  },
-  {
-    title: 'Wealth & Assets',
-    tabs: ['investor', 'wealth', 'property']
-  },
-  {
-    title: 'Insights',
-    tabs: ['vision', 'analytics', 'report']
-  },
-  {
-    title: 'Agency',
-    tabs: ['admin', 'disclaimer']
-  }
-];
-
-export const EXPENSE_CATEGORIES: { key: keyof Expenses; label: string }[] = [
-  { key: 'housing', label: 'Housing' },
-  { key: 'food', label: 'Food & Dining' },
-  { key: 'transport', label: 'Transport' },
-  { key: 'insurance', label: 'Insurance' },
-  { key: 'entertainment', label: 'Entertainment' },
-  { key: 'others', label: 'Others' }
-];
+import { UserProfile, SubscriptionTier } from "../types";
 
 export const DEFAULT_SETTINGS = {
   statuses: [
     'New Lead', 'Contacted', 'Picked Up', 
     'NPU 1', 'NPU 2', 'NPU 3', 'NPU 4', 'NPU 5', 'NPU 6',
-    'Appt Set', 'Appt Met', 'Proposal', 'Pending Decision', 'Client', 'Lost'
+    'Appt Set', 'Appt Met', 'Proposal', 'Pending Decision', 'Client', 'Case Closed', 'Lost'
   ],
-  platforms: ['IG', 'FB', 'LinkedIn', 'Roadshow', 'Referral', 'Cold', 'Personal', 'Other']
+  platforms: ['IG', 'FB', 'LinkedIn', 'Roadshow', 'Referral', 'Cold', 'Personal', 'Other'],
+  campaigns: ["PS5 Giveaway", "DJI Drone", "Dyson Airwrap", "Retirement eBook", "Tax Masterclass"]
 };
+
+export const TIER_CONFIG: Record<SubscriptionTier, { label: string; clientLimit: number; allowedTabs: string[] }> = {
+  'free': {
+    label: 'Basic',
+    clientLimit: 3,
+    allowedTabs: ['dashboard', 'profile', 'disclaimer']
+  },
+  'platinum': {
+    label: 'Platinum',
+    clientLimit: 50,
+    allowedTabs: ['dashboard', 'profile', 'children', 'cpf', 'cashflow', 'crm', 'disclaimer', 'reminders']
+  },
+  'diamond': {
+    label: 'Diamond',
+    clientLimit: 9999,
+    allowedTabs: ['dashboard', 'profile', 'life_events', 'children', 'cpf', 'cashflow', 'insurance', 'retirement', 'investor', 'wealth', 'property', 'vision', 'analytics', 'crm', 'report', 'reminders', 'admin', 'disclaimer']
+  },
+  'organisation': {
+    label: 'Organisation',
+    clientLimit: 99999,
+    allowedTabs: ['dashboard', 'profile', 'life_events', 'children', 'cpf', 'cashflow', 'insurance', 'retirement', 'investor', 'wealth', 'property', 'vision', 'analytics', 'crm', 'report', 'reminders', 'admin', 'disclaimer']
+  }
+};
+
+export const TAB_DEFINITIONS = [
+  { id: 'dashboard', label: 'Dashboard', icon: '📊' },
+  { id: 'reminders', label: 'Action Center', icon: '🔔' },
+  { id: 'crm', label: 'CRM', icon: '👥' },
+  { id: 'profile', label: 'Profile', icon: '👤' },
+  { id: 'children', label: 'Education', icon: '🎓' },
+  { id: 'cpf', label: 'CPF Planning', icon: '🦁' },
+  { id: 'cashflow', label: 'Cashflow', icon: '💸' },
+  { id: 'insurance', label: 'Insurance', icon: '🛡️' },
+  { id: 'retirement', label: 'Retirement', icon: '🏖️' },
+  { id: 'investor', label: 'Investment', icon: '📈' },
+  { id: 'wealth', label: 'Wealth Tool', icon: '💎' },
+  { id: 'property', label: 'Property', icon: '🏠' },
+  { id: 'vision', label: 'Vision Board', icon: '🖼️' },
+  { id: 'analytics', label: 'Analytics', icon: '🧠' },
+  { id: 'report', label: 'Report', icon: '📄' },
+  { id: 'admin', label: 'Admin', icon: '⚙️' },
+  { id: 'disclaimer', label: 'Disclaimer', icon: '⚖️' },
+  { id: 'life_events', label: 'Life Events', icon: '⚡' }
+];
+
+export const TAB_GROUPS = [
+  { title: 'Command', tabs: ['dashboard', 'reminders', 'crm'] },
+  { title: 'Core Planning', tabs: ['profile', 'children', 'cpf', 'cashflow', 'insurance', 'retirement'] },
+  { title: 'Advanced Tools', tabs: ['investor', 'wealth', 'property', 'life_events', 'analytics', 'vision'] },
+  { title: 'System', tabs: ['report', 'admin', 'disclaimer'] }
+];
+
+export const ALL_AVAILABLE_TABS = TAB_DEFINITIONS;
 
 export const canAccessTab = (user: UserProfile | null, tabId: string): boolean => {
   if (!user) return false;
-  const isApproved = user.status === 'approved' || user.status === 'active';
-  const role = user.role as string;
-  const isSuperAdmin = role === 'admin' || user.is_admin === true;
-  const isManagement = isSuperAdmin || role === 'director' || role === 'manager';
-
-  if (!isApproved && !isSuperAdmin) return tabId === 'disclaimer';
-  if (isSuperAdmin) return true;
-  if (tabId === 'admin') return isManagement || role === 'viewer';
+  if (tabId === 'disclaimer') return true;
   
-  // STRICT OVERRIDE: If modules array exists (even empty), use it.
-  if (Array.isArray(user.modules)) {
-    return user.modules.includes(tabId);
+  // Super Admin / Director has access to everything by default
+  if (user.role === 'admin' || user.role === 'director' || user.isAgencyAdmin) return true;
+
+  // Check if user has specific module overrides
+  if (user.modules && Array.isArray(user.modules) && user.modules.length > 0) {
+      return user.modules.includes(tabId);
   }
 
-  // Fallback to Tier
-  const currentTier = user.subscriptionTier || 'free';
-  const config = TIER_CONFIG[currentTier as keyof typeof TIER_CONFIG] || TIER_CONFIG.free;
-  return config.allowedTabs.includes(tabId);
-};
+  // Fallback to Tier config
+  const tier = user.subscriptionTier || 'free';
+  const config = TIER_CONFIG[tier];
+  
+  if (!config) return false;
+  
+  // Admin tab is special - only for admin/director roles (checked above) or if explicitly granted
+  if (tabId === 'admin') return false; 
 
-export const getClientLimit = (tier: SubscriptionTier, extraSlots: number = 0): number => {
-  const currentTier = tier || 'free';
-  const config = TIER_CONFIG[currentTier as keyof typeof TIER_CONFIG] || TIER_CONFIG.free;
-  const baseLimit = config.clientLimit || 1;
-  return baseLimit + (extraSlots || 0);
+  return config.allowedTabs.includes(tabId);
 };

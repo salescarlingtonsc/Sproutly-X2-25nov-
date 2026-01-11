@@ -1,29 +1,30 @@
 
-export type UserRole = 'admin' | 'director' | 'manager' | 'advisor' | 'viewer' | 'user';
-
 export type SubscriptionTier = 'free' | 'platinum' | 'diamond' | 'organisation';
+export type UserRole = 'advisor' | 'manager' | 'director' | 'admin' | 'user' | 'viewer';
+export type ContactStatus = 'new' | 'contacted' | 'picked_up' | 'qualified' | 'npu_1' | 'npu_2' | 'npu_3' | 'npu_4' | 'npu_5' | 'npu_6' | 'appt_set' | 'appt_met' | 'proposal' | 'pending_decision' | 'closing' | 'case_closed' | 'client' | 'not_keen';
 
 export interface UserProfile {
   id: string;
   email: string;
+  name?: string;
   role: UserRole;
   status: 'active' | 'pending' | 'rejected' | 'approved';
+  subscriptionTier: SubscriptionTier;
+  extraSlots: number;
+  is_admin: boolean;
+  isAgencyAdmin?: boolean;
+  organizationId?: string;
   bandingPercentage?: number;
-  annualGoal?: number; // New: Target Gross Revenue for the year
+  modules?: string[];
+  annualGoal?: number;
+  teamId?: string;
   avatar?: string;
   joinedAt?: string;
-  organizationId?: string;
-  teamId?: string;
-  isAgencyAdmin?: boolean;
-  subscriptionTier?: SubscriptionTier;
-  modules?: string[];
-  extraSlots?: number;
-  is_admin?: boolean;
+  phone?: string;
 }
 
-export type Advisor = UserProfile & {
-  name: string;
-};
+// Alias for UserProfile in some contexts where it's called Advisor
+export type Advisor = UserProfile; 
 
 export interface Team {
   id: string;
@@ -38,27 +39,76 @@ export interface Subscription {
   nextBillingDate: string;
 }
 
-export interface WhatsAppTemplate {
+export interface ProductTier {
+  min: number;
+  max: number;
+  rate: number;
+  dollarUp: number;
+}
+
+export interface Product {
   id: string;
-  label: string;
+  name: string;
+  provider: string;
+  type?: string;
+  tiers?: ProductTier[];
+}
+
+export interface Sale {
+  id: string;
+  productId: string;
+  productName: string;
+  premiumAmount: number;
+  grossRevenue: number;
+  date: string;
+  inceptionDate?: string;
+  status: string;
+  notes?: string;
+}
+
+export interface FamilyMember {
+  id: string;
+  name: string;
+  role: 'Father' | 'Mother' | 'Child' | 'Other';
+  dob?: string;
+}
+
+export interface Policy {
+  id: string;
+  provider: string;
+  name: string;
+  policyNumber: string;
+  value: number;
+  startDate?: string;
+}
+
+export interface Note {
+  id: string;
   content: string;
+  date: string;
+  author: string;
+}
+
+export interface ChatMessage {
+  role: 'user' | 'model';
+  text: string;
 }
 
 export interface AppSettings {
   statuses: string[];
   platforms: string[];
+  campaigns?: string[];
   benchmarks?: {
     callsPerWeek: number;
     apptsPerWeek: number;
   };
+  agencyName?: string;
 }
 
 export interface Benchmarks {
   callsPerWeek: number;
   apptsPerWeek: number;
 }
-
-// --- Financial Planning Types ---
 
 export interface Child {
   id: number;
@@ -84,10 +134,9 @@ export interface Profile {
   gender: 'male' | 'female';
   email: string;
   phone: string;
-  jobTitle?: string;
   employmentStatus: string;
   grossSalary: string;
-  monthlyIncome: string; // Often same as gross
+  monthlyIncome: string;
   takeHome: string;
   retirementAge: string;
   customRetirementExpense: string;
@@ -102,6 +151,7 @@ export interface Profile {
     moderate: number;
     growth: number;
   };
+  jobTitle?: string;
 }
 
 export interface Expenses {
@@ -120,31 +170,58 @@ export interface CustomExpense {
   amount: string;
 }
 
-export interface RetirementSettings {
-  initialSavings: string;
-  scenario: string;
-  investmentPercent: string;
-  customReturnRate?: string;
-}
-
-// --- States ---
-
 export interface CpfState {
   currentBalances: {
     oa: string;
     sa: string;
     ma: string;
   };
-  withdrawals: any[]; // Specific type if needed
+  withdrawals: Array<{
+    id: number;
+    name: string;
+    amount: string;
+    account: 'oa' | 'sa' | 'ma';
+    type: 'monthly' | 'yearly' | 'onetime';
+    startAge: string;
+    endAge: string;
+  }>;
 }
 
 export interface CashflowState {
   currentSavings: string;
   projectToAge: string;
   bankInterestRate: string;
-  additionalIncomes: any[];
-  withdrawals: any[];
-  careerEvents: any[];
+  additionalIncomes: Array<{
+    id: number;
+    name: string;
+    amount: string;
+    type: 'recurring' | 'onetime';
+    frequency: 'monthly' | 'yearly';
+    startAge: string | number;
+    startMonth?: number;
+    endAge?: string | number;
+    endMonth?: number;
+  }>;
+  withdrawals: Array<{
+    id: number;
+    name: string;
+    amount: string;
+    type: 'recurring' | 'onetime';
+    frequency: 'monthly' | 'yearly';
+    startAge: string | number;
+    startMonth?: number;
+    endAge?: string | number;
+    endMonth?: number;
+  }>;
+  careerEvents: Array<{
+    id: number;
+    type: 'increment' | 'decrement' | 'pause' | 'resume';
+    age: number;
+    month?: number;
+    amount?: string;
+    durationMonths?: string;
+    notes?: string;
+  }>;
   customBaseIncome?: string;
 }
 
@@ -195,7 +272,12 @@ export interface WealthState {
   withdrawalStartAge?: string;
 }
 
-// --- Calculated Data ---
+export interface RetirementSettings {
+  initialSavings: string;
+  scenario: 'conservative' | 'moderate' | 'aggressive';
+  investmentPercent: string;
+  customReturnRate?: string;
+}
 
 export interface CpfData {
   employee: number;
@@ -217,24 +299,29 @@ export interface CashflowData {
   savingsRate: number;
 }
 
-// --- CRM Types ---
+export interface WhatsAppTemplate {
+  id: string;
+  label: string;
+  content: string;
+}
 
-export type ContactStatus = 
-  | 'new' 
-  | 'contacted' 
-  | 'qualified' 
-  | 'picked_up' 
-  | 'npu_1' | 'npu_2' | 'npu_3' | 'npu_4' | 'npu_5' | 'npu_6'
-  | 'appt_set' 
-  | 'appt_met' 
-  | 'proposal' 
-  | 'pending_decision' 
-  | 'closing' 
-  | 'case_closed' 
-  | 'client' 
-  | 'not_keen'
-  // fallback for string matching
-  | string;
+export interface FieldDefinition {
+  id: string;
+  key: string;
+  label: string;
+  type: 'text' | 'number' | 'date' | 'boolean' | 'select' | 'currency';
+  options?: string[];
+  section?: string;
+}
+
+export interface AuditLog {
+  id: string;
+  type: string;
+  title: string;
+  details: any;
+  created_at: string;
+  user_id?: string;
+}
 
 export enum Stage {
   NEW = 'New Lead',
@@ -249,141 +336,79 @@ export enum Stage {
   LOST = 'Lost'
 }
 
-export enum Sentiment {
-  POSITIVE = 'Positive',
-  NEUTRAL = 'Neutral',
-  NEGATIVE = 'Negative',
-  UNKNOWN = 'Unknown'
-}
-
-export interface Note {
-  id: string;
-  content: string;
-  date: string;
-  author: string;
-}
-
-export interface Sale {
-  id: string;
-  productId: string;
-  productName: string;
-  premiumAmount: number;
-  grossRevenue: number; // New: Calculated Revenue
-  inceptionDate: string; // New: Policy Start Date
-  date: string; // Record creation date
-  status: string;
-  notes?: string; // New: Optional notes field
-}
-
-export interface FamilyMember {
-  id: string;
-  name: string;
-  role: 'Father' | 'Mother' | 'Child' | 'Other';
-  dob: string;
-}
-
-export interface Policy {
-  id: string;
-  provider: string;
-  name: string;
-  policyNumber: string;
-  value: number;
-  startDate: string;
-}
-
-export interface ChatMessage {
-  role: 'user' | 'model';
-  text: string;
-  timestamp?: string;
-}
-
 export interface Client {
   id: string;
   referenceCode?: string;
+  
+  // CRM Top Level
   name: string;
   email: string;
   phone: string;
+  company?: string;
+  jobTitle?: string;
+  platform?: string;
+  retirementAge?: number; // Added to fix type error
   
   stage: string;
+  contactStatus: ContactStatus;
   priority?: 'High' | 'Medium' | 'Low';
+  momentumScore?: number;
   value?: number;
-  lastContact?: string;
+  nextAction?: string;
+  
+  advisorId?: string;
+  _ownerId?: string;
+  _ownerEmail?: string;
+  
+  lastUpdated: string;
+  lastContact: string;
   firstApptDate?: string;
   
+  // Context States
   profile: Profile;
   expenses: Expenses;
   customExpenses: CustomExpense[];
-  retirement: RetirementSettings;
   cpfState: CpfState;
   cashflowState: CashflowState;
   insuranceState: InsuranceState;
   investorState: InvestorState;
   propertyState: PropertyState;
   wealthState: WealthState;
+  retirement: RetirementSettings;
   
-  company?: string;
-  platform?: string;
-  contactStatus?: ContactStatus;
-  momentumScore?: number;
+  // CRM Deep Data
+  followUp: {
+    status: ContactStatus; // Keeping this sync'd with root status
+    priority?: string;
+    dealValue?: string;
+    nextFollowUpDate?: string;
+    nextFollowUpTime?: string;
+    lastContactedAt?: string;
+    notes?: string;
+  };
+  appointments?: {
+    firstApptDate?: string;
+    apptTime?: string;
+  };
+  documents?: any[];
+  
   sales?: Sale[];
   familyMembers?: FamilyMember[];
-  policies?: Policy[];
+  policies?: Policy[]; // External policies known from CRM
   notes?: Note[];
   chatHistory?: ChatMessage[];
+  
   goals?: string;
+  tags?: string[];
+  
   milestones?: {
     createdAt?: string;
     contactedAt?: string;
     appointmentSetAt?: string;
     appointmentMetAt?: string;
+    proposalAt?: string;
     closedAt?: string;
   };
-  nextAction?: string;
-  tags?: string[];
-  jobTitle?: string;
-  dob?: string;
-  retirementAge?: number | string; // Changed to allow string input
-  
-  lastUpdated: string;
-  followUp: any;
-  appointments: any;
-  documents: any[];
-  _ownerId?: string;
-  _ownerEmail?: string;
-  advisorId?: string;
-  
   stageHistory?: { stage: string; date: string }[];
-  fieldValues?: any;
-  sentiment?: Sentiment;
-}
-
-export interface ProductTier {
-  min: number;
-  max: number;
-  rate: number;
-  dollarUp: number;
-}
-
-export interface Product {
-  id: string;
-  name: string;
-  provider: string;
-  type?: string;
-  tiers: ProductTier[];
-}
-
-export interface FieldDefinition {
-  id: string;
-  key: string;
-  label: string;
-  type: string;
-  section: string;
-}
-
-export interface AuditLog {
-  id: string;
-  user_id: string;
-  action: string;
-  details: string;
-  created_at: string;
+  fieldValues?: Record<string, any>;
 }

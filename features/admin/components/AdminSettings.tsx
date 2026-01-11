@@ -51,6 +51,27 @@ export const AdminSettings: React.FC<AdminSettingsProps> = ({ products, settings
       const s = prompt("Enter new status name:");
       if (s) onUpdateSettings({ ...settings, statuses: [...settings.statuses, s] });
   };
+  const handleAddCampaign = () => {
+      const c = prompt("Enter new campaign name (e.g. 'Oct Roadshow'):");
+      if (!c) return;
+      
+      const currentList = settings.campaigns || [];
+      onUpdateSettings({ ...settings, campaigns: [...currentList, c] });
+  };
+
+  const handleRemoveItem = (type: 'platforms' | 'statuses', item: string) => {
+      if (confirm(`Remove "${item}" from list?`)) {
+          const list = settings[type] || [];
+          onUpdateSettings({ ...settings, [type]: list.filter(i => i !== item) });
+      }
+  };
+
+  const handleRemoveCampaign = (campaignName: string) => {
+      if (confirm(`Remove campaign "${campaignName}"?`)) {
+          const list = settings.campaigns || [];
+          onUpdateSettings({ ...settings, campaigns: list.filter(c => c !== campaignName) });
+      }
+  };
 
   // --- Team Logic ---
   const handleAdvisorUpdate = (id: string, banding: number) => {
@@ -145,9 +166,8 @@ export const AdminSettings: React.FC<AdminSettingsProps> = ({ products, settings
                                     <label className="block text-[10px] font-bold text-indigo-300 uppercase mb-1">Organization Name</label>
                                     <input 
                                         type="text" 
-                                        // Use 'any' cast to access dynamic property not yet in interface to avoid TS breaking changes
-                                        value={(settings as any).agencyName || ''}
-                                        onChange={e => onUpdateSettings({ ...settings, agencyName: e.target.value } as any)}
+                                        value={settings.agencyName || ''}
+                                        onChange={e => onUpdateSettings({ ...settings, agencyName: e.target.value })}
                                         placeholder="e.g. Sproutly Organization"
                                         className="w-full bg-indigo-800 border border-indigo-700 rounded-lg px-4 py-3 text-white font-bold outline-none focus:ring-2 focus:ring-white/20 transition-all placeholder-indigo-400/50"
                                     />
@@ -249,29 +269,58 @@ export const AdminSettings: React.FC<AdminSettingsProps> = ({ products, settings
                 </div>
             )}
 
-            {/* CONFIG TAB */}
+            {/* CONFIG TAB (Dropdowns & Campaigns) */}
             {activeTab === 'config' && (
-                <div className="grid grid-cols-2 gap-8">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                    {/* Platforms */}
                     <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
                         <div className="flex justify-between items-center mb-4">
                             <h3 className="font-semibold text-slate-800">Platforms</h3>
-                            <button onClick={handleAddPlatform} className="text-xs bg-slate-900 text-white px-2 py-1 rounded">Add</button>
+                            <button onClick={handleAddPlatform} className="text-xs bg-slate-900 text-white px-2 py-1 rounded shadow hover:bg-slate-800">＋ Add</button>
                         </div>
                         <div className="flex flex-wrap gap-2">
                             {settings.platforms.map(p => (
-                                <span key={p} className="px-2 py-1 bg-slate-50 border border-slate-200 rounded text-xs text-slate-600">{p}</span>
+                                <div key={p} className="group relative">
+                                    <span className="px-2 py-1 bg-slate-50 border border-slate-200 rounded text-xs text-slate-600 cursor-default">{p}</span>
+                                    <button onClick={() => handleRemoveItem('platforms', p)} className="absolute -top-1 -right-1 bg-red-500 text-white w-3 h-3 rounded-full flex items-center justify-center text-[8px] opacity-0 group-hover:opacity-100 transition-opacity">×</button>
+                                </div>
                             ))}
                         </div>
                     </div>
+
+                    {/* Statuses */}
                     <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
                         <div className="flex justify-between items-center mb-4">
                             <h3 className="font-semibold text-slate-800">Statuses</h3>
-                            <button onClick={handleAddStatus} className="text-xs bg-slate-900 text-white px-2 py-1 rounded">Add</button>
+                            <button onClick={handleAddStatus} className="text-xs bg-slate-900 text-white px-2 py-1 rounded shadow hover:bg-slate-800">＋ Add</button>
                         </div>
                         <div className="flex flex-wrap gap-2">
                             {settings.statuses.map(s => (
-                                <span key={s} className="px-2 py-1 bg-slate-50 border border-slate-200 rounded text-xs text-slate-600">{s}</span>
+                                <div key={s} className="group relative">
+                                    <span className="px-2 py-1 bg-slate-50 border border-slate-200 rounded text-xs text-slate-600 cursor-default">{s}</span>
+                                    <button onClick={() => handleRemoveItem('statuses', s)} className="absolute -top-1 -right-1 bg-red-500 text-white w-3 h-3 rounded-full flex items-center justify-center text-[8px] opacity-0 group-hover:opacity-100 transition-opacity">×</button>
+                                </div>
                             ))}
+                        </div>
+                    </div>
+
+                    {/* Campaigns (NEW) */}
+                    <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+                        <div className="flex justify-between items-center mb-4">
+                            <h3 className="font-semibold text-slate-800">Campaigns</h3>
+                            <button onClick={handleAddCampaign} className="text-xs bg-indigo-600 text-white px-2 py-1 rounded shadow hover:bg-indigo-700">＋ Add</button>
+                        </div>
+                        <p className="text-[10px] text-slate-400 mb-3">Active marketing tags for client assignment.</p>
+                        <div className="flex flex-wrap gap-2">
+                            {(settings.campaigns || []).map(c => (
+                                <div key={c} className="group relative">
+                                    <span className="px-2 py-1 bg-indigo-50 border border-indigo-100 rounded text-xs text-indigo-700 font-bold cursor-default">{c}</span>
+                                    <button onClick={() => handleRemoveCampaign(c)} className="absolute -top-1 -right-1 bg-red-500 text-white w-3 h-3 rounded-full flex items-center justify-center text-[8px] opacity-0 group-hover:opacity-100 transition-opacity">×</button>
+                                </div>
+                            ))}
+                            {(!settings.campaigns || settings.campaigns.length === 0) && (
+                                <span className="text-xs text-slate-300 italic">No campaigns active.</span>
+                            )}
                         </div>
                     </div>
                 </div>

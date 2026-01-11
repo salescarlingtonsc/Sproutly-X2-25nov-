@@ -64,8 +64,10 @@ const AppInner: React.FC = () => {
   // Slow Loading State for Feedback
   const [showLongLoading, setShowLongLoading] = useState(false);
 
+  // Autosave Logic & Guards
   const lastSavedJson = useRef<string>('');
   const isSavingRef = useRef<boolean>(false);
+  const isHydratedRef = useRef<boolean>(false); // 1. Hydration Guard
   const gridSaveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   
   // Handover Guard
@@ -75,7 +77,6 @@ const AppInner: React.FC = () => {
   useEffect(() => {
     let timer: any;
     if (isLoading) {
-      // Show feedback faster (1.5s) to reduce user anxiety during cold starts
       timer = setTimeout(() => setShowLongLoading(true), 1500);
     } else {
       setShowLongLoading(false);
@@ -97,9 +98,7 @@ const AppInner: React.FC = () => {
   // --- PERMISSION ENFORCEMENT & REDIRECT ---
   useEffect(() => {
     if (user && (user.status === 'approved' || user.status === 'active')) {
-      // If the current tab is NOT allowed for this user
       if (!canAccessTab(user, activeTab)) {
-        // Find the first tab they ARE allowed to access
         const firstAllowed = TAB_DEFINITIONS.find(t => canAccessTab(user, t.id));
         if (firstAllowed) {
           console.log(`Redirecting from restricted tab '${activeTab}' to '${firstAllowed.id}'`);
@@ -120,14 +119,12 @@ const AppInner: React.FC = () => {
 
   useEffect(() => {
      if (user && (user.status === 'approved' || user.status === 'active')) {
-         // 1. Load from Cache Immediate
          const cached = localStorage.getItem(CLIENT_CACHE_KEY);
          if (cached) {
              try {
                  setClients(JSON.parse(cached));
              } catch(e) {}
          }
-         // 2. Fetch Fresh
          loadClientsList();
      }
   }, [user]);
@@ -136,7 +133,6 @@ const AppInner: React.FC = () => {
      try {
        const data = await db.getClients(user?.id);
        setClients(data);
-       // Update Cache
        localStorage.setItem(CLIENT_CACHE_KEY, JSON.stringify(data));
      } catch (e) {
        console.error("Hydration failed.");
@@ -154,31 +150,39 @@ const AppInner: React.FC = () => {
         if (!ok) return;
      }
      resetClient();
-     lastSavedJson.current = ''; 
+     // Reset comparison state for new client
+     lastSavedJson.current = ""; 
+     isHydratedRef.current = true; // Allow autosave to start for this new session
+     
      setActiveTab('profile');
      toast.info("Fresh strategy initialized");
   };
 
   const handleLoadClient = (client: Client, redirect = true) => {
+     // 2. Seed comparison state immediately upon load to prevent false-diff autosaves
      lastSavedJson.current = JSON.stringify(client); 
+     isHydratedRef.current = true; // Mark as hydrated
+     
      loadClient(client);
      if (redirect) setActiveTab('profile');
   };
 
   const handleSaveClient = useCallback(async (isAutoSave = false, overrideClient?: Client) => {
-     // Allow saving even when hidden to prevent data loss on tab switches
+     // 3. Block conditions
+     if (isAutoSave) {
+        if (!isHydratedRef.current) return; // Block if not hydrated
+        if (document.visibilityState !== 'visible') return; // Block if hidden
+     }
+     
+     // 3. Block if transfer in progress
+     if (transferringIds.size > 0) return;
+
      if (!user || (user.status !== 'approved' && user.status !== 'active')) return;
      
-     // STRICT LOCK: Prevent re-entry if already saving (even for autosave)
      if (isSavingRef.current) return;
 
      const clientData = overrideClient || generateClientObject();
      
-     if (transferringIds.has(clientData.id)) {
-        console.debug("Autosave Suppressed: Active Handover Lock in place.");
-        return;
-     }
-
      if (!clientData.profile.name) return; 
 
      const { lastUpdated: _ts, ...currentContent } = clientData;
@@ -189,6 +193,7 @@ const AppInner: React.FC = () => {
         lastSavedContent = rest;
      } catch (e) {}
 
+     // 4. Diff Check
      if (JSON.stringify(currentContent) === JSON.stringify(lastSavedContent)) {
         return; 
      }
@@ -203,12 +208,11 @@ const AppInner: React.FC = () => {
         setClients(prev => {
             const exists = prev.find(c => c.id === saved.id);
             const newList = exists ? prev.map(c => c.id === saved.id ? saved : c) : [...prev, saved];
-            localStorage.setItem(CLIENT_CACHE_KEY, JSON.stringify(newList)); // Sync Cache
+            localStorage.setItem(CLIENT_CACHE_KEY, JSON.stringify(newList));
             return newList;
         });
 
         if (isNewClient) {
-            // CRITICAL: Promote the newly generated ID to state so subsequent autosaves use it
             promoteToSaved(saved);
         }
 
@@ -225,11 +229,9 @@ const AppInner: React.FC = () => {
             setSaveStatus('error');
             toast.error(`Save Failed: ${e.message}`);
         } else {
-            // For autosave, suppress noisy auth errors, but log them
             if (e.message.includes('Session expired')) {
                 console.warn("Autosave paused: Session expired");
             } else {
-                // Keep legitimate errors visible
                 toast.error(`Sync: ${e.message}`);
             }
         }
@@ -239,11 +241,13 @@ const AppInner: React.FC = () => {
   }, [user, generateClientObject, transferringIds, clientId, promoteToSaved]);
 
   // --- RE-SYNC ON VISIBILITY CHANGE ---
-  // If user switches tabs/browsers and comes back, ensure we trigger a save if needed
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        handleSaveClient(true);
+        // Only trigger if we are hydrated
+        if (isHydratedRef.current) {
+            handleSaveClient(true);
+        }
       }
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
@@ -251,7 +255,6 @@ const AppInner: React.FC = () => {
   }, [handleSaveClient]);
 
   // --- UNIVERSAL AUTO-SAVE LOOP ---
-  // Listens to ALL client context state changes
   useEffect(() => {
      const timer = setTimeout(() => {
         handleSaveClient(true);
@@ -268,17 +271,19 @@ const AppInner: React.FC = () => {
     propertyState, 
     wealthState, 
     retirement, 
-    chatHistory, // Trigger save on chat history change
+    chatHistory,
     handleSaveClient
   ]);
 
   const handleUpdateGlobalClient = useCallback((updatedClient: Client) => {
       setClients(prev => {
           const newList = prev.map(c => c.id === updatedClient.id ? updatedClient : c);
-          localStorage.setItem(CLIENT_CACHE_KEY, JSON.stringify(newList)); // Sync Cache
+          localStorage.setItem(CLIENT_CACHE_KEY, JSON.stringify(newList));
           return newList;
       });
       if (updatedClient.id === clientId) {
+          // If we are updating the active client from CRM, update the seed to prevent revert loops
+          lastSavedJson.current = JSON.stringify(updatedClient);
           loadClient(updatedClient);
       }
       if (gridSaveDebounceRef.current) clearTimeout(gridSaveDebounceRef.current);
@@ -287,7 +292,6 @@ const AppInner: React.FC = () => {
               await db.saveClient(updatedClient, user?.id);
           } catch (e: any) {
               console.error("Background sync failed", e);
-              // Suppress noisy auth errors on background sync
               if (!e.message.includes('Session expired')) {
                   toast.error(`Auto-Save Failed: ${e.message}`);
               }
@@ -332,7 +336,6 @@ const AppInner: React.FC = () => {
     );
   }
 
-  // --- RESTRICTION GATE ---
   if (user && (user.status === 'pending' || user.status === 'rejected')) {
     return (
       <div className="min-h-screen bg-[#0B1120] flex flex-col items-center justify-center p-6 text-white relative overflow-hidden">
@@ -414,14 +417,17 @@ const AppInner: React.FC = () => {
             saveClient={() => handleSaveClient(false)}
             loadClient={handleLoadClient}
             deleteClient={async (id) => {
-                // Ensure we await this so errors propagate
                 try {
                     await db.deleteClient(id);
                     setClients(prev => prev.filter(c => c.id !== id));
-                    if (id === clientId) resetClient();
+                    if (id === clientId) {
+                       resetClient();
+                       // Reset hydration state on deletion of active client
+                       isHydratedRef.current = false;
+                       lastSavedJson.current = "";
+                    }
                     toast.success("Client deleted successfully.");
                 } catch (e: any) {
-                    // Re-throw so child components know it failed
                     throw e;
                 }
             }}

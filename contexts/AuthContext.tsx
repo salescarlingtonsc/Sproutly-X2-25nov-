@@ -1,4 +1,3 @@
-
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { UserProfile, SubscriptionTier } from '../types';
@@ -64,7 +63,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 status: 'active',
                 subscriptionTier: 'free', 
                 is_admin: false,
-                organizationId: 'org_default'
+                organizationId: 'org_default',
+                extraSlots: 0 // Added missing property
              };
              setUser(fallbackUser);
              setIsLoading(false); // <--- CRITICAL: Remove loading screen immediately
