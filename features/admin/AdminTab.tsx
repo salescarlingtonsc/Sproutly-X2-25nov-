@@ -16,8 +16,8 @@ import Modal from '../../components/ui/Modal';
 import { fetchGlobalActivity, Activity } from '../../lib/db/activities';
 
 const REPAIR_SQL = `
--- REPAIR SCRIPT V22.1: MULTI-TENANT CONFIGURATION
--- Creates settings table if missing and fixes policies.
+-- REPAIR SCRIPT V22.3: COMPREHENSIVE POLICY RESET
+-- Fixes "Policy already exists" errors by ensuring clean drops
 
 DO $$ 
 BEGIN
@@ -72,7 +72,7 @@ BEGIN
 END;
 $$;
 
--- NEW: Secure Client Transfer Function (Bypasses RLS for clean handovers)
+-- Secure Client Transfer Function
 CREATE OR REPLACE FUNCTION transfer_client_owner(p_client_id uuid, p_new_user_id uuid)
 RETURNS void
 LANGUAGE plpgsql
@@ -91,34 +91,53 @@ BEGIN
 END;
 $$;
 
--- 3. DROP LEGACY POLICIES
--- Clean sweep to prevent conflicts
+-- 3. DROP ALL POLICIES (Clean Slate - V22.3 Fix)
+-- Teams
 DROP POLICY IF EXISTS "Admins manage teams" ON teams;
 DROP POLICY IF EXISTS "Everyone can view teams" ON teams;
 DROP POLICY IF EXISTS "Teams_Read" ON teams;
 DROP POLICY IF EXISTS "Teams_Write" ON teams;
+DROP POLICY IF EXISTS "Teams_Insert" ON teams;
+DROP POLICY IF EXISTS "Teams_Update" ON teams;
+DROP POLICY IF EXISTS "Teams_Delete" ON teams;
 
+-- Fields
 DROP POLICY IF EXISTS "Fields_Owner_All" ON client_field_values;
 DROP POLICY IF EXISTS "Fields_Select" ON client_field_values;
 DROP POLICY IF EXISTS "Fields_Modify" ON client_field_values;
+DROP POLICY IF EXISTS "Fields_Insert" ON client_field_values;
+DROP POLICY IF EXISTS "Fields_Update" ON client_field_values;
+DROP POLICY IF EXISTS "Fields_Delete" ON client_field_values;
 
+-- Knowledge
 DROP POLICY IF EXISTS "Manage knowledge base" ON sproutly_knowledge;
 DROP POLICY IF EXISTS "Knowledge_Select" ON sproutly_knowledge;
 DROP POLICY IF EXISTS "Knowledge_Manage" ON sproutly_knowledge;
 DROP POLICY IF EXISTS "Knowledge_Read" ON sproutly_knowledge;
 DROP POLICY IF EXISTS "Knowledge_Write" ON sproutly_knowledge;
+DROP POLICY IF EXISTS "Knowledge_Insert" ON sproutly_knowledge;
+DROP POLICY IF EXISTS "Knowledge_Update" ON sproutly_knowledge;
+DROP POLICY IF EXISTS "Knowledge_Delete" ON sproutly_knowledge;
 
+-- Settings
 DROP POLICY IF EXISTS "Org_Settings_Read" ON organization_settings;
 DROP POLICY IF EXISTS "Org_Settings_Write" ON organization_settings;
 DROP POLICY IF EXISTS "Org_Settings_Update" ON organization_settings;
 DROP POLICY IF EXISTS "Org_Settings_Insert" ON organization_settings;
 
+-- Templates
 DROP POLICY IF EXISTS "Templates_Manage" ON message_templates;
+DROP POLICY IF EXISTS "Templates_Select" ON message_templates;
+DROP POLICY IF EXISTS "Templates_Insert" ON message_templates;
+DROP POLICY IF EXISTS "Templates_Update" ON message_templates;
+DROP POLICY IF EXISTS "Templates_Delete" ON message_templates;
 
+-- Files
 DROP POLICY IF EXISTS "Files_Select" ON client_files;
 DROP POLICY IF EXISTS "Files_Insert" ON client_files;
 DROP POLICY IF EXISTS "Files_Delete" ON client_files;
 
+-- Activities
 DROP POLICY IF EXISTS "Activities_Select" ON activities;
 DROP POLICY IF EXISTS "Activities_Insert" ON activities;
 DROP POLICY IF EXISTS "Activities_Delete" ON activities;
@@ -173,6 +192,35 @@ CREATE POLICY "Activities_Insert" ON activities FOR INSERT
 WITH CHECK ( user_id = (select auth.uid()) OR (get_my_claims()->>'is_admin')::boolean = true );
 CREATE POLICY "Activities_Delete" ON activities FOR DELETE
 USING ( user_id = (select auth.uid()) OR (get_my_claims()->>'is_admin')::boolean = true );
+
+-- 5. CLIENTS TABLE POLICIES (CRITICAL FIX for Sync Loops)
+DROP POLICY IF EXISTS "Users can view own clients" ON clients;
+DROP POLICY IF EXISTS "Users can update own clients" ON clients;
+DROP POLICY IF EXISTS "Users can insert own clients" ON clients;
+DROP POLICY IF EXISTS "Admins can delete clients" ON clients;
+DROP POLICY IF EXISTS "Clients_Select" ON clients;
+DROP POLICY IF EXISTS "Clients_Insert" ON clients;
+DROP POLICY IF EXISTS "Clients_Update" ON clients;
+DROP POLICY IF EXISTS "Clients_Delete" ON clients;
+
+-- Ensure RLS is enabled
+ALTER TABLE clients ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Clients_Select" ON clients FOR SELECT
+USING ( 
+    auth.uid() = user_id 
+    OR 
+    (get_my_claims()->>'is_admin')::boolean = true
+);
+
+CREATE POLICY "Clients_Insert" ON clients FOR INSERT
+WITH CHECK ( auth.uid() = user_id );
+
+CREATE POLICY "Clients_Update" ON clients FOR UPDATE
+USING ( auth.uid() = user_id OR (get_my_claims()->>'is_admin')::boolean = true );
+
+CREATE POLICY "Clients_Delete" ON clients FOR DELETE
+USING ( (get_my_claims()->>'is_admin')::boolean = true );
 
 NOTIFY pgrst, 'reload config';
 `;
@@ -501,7 +549,7 @@ const AdminTab: React.FC = () => {
           setDiagLog(prev => [...prev, line]);
       };
       try {
-          addLog(`DIAGNOSTIC START (V22.1): ${new Date().toISOString()}`);
+          addLog(`DIAGNOSTIC START (V22.3): ${new Date().toISOString()}`);
           let { data: sessionData } = await supabase.auth.getSession();
           if (!sessionData.session) {
               addLog("Session stale. Refreshing...", 'warn');
@@ -519,6 +567,25 @@ const AdminTab: React.FC = () => {
           const { error: setErr } = await supabase.from('organization_settings').select('id').limit(1);
           if (setErr) addLog("Settings Table Missing/Access Denied. Run SQL.", 'error');
           else addLog("Settings Table OK.", 'success');
+
+          // 5. Write Latency Check (Auto-Save Debug)
+          const testId = '00000000-0000-0000-0000-000000000000';
+          const start = Date.now();
+          const { error: writeErr } = await supabase.from('clients').upsert({
+              id: testId,
+              user_id: user.id,
+              data: { _diag: true },
+              updated_at: new Date().toISOString()
+          });
+          const duration = Date.now() - start;
+          
+          if (writeErr) {
+              addLog(`Write Test Failed (${duration}ms): ${writeErr.message}`, 'error');
+          } else {
+              addLog(`Write Test OK (${duration}ms). DB responding.`, 'success');
+              // Clean up
+              await supabase.from('clients').delete().eq('id', testId);
+          }
 
           setDiagStatus('success');
           addLog("SYSTEM CHECK COMPLETE.", 'success');
@@ -557,7 +624,7 @@ const AdminTab: React.FC = () => {
 
   const copyDebugSql = () => {
       navigator.clipboard.writeText(REPAIR_SQL);
-      toast.success("Repair SQL (V22.1) copied to clipboard.");
+      toast.success("Repair SQL (V22.3) copied to clipboard.");
   };
 
   if (loading && !isRepairOpen) return <div className="p-20 text-center"><div className="animate-spin w-10 h-10 border-4 border-indigo-600 border-t-transparent rounded-full mx-auto"></div><p className="mt-4 text-slate-400 text-sm animate-pulse">Syncing Admin Core...</p></div>;
@@ -678,21 +745,21 @@ const AdminTab: React.FC = () => {
         </div>
 
         <Modal 
-            isOpen={isRepairOpen} onClose={() => setIsRepairOpen(false)} title="System Diagnostics & Repair (V22.1)"
+            isOpen={isRepairOpen} onClose={() => setIsRepairOpen(false)} title="System Diagnostics & Repair (V22.3)"
             footer={
                <div className="flex gap-2 w-full">
                   <Button variant="ghost" onClick={() => setIsRepairOpen(false)}>Close</Button>
-                  <Button variant="secondary" onClick={copyDebugSql}>2. Copy SQL (V22.1)</Button>
+                  <Button variant="secondary" onClick={copyDebugSql}>2. Copy SQL (V22.3)</Button>
                   <Button variant="accent" onClick={runDiagnostics} isLoading={diagStatus === 'running'}>3. Run Check</Button>
                </div>
             }
         >
             <div className="p-4 bg-slate-900 rounded-xl text-white font-mono text-xs overflow-auto max-h-96">
                 <div className="mb-4 space-y-2">
-                    <p className="text-emerald-400 font-bold uppercase">Instructions (Deep Clean V22.1):</p>
+                    <p className="text-emerald-400 font-bold uppercase">Instructions (Deep Clean V22.3):</p>
                     <p>1. Click "Copy SQL" below.</p>
                     <p>2. Go to Supabase &gt; SQL Editor.</p>
-                    <p>3. Paste and Run. (This creates the Organization Settings table & fixes policies).</p>
+                    <p>3. Paste and Run. (This creates Settings table & Fixes Client RLS).</p>
                     <p>4. Check console for "System Check Complete".</p>
                 </div>
                 {diagLog.length > 0 && (
@@ -719,7 +786,7 @@ const AdminTab: React.FC = () => {
                         onClick={copyDebugSql}
                         className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-3 rounded-lg text-xs uppercase font-bold w-full flex items-center justify-center gap-2 shadow-lg"
                     >
-                        <span>📋</span> 1. Copy Repair SQL (V22.1)
+                        <span>📋</span> 1. Copy Repair SQL (V22.3)
                     </button>
                 </div>
             </div>
