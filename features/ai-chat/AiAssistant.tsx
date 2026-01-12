@@ -43,7 +43,7 @@ const AiAssistant: React.FC<AiAssistantProps> = ({ currentClient }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([DEFAULT_WELCOME]);
   const [input, setInput] = useState('');
   const [isThinking, setIsThinking] = useState(false);
-  const [useLite, setUseLite] = useState(false); 
+  const [useDeepReasoning, setUseDeepReasoning] = useState(false); // Default to Flash (Fast)
   
   const [isLiveActive, setIsLiveActive] = useState(false);
   const [isMicOn, setIsMicOn] = useState(false);
@@ -109,7 +109,7 @@ const AiAssistant: React.FC<AiAssistantProps> = ({ currentClient }) => {
           _organizational_knowledge: contextInjection
       };
       
-      const responseText = await chatWithFinancialContext(newHistory, textToSend, enhancedClientState, useLite);
+      const responseText = await chatWithFinancialContext(newHistory, textToSend, enhancedClientState, useDeepReasoning);
       const modelMsg: ChatMessage = { role: 'model', text: responseText || 'Insight unavailable.' };
       
       const finalHistory = [...newHistory, modelMsg];
@@ -153,7 +153,7 @@ const AiAssistant: React.FC<AiAssistantProps> = ({ currentClient }) => {
 
       /* Fix: Rely solely on sessionPromise resolves to send realtime input as per guidelines */
       const sessionPromise = ai.live.connect({
-         model: 'gemini-2.5-flash-native-audio-preview-09-2025',
+         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
          config: { 
             responseModalities: [Modality.AUDIO], 
             systemInstruction: `You are Sproutly AI. ${contextInjection} ${currentClient ? `Focus on client: ${currentClient.profile.name}` : 'No client selected, answer generally.'}` 
@@ -231,8 +231,8 @@ const AiAssistant: React.FC<AiAssistantProps> = ({ currentClient }) => {
         </div>
         {!isLiveActive && (
            <div className="flex bg-slate-800 p-1 rounded-lg">
-              <button onClick={() => setUseLite(false)} className={`flex-1 text-[10px] font-bold py-1.5 rounded-md transition-all ${!useLite ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'}`}>🌌 Quantum Analysis</button>
-              <button onClick={() => setUseLite(true)} className={`flex-1 text-[10px] font-bold py-1.5 rounded-md transition-all ${useLite ? 'bg-emerald-500 text-white shadow-sm' : 'text-slate-400 hover:text-white'}`}>⚡ Immediate Insight</button>
+              <button onClick={() => setUseDeepReasoning(false)} className={`flex-1 text-[10px] font-bold py-1.5 rounded-md transition-all ${!useDeepReasoning ? 'bg-emerald-500 text-white shadow-sm' : 'text-slate-400 hover:text-white'}`}>⚡ Flash Sync</button>
+              <button onClick={() => setUseDeepReasoning(true)} className={`flex-1 text-[10px] font-bold py-1.5 rounded-md transition-all ${useDeepReasoning ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'}`}>🌌 Deep Reasoning</button>
            </div>
         )}
       </div>
@@ -270,7 +270,9 @@ const AiAssistant: React.FC<AiAssistantProps> = ({ currentClient }) => {
             ))}
             {isThinking && (
                <div className="flex justify-start">
-                  <div className="bg-white text-gray-500 border border-gray-200 p-3 rounded-xl rounded-bl-none text-xs animate-pulse">{useLite ? '⚡ Processing...' : '🤔 Exploring logic...'}</div>
+                  <div className={`text-gray-500 border border-gray-200 p-3 rounded-xl rounded-bl-none text-xs animate-pulse ${useDeepReasoning ? 'bg-indigo-50 border-indigo-100' : 'bg-white'}`}>
+                      {useDeepReasoning ? '🤔 Analyzing strategic layers...' : '⚡ Processing...'}
+                  </div>
                </div>
             )}
             <div ref={messagesEndRef} />
@@ -283,7 +285,7 @@ const AiAssistant: React.FC<AiAssistantProps> = ({ currentClient }) => {
                <button onClick={startLiveSession} className="p-3 bg-indigo-50 text-indigo-600 rounded-xl hover:bg-indigo-100 transition-colors flex-shrink-0">🎙️</button>
                <div className="relative flex-1">
                   <input type="text" value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSend()} placeholder={currentClient ? "Ask Sproutly..." : "Ask general questions..."} disabled={isThinking} className="w-full pl-4 pr-10 py-3 bg-gray-100 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all" />
-                  <button onClick={() => handleSend()} disabled={!input.trim() || isThinking} className={`absolute right-2 top-2 p-1.5 text-white rounded-lg disabled:opacity-50 transition-colors ${useLite ? 'bg-emerald-500 hover:bg-emerald-600' : 'bg-indigo-600 hover:bg-indigo-700'}`}><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4"><path d="M3.105 2.289a.75.75 0 00-.826.95l1.414 4.925A2.001 2.001 0 005.694 10a2.001 2.001 0 00-1.999 1.836l-1.415 4.925a.75.75 0 00.826.95 28.896 28.896 0 0015.293-7.154.75.75 0 000-1.115A28.897 28.897 0 003.105 2.289z" /></svg></button>
+                  <button onClick={() => handleSend()} disabled={!input.trim() || isThinking} className={`absolute right-2 top-2 p-1.5 text-white rounded-lg disabled:opacity-50 transition-colors ${!useDeepReasoning ? 'bg-emerald-500 hover:bg-emerald-600' : 'bg-indigo-600 hover:bg-indigo-700'}`}><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4"><path d="M3.105 2.289a.75.75 0 00-.826.95l1.414 4.925A2.001 2.001 0 005.694 10a2.001 2.001 0 00-1.999 1.836l-1.415 4.925a.75.75 0 00.826.95 28.896 28.896 0 0015.293-7.154.75.75 0 000-1.115A28.897 28.897 0 003.105 2.289z" /></svg></button>
                </div>
             </div>
          </div>

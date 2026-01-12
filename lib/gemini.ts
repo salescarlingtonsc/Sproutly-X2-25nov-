@@ -3,11 +3,8 @@ import { GoogleGenAI, Type, Modality } from "@google/genai";
 
 const getAI = () => new GoogleGenAI({ apiKey: process.env.API_KEY });
 
-// ... existing code ...
-
-/**
- * STRATEGIC OUTREACH PROTOCOL ENGINE
- */
+// --- STRATEGIC OUTREACH PROTOCOL ENGINE ---
+// Uses Thinking Mode for psychological profiling and script generation.
 export const generateAutomatedPitch = async (clientData: any) => {
   const ai = getAI();
   const currentStatus = clientData?.followUp?.status || 'new';
@@ -27,7 +24,7 @@ export const generateAutomatedPitch = async (clientData: any) => {
     
     THINKING REQUIREMENTS:
     - Model the client's "Adherence Resistance" based on their current NPU level.
-    - Set thinkingBudget to 32768.
+    - Analyze the psychological triggers based on their job title and age.
   `;
 
   try {
@@ -63,9 +60,8 @@ export const generateAutomatedPitch = async (clientData: any) => {
   }
 };
 
-/**
- * MOMENTUM ANALYSIS ENGINE
- */
+// --- MOMENTUM ANALYSIS ENGINE ---
+// Uses Flash for speed.
 export const analyzeClientMomentum = async (clientData: any) => {
   const ai = getAI();
   const prompt = `
@@ -102,9 +98,7 @@ export const analyzeClientMomentum = async (clientData: any) => {
   }
 };
 
-/**
- * INVESTMENT REPORT GENERATOR
- */
+// --- INVESTMENT REPORT GENERATOR ---
 export const generateInvestmentReport = async (clientData: any) => {
   const ai = getAI();
   const prompt = `
@@ -131,9 +125,8 @@ export const generateInvestmentReport = async (clientData: any) => {
   }
 };
 
-/**
- * QUANTUM AUDIT ENGINE
- */
+// --- QUANTUM AUDIT ENGINE ---
+// Uses Thinking Mode for deep analysis.
 export const runQuantumDeepDive = async (clientData: any) => {
   const ai = getAI();
   const prompt = `
@@ -178,6 +171,7 @@ export const runQuantumDeepDive = async (clientData: any) => {
   } catch (error) { throw error; }
 };
 
+// --- QUANTUM LEAD SCORING ---
 export const calculateLeadScore = async (clientData: any) => {
   const ai = getAI();
   const prompt = `CALCULATE CLOSING PROPENSITY for client: ${JSON.stringify(clientData)}. Use reasoning to model NPU decay.`;
@@ -255,10 +249,12 @@ export const generateNextBestActions = async (clients: any[]) => {
   } catch (error) { return []; }
 };
 
-export const chatWithFinancialContext = async (history: any[], userMessage: string, clientState: any, useLite: boolean = false) => {
+export const chatWithFinancialContext = async (history: any[], userMessage: string, clientState: any, useDeepReasoning: boolean = false) => {
   const ai = getAI();
-  const model = useLite ? "gemini-3-flash-preview" : "gemini-3-pro-preview";
-  const config = useLite ? {} : { thinkingConfig: { thinkingBudget: 32768 } };
+  
+  // Model selection based on task depth
+  const model = useDeepReasoning ? "gemini-3-pro-preview" : "gemini-3-flash-preview";
+  const config = useDeepReasoning ? { thinkingConfig: { thinkingBudget: 32768 } } : {};
   
   const systemInstruction = `
     You are Sproutly AI, an expert financial advisor co-pilot.

@@ -20,7 +20,14 @@ const CpfTab: React.FC = () => {
   const [cashTopUp, setCashTopUp] = useState(0);
   
   // Withdrawal Form State
-  const [newWithdrawal, setNewWithdrawal] = useState({
+  const [newWithdrawal, setNewWithdrawal] = useState<{
+    name: string;
+    amount: string;
+    account: 'oa' | 'sa' | 'ma';
+    type: 'monthly' | 'yearly' | 'onetime';
+    startAge: string;
+    endAge: string;
+  }>({
     name: '',
     amount: '',
     account: 'oa',
@@ -38,7 +45,7 @@ const CpfTab: React.FC = () => {
 
   const handleAddWithdrawal = () => {
     if (!newWithdrawal.name || !newWithdrawal.amount) return;
-    const item = { ...newWithdrawal, id: Date.now(), startAge: newWithdrawal.startAge || age };
+    const item = { ...newWithdrawal, id: Date.now(), startAge: newWithdrawal.startAge || age.toString() };
     setCpfState({
       ...cpfState,
       withdrawals: [...(withdrawals || []), item]
@@ -250,7 +257,7 @@ const CpfTab: React.FC = () => {
                </div>
                <div className="w-20">
                   <label className="block text-[9px] font-bold text-slate-400 uppercase mb-1">Acct</label>
-                  <select value={newWithdrawal.account} onChange={e => setNewWithdrawal({...newWithdrawal, account: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-lg px-1 py-1.5 text-xs font-bold outline-none">
+                  <select value={newWithdrawal.account} onChange={e => setNewWithdrawal({...newWithdrawal, account: e.target.value as any})} className="w-full bg-slate-50 border border-slate-200 rounded-lg px-1 py-1.5 text-xs font-bold outline-none">
                      <option value="oa">OA</option>
                      <option value="sa">SA</option>
                      <option value="ma">MA</option>
@@ -258,7 +265,7 @@ const CpfTab: React.FC = () => {
                </div>
                <div className="w-24">
                   <label className="block text-[9px] font-bold text-slate-400 uppercase mb-1">Freq</label>
-                  <select value={newWithdrawal.type} onChange={e => setNewWithdrawal({...newWithdrawal, type: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-lg px-1 py-1.5 text-xs font-bold outline-none">
+                  <select value={newWithdrawal.type} onChange={e => setNewWithdrawal({...newWithdrawal, type: e.target.value as any})} className="w-full bg-slate-50 border border-slate-200 rounded-lg px-1 py-1.5 text-xs font-bold outline-none">
                      <option value="monthly">Monthly</option>
                      <option value="yearly">Yearly</option>
                      <option value="onetime">One-Time</option>

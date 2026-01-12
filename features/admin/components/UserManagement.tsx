@@ -247,13 +247,19 @@ export const UserManagement: React.FC<UserManagementProps> = ({ advisors, teams,
   const isDirector = currentUser.role === 'director' || isSuperAdmin;
   const isManager = currentUser.role === 'manager';
 
+  // Add logic to fetch name based on selectedOrgId
   useEffect(() => {
-      adminDb.getSystemSettings().then(res => {
-          if (res?.appSettings && (res.appSettings as any).agencyName) {
-              setSystemOrgName((res.appSettings as any).agencyName);
+      const fetchOrgSettings = async () => {
+          const target = selectedOrgId === 'all' ? 'org_default' : selectedOrgId;
+          const res = await adminDb.getSystemSettings(target);
+          if (res?.appSettings && res.appSettings.agencyName) {
+              setSystemOrgName(res.appSettings.agencyName);
+          } else {
+              setSystemOrgName(target === 'org_default' ? 'Sproutly Organization' : target);
           }
-      });
-  }, []);
+      };
+      fetchOrgSettings();
+  }, [selectedOrgId]);
 
   useEffect(() => {
       if (currentUser.organizationId && !isSuperAdmin) {
@@ -569,7 +575,14 @@ export const UserManagement: React.FC<UserManagementProps> = ({ advisors, teams,
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden min-h-[400px]">
             <div className="bg-slate-50 px-6 py-4 border-b border-slate-100 flex justify-between items-center">
                 <div className="flex gap-4 items-center">
-                    <h2 className="font-semibold text-slate-700">{isManager ? 'My Unit Roster' : 'Agency Roster'}</h2>
+                    <div>
+                        <h2 className="font-semibold text-slate-700">{isManager ? 'My Unit Roster' : 'Agency Roster'}</h2>
+                        {!isManager && (
+                            <div className="text-[10px] text-indigo-500 font-bold uppercase tracking-widest mt-0.5">
+                                {systemOrgName}
+                            </div>
+                        )}
+                    </div>
                     {/* View Toggles */}
                     <div className="flex bg-white rounded-lg border border-slate-200 p-1 shadow-sm">
                        <button onClick={() => setActiveTab('users')} className={`px-3 py-1.5 rounded text-xs font-bold transition-all ${activeTab === 'users' ? 'bg-indigo-50 text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>List View</button>
@@ -661,6 +674,7 @@ export const UserManagement: React.FC<UserManagementProps> = ({ advisors, teams,
              </div>
           }
        >
+          {/* ... (Modal content remains unchanged) ... */}
           <div className="space-y-6">
              {/* NEW ORGANIZATION FORM */}
              {modalType === 'new_org' ? (

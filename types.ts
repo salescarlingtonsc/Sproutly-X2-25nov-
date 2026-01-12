@@ -196,7 +196,7 @@ export interface CashflowState {
     name: string;
     amount: string;
     type: 'recurring' | 'onetime';
-    frequency: 'monthly' | 'yearly';
+    frequency: 'monthly' | 'quarterly' | 'semi_annual' | 'yearly';
     startAge: string | number;
     startMonth?: number;
     endAge?: string | number;
@@ -207,7 +207,7 @@ export interface CashflowState {
     name: string;
     amount: string;
     type: 'recurring' | 'onetime';
-    frequency: 'monthly' | 'yearly';
+    frequency: 'monthly' | 'quarterly' | 'semi_annual' | 'yearly';
     startAge: string | number;
     startMonth?: number;
     endAge?: string | number;

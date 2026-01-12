@@ -1,3 +1,4 @@
+
 import React, { useState, useMemo, useEffect } from 'react';
 import { Client, Product, Advisor, WhatsAppTemplate, AppSettings, Sale, ContactStatus } from '../../types';
 import { AnalyticsPanel } from './components/AnalyticsPanel';
@@ -19,6 +20,7 @@ import { db } from '../../lib/db';
 import { logActivity } from '../../lib/db/activities';
 import { useToast } from '../../contexts/ToastContext';
 import { adminDb } from '../../lib/db/admin';
+import { calculateLeadScore } from '../../lib/gemini';
 
 // Fallback Mock Data
 const MOCK_PRODUCTS: Product[] = [
@@ -73,6 +75,9 @@ const CrmTab: React.FC<CrmTabProps> = ({
   const [isCallSessionOpen, setIsCallSessionOpen] = useState(false);
   const [isTemplateManagerOpen, setIsTemplateManagerOpen] = useState(false);
   const [isImportOpen, setIsImportOpen] = useState(false);
+  
+  // Quantum Logic State
+  const [isQuantumThinking, setIsQuantumThinking] = useState(false);
   
   // All Advisors List (For Filter)
   const [allAdvisors, setAllAdvisors] = useState<{id: string, name: string}[]>([]);
@@ -241,6 +246,34 @@ const CrmTab: React.FC<CrmTabProps> = ({
       }
   };
 
+  const executeQuantumStrategy = async () => {
+      if (selectedIds.size !== 1) {
+          toast.info("Select exactly 1 client for Quantum Strategy analysis.");
+          return;
+      }
+      const clientId = Array.from(selectedIds)[0];
+      const client = clients.find(c => c.id === clientId);
+      if (!client) return;
+
+      setIsQuantumThinking(true);
+      toast.info("Initializing 32K Thinking Protocol...");
+      
+      try {
+          const insight = await calculateLeadScore(client);
+          toast.success("Strategy Realigned.");
+          // Update client with insight
+          onUpdateGlobalClient({
+              ...client,
+              momentumScore: insight.score,
+              nextAction: `[QUANTUM]: ${insight.primary_reason}`
+          });
+      } catch (e) {
+          toast.error("Quantum Logic failed. Signal unstable.");
+      } finally {
+          setIsQuantumThinking(false);
+      }
+  };
+
   const handleClientUpdate = (updated: Client) => {
       onUpdateGlobalClient(updated);
   };
@@ -370,7 +403,7 @@ const CrmTab: React.FC<CrmTabProps> = ({
              )}
 
              <div className="hidden md:flex bg-white border border-slate-200 rounded-xl items-center p-1 shadow-sm ml-2 shrink-0">
-                 <button onClick={() => setViewMode('cards')} className={`p-2 rounded-lg transition-all ${viewMode === 'cards' ? 'bg-slate-100 text-slate-900 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`} title="Card View"><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" /></svg></button>
+                 <button onClick={() => setViewMode('cards')} className={`p-2 rounded-lg transition-all ${viewMode === 'cards' ? 'bg-slate-100 text-slate-900 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`} title="Card View"><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 01-2-2v-2z" /></svg></button>
                  <button onClick={() => setViewMode('list')} className={`p-2 rounded-lg transition-all ${viewMode === 'list' ? 'bg-slate-100 text-slate-900 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`} title="List View"><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg></button>
              </div>
          </div>
@@ -494,6 +527,15 @@ const CrmTab: React.FC<CrmTabProps> = ({
              </div>
              <div className="h-4 w-px bg-slate-300"></div>
              <div className="flex gap-2">
+                {selectedIds.size === 1 && (
+                    <button 
+                        onClick={executeQuantumStrategy} 
+                        disabled={isQuantumThinking}
+                        className="px-3 py-1.5 rounded-full text-xs font-bold bg-indigo-600 text-white hover:bg-indigo-700 transition-all flex items-center gap-2 shadow-lg shadow-indigo-100"
+                    >
+                       {isQuantumThinking ? <span className="animate-spin">🧠</span> : <span>✨ Strategy</span>}
+                    </button>
+                )}
                 <button onClick={() => setIsBulkAssignOpen(true)} className="px-3 py-1.5 rounded-full text-xs font-bold bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition-colors">Assign To...</button>
                 {canDeleteClient && (
                     <button onClick={executeBulkDelete} disabled={isBulkProcessing} className="px-3 py-1.5 rounded-full text-xs font-bold bg-red-50 text-red-600 hover:bg-red-100 transition-colors flex items-center gap-2">

@@ -106,7 +106,7 @@ const AnalyticsTab: React.FC<AnalyticsTabProps> = ({ clients }) => {
                    disabled={!selectedClientForAI || loadingAi} 
                    className="w-full py-6 bg-slate-900 text-white font-black text-[10px] uppercase tracking-[0.2em] rounded-2xl shadow-2xl hover:bg-indigo-950 disabled:opacity-20 transition-all active:scale-[0.97]"
                 >
-                  {loadingAi ? 'Initializing Logic Bridge...' : 'Execute Deep Reasoning'}
+                  {loadingAi ? 'Initiating Logic Chain...' : 'Execute Deep Reasoning'}
                 </button>
               </div>
             </div>

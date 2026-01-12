@@ -212,15 +212,14 @@ export const db = {
     if (!supabase) return 0;
     
     const payloads = leads.map(lead => {
-      // Validate UUID format or generate new one
+      // Robust UUID Check
       const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      // If valid UUID use it, else generate new
       const id = (lead.id && uuidRegex.test(lead.id)) ? lead.id : crypto.randomUUID();
       
-      // Merge INITIAL_PROFILE with imported profile data to ensure structure
       const mergedProfile = {
           ...INITIAL_PROFILE,
           ...(lead.profile || {}),
-          // Ensure core identity fields are synced
           name: lead.name || lead.profile?.name || 'Unnamed Lead',
           email: lead.email || lead.profile?.email || '',
           phone: lead.phone || lead.profile?.phone || ''
@@ -228,9 +227,8 @@ export const db = {
 
       return {
         id,
-        user_id: targetUserId,
+        user_id: targetUserId, // IMPORTANT: Sets row ownership
         data: {
-          // 1. Spread Default States First
           expenses: INITIAL_EXPENSES,
           retirement: INITIAL_RETIREMENT,
           cpfState: INITIAL_CPF,
@@ -239,12 +237,10 @@ export const db = {
           investorState: INITIAL_INVESTOR,
           propertyState: INITIAL_PROPERTY,
           wealthState: INITIAL_WEALTH,
-          followUp: { status: lead.status || 'new' },
+          followUp: { status: lead.status || lead.followUp?.status || 'new' },
           
-          // 2. Spread Imported Lead Data (This overrides defaults with imported values like jobTitle, goals)
           ...lead,
           
-          // 3. Enforce Critical System Fields
           id,
           profile: mergedProfile,
           lastUpdated: new Date().toISOString(),
@@ -255,8 +251,13 @@ export const db = {
       };
     });
 
-    const { error } = await supabase.from('clients').insert(payloads);
-    if (error) throw error;
+    const { error, count } = await supabase.from('clients').insert(payloads, { count: 'exact' });
+    
+    if (error) {
+        console.error("Bulk Insert Error:", error);
+        throw new Error(error.message);
+    }
+    
     return payloads.length;
   },
 
@@ -280,37 +281,40 @@ export const db = {
           console.warn("Manual cascade warning:", err);
       }
 
-      // 2. Attempt Standard Delete
+      // 2. Attempt Standard Delete WITH TIMEOUT to prevent infinite lock waits
       console.log("Attempting Standard Delete...");
-      const { error, data } = await supabase
+      
+      // We use Promise.race to enforce a 5s timeout on the delete call
+      const deletePromise = supabase
         .from('clients')
         .delete()
         .eq('id', clientId)
         .select('id');
-      
-      // 3. AUTO-FALLBACK: If failed or returned 0 rows (RLS blocked), try Superuser RPC
-      if (error || !data || data.length === 0) {
-          console.warn("Standard delete blocked/failed. Engaging Superuser Protocol...");
-          
-          if (error && error.code !== '42501') {
-             console.error("Standard Delete Error:", error);
-          }
+        
+      const timeoutPromise = new Promise<{ error: any; data: any }>((resolve) => 
+          setTimeout(() => resolve({ error: { message: "Database Lock Timeout" }, data: null }), 5000)
+      );
 
-          // Call the V10.4 RPC function
+      const { error, data } = await Promise.race([deletePromise, timeoutPromise]);
+      
+      // 3. AUTO-FALLBACK: If failed, timed out, or returned 0 rows (RLS blocked), try Superuser RPC
+      if (error || !data || data.length === 0) {
+          console.warn(`Standard delete failed/blocked (${error?.message || 'No Rows'}). Engaging Superuser Protocol...`);
+          
+          // Call the RPC function (V26.0)
           const { data: rpcData, error: rpcError } = await supabase.rpc('delete_client_admin', { 
               target_client_id: clientId 
           });
 
           if (rpcError) {
               console.error("Nuclear Delete Failed:", rpcError);
-              throw new Error(`DELETE FAILED: ${rpcError.message}. Ensure you have run the 'DB Repair' script (V10.4) in Admin tab.`);
+              throw new Error(`DELETE FAILED: ${rpcError.message}. The database might be locked. Please refresh and try Admin Repair.`);
           }
 
           if (rpcData === true) {
               console.log("Superuser Delete Successful.");
               return; 
           } else {
-              // If RPC returned false, it likely means ID wasn't found (already deleted?)
               console.warn("Superuser Delete returned false (ID not found?). Assuming success.");
               return;
           }

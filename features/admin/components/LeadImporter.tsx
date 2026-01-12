@@ -1,10 +1,13 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { useToast } from '../../../contexts/ToastContext';
 import Modal from '../../../components/ui/Modal';
 import Button from '../../../components/ui/Button';
+import { GoogleGenAI } from '@google/genai';
 import { Advisor, Client } from '../../../types';
-import { INITIAL_PROFILE, INITIAL_CRM_STATE } from '../../../contexts/ClientContext';
-import { useToast } from '../../../contexts/ToastContext';
+import { INITIAL_PROFILE, INITIAL_CRM_STATE, INITIAL_EXPENSES, INITIAL_CPF, INITIAL_CASHFLOW, INITIAL_INSURANCE, INITIAL_INVESTOR, INITIAL_PROPERTY, INITIAL_WEALTH, INITIAL_RETIREMENT } from '../../../contexts/ClientContext';
+import { useAuth } from '../../../contexts/AuthContext';
+import { adminDb } from '../../../lib/db/admin';
 
 interface LeadImporterProps {
   advisors: Advisor[];
@@ -14,30 +17,57 @@ interface LeadImporterProps {
 
 const DESTINATION_FIELDS = [
   { key: 'name', label: 'Full Name', required: true },
-  { key: 'phone', label: 'Phone', required: false },
-  { key: 'email', label: 'Email', required: false },
-  { key: 'company', label: 'Company / Job Title', required: false },
-  { key: 'status', label: 'Status', required: false },
-  { key: 'notes', label: 'Notes / Context', required: false },
-  { key: 'source', label: 'Source / Platform', required: false },
+  { key: 'phone', label: 'Phone Number', required: true },
+  { key: 'email', label: 'Email Address' },
+  { key: 'company', label: 'Company / Job' },
+  { key: 'jobTitle', label: 'Job Title' },
+  { key: 'gender', label: 'Gender' },
+  { key: 'dob', label: 'Date of Birth' },
+  { key: 'monthlyInvestmentAmount', label: 'Savings/Investment' },
+  { key: 'retirementAge', label: 'Retirement Age' },
+  { key: 'goals', label: 'Goals / Context' },
+  { key: 'status', label: 'Status' },
+  { key: 'source', label: 'Platform Source' },
+  { key: 'campaign', label: 'Campaign' },
+  { key: 'notes', label: 'Notes' }
 ];
 
 export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onClose, onImport }) => {
+  const { user } = useAuth();
   const toast = useToast();
+  
   const [step, setStep] = useState<'input' | 'mapping' | 'preview'>('input');
   const [rawText, setRawText] = useState('');
   const [headers, setHeaders] = useState<string[]>([]);
   const [rows, setRows] = useState<string[][]>([]);
   const [mappings, setMappings] = useState<Record<string, string>>({});
-  const [targetAdvisorId, setTargetAdvisorId] = useState<string>('');
+  const [isMappingAi, setIsMappingAi] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  
+  const [targetAdvisorId, setTargetAdvisorId] = useState('');
+  const [selectedCampaign, setSelectedCampaign] = useState('');
+  const [campaignOptions, setCampaignOptions] = useState<string[]>([]);
 
+  // Safe UUID Generator
   const generateUUID = () => {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+      try { return crypto.randomUUID(); } catch(e) {}
+    }
     return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
       var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
       return v.toString(16);
     });
   };
+
+  useEffect(() => {
+    const loadCampaigns = async () => {
+        const settings = await adminDb.getSystemSettings(user?.organizationId);
+        if (settings?.appSettings?.campaigns) {
+            setCampaignOptions(settings.appSettings.campaigns);
+        }
+    };
+    loadCampaigns();
+  }, [user]);
 
   const handleParse = () => {
     if (!rawText.trim()) {
@@ -48,31 +78,119 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onClose, o
     const lines = rawText.trim().split('\n');
     const delimiter = lines[0].includes('\t') ? '\t' : ',';
     
-    const parsedHeaders = lines[0].split(delimiter).map(h => h.trim().replace(/^"|"$/g, ''));
-    const parsedRows = lines.slice(1)
+    let parsedHeaders = lines[0].split(delimiter).map(h => h.trim().replace(/^"|"$/g, ''));
+    let parsedRows = lines.slice(1)
         .map(line => line.split(delimiter).map(cell => cell.trim().replace(/^"|"$/g, '')))
-        .filter(row => row.length > 1 && row.some(cell => cell));
+        .filter(row => row.length > 0 && row.some(cell => cell));
 
-    setHeaders(parsedHeaders);
-    setRows(parsedRows);
+    // Smart detection for headerless data
+    const firstRowLooksLikeData = parsedHeaders.some(h => 
+        h.includes('p:+') || 
+        h.match(/\d{1,2}\/\d{1,2}\/\d{2,4}/) || 
+        h === 'ig' || h === 'fb' ||
+        h.includes('$') ||
+        (parsedHeaders.length > 3 && !h.toLowerCase().includes('name') && !h.toLowerCase().includes('email'))
+    );
 
-    // INTELLIGENT AUTO-MAPPING
+    let finalHeaders = parsedHeaders;
+    let finalRows = parsedRows;
+    let isHeaderless = false;
+
+    if (lines.length > 0 && (parsedRows.length === 0 || firstRowLooksLikeData)) {
+        finalRows = lines.map(line => line.split(delimiter).map(cell => cell.trim().replace(/^"|"$/g, ''))).filter(row => row.length > 0);
+        const colCount = finalRows[0]?.length || 0;
+        finalHeaders = Array.from({ length: colCount }, (_, i) => `Column ${i + 1}`);
+        isHeaderless = true;
+        toast.info("Raw data detected. Switched to 'Headerless' mode.");
+    }
+
+    if (finalRows.length === 0) {
+        toast.error("No valid data rows found.");
+        return;
+    }
+
+    setHeaders(finalHeaders);
+    setRows(finalRows);
+
     const newMappings: Record<string, string> = {};
-    parsedHeaders.forEach((header, index) => {
-        const h = header.toLowerCase().replace(/_/g, ' '); 
+    
+    // Heuristic Mapping
+    finalHeaders.forEach((header, index) => {
+        const h = header.toLowerCase().trim().replace(/_/g, ' '); 
         const idxStr = index.toString();
         
-        if (h.includes('name')) newMappings['name'] = idxStr;
+        if (h.includes('full name') || h === 'name' || h === 'full_name') newMappings['name'] = idxStr;
         else if (h.includes('phone') || h.includes('mobile')) newMappings['phone'] = idxStr;
         else if (h.includes('email')) newMappings['email'] = idxStr;
-        else if (h.includes('company') || h.includes('job') || h.includes('title')) newMappings['company'] = idxStr;
+        else if (h.includes('gender')) newMappings['gender'] = idxStr;
+        else if (h.includes('birth') || h.includes('dob')) newMappings['dob'] = idxStr;
+        else if (h.includes('job') || h.includes('occupation')) newMappings['jobTitle'] = idxStr;
+        else if (h.includes('company')) newMappings['company'] = idxStr;
+        else if (h.includes('savings') || h.includes('investment')) newMappings['monthlyInvestmentAmount'] = idxStr;
+        else if ((h.includes('retire') && h.includes('age'))) newMappings['retirementAge'] = idxStr;
+        else if (h.includes('goal') || h.includes('win')) newMappings['goals'] = idxStr;
         else if (h.includes('status') || h.includes('stage')) newMappings['status'] = idxStr;
-        else if (h.includes('note') || h.includes('remarks') || h.includes('context')) newMappings['notes'] = idxStr;
         else if (h.includes('source') || h.includes('platform')) newMappings['source'] = idxStr;
+        else if (h.includes('campaign')) newMappings['campaign'] = idxStr;
     });
 
     setMappings(newMappings);
     setStep('mapping');
+
+    // AUTO-TRIGGER AI IF HEADERLESS
+    if (isHeaderless) {
+        setTimeout(() => executeAiMapping(finalHeaders, finalRows, newMappings), 100);
+    }
+  };
+
+  const executeAiMapping = async (currentHeaders: string[], currentRows: string[][], currentMappings: Record<string, string>) => {
+    setIsMappingAi(true);
+    try {
+        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        const sampleRow = currentRows.length > 0 ? currentRows[0].join(' | ') : '';
+        
+        const prompt = `
+            Analyze this raw data row and map it to CRM fields.
+            Sample Data Row: "${sampleRow}"
+            
+            Target CRM Fields: ${JSON.stringify(DESTINATION_FIELDS.map(f => f.key))}
+            
+            Return JSON object: { [fieldKey]: index_integer }
+            
+            Rules:
+            - "p:+65..." or "91234567" -> 'phone'
+            - "$1000..." -> 'monthlyInvestmentAmount'
+            - "ig", "fb" -> 'source'
+            - Date -> 'dob'
+            - Name-like string -> 'name'
+            - Job title -> 'jobTitle'
+        `;
+
+        const response = await ai.models.generateContent({
+            model: 'gemini-3-flash-preview',
+            contents: prompt,
+            config: { responseMimeType: "application/json" }
+        });
+
+        const mappingResult = JSON.parse(response.text || '{}');
+        const newMappings = { ...currentMappings };
+        
+        Object.entries(mappingResult).forEach(([key, val]) => {
+            if (val !== undefined && val !== null && String(val) !== '') {
+                if (!isNaN(Number(val))) {
+                    newMappings[key] = String(val);
+                }
+            }
+        });
+
+        setMappings(newMappings);
+        toast.success("AI Auto-Mapped Columns");
+    } catch (e) {
+        // Silent fail on AI, user can manual map
+        console.error("AI map fail", e);
+    } finally {
+        setIsMappingAi(false);
+    }
   };
 
   const getMappedValue = (row: string[], fieldKey: string) => {
@@ -97,10 +215,19 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onClose, o
     setIsProcessing(true);
     try {
       const newClients = rows.map(row => {
-        const name = getMappedValue(row, 'name') || 'Unknown Lead';
+        // Fallback Name if not mapped
+        const rawName = getMappedValue(row, 'name');
+        const name = rawName || `Lead ${cleanPhoneNumber(getMappedValue(row, 'phone')) || 'Unknown'}`;
+        
         const phone = cleanPhoneNumber(getMappedValue(row, 'phone'));
         const email = getMappedValue(row, 'email');
+        const gender = getMappedValue(row, 'gender').toLowerCase().includes('fem') ? 'female' : 'male';
+        const jobTitle = getMappedValue(row, 'jobTitle');
         const company = getMappedValue(row, 'company');
+        const savings = getMappedValue(row, 'monthlyInvestmentAmount').replace(/[^\d]/g, '');
+        const retireAge = getMappedValue(row, 'retirementAge').replace(/[^\d]/g, '') || '65';
+        const goals = getMappedValue(row, 'goals');
+        const campaignCol = getMappedValue(row, 'campaign');
         const statusRaw = getMappedValue(row, 'status').toLowerCase();
         const notes = getMappedValue(row, 'notes');
         const platform = getMappedValue(row, 'source') || 'Import';
@@ -108,13 +235,25 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onClose, o
         let status = 'new';
         if (statusRaw.includes('contact')) status = 'contacted';
         if (statusRaw.includes('client')) status = 'client';
-        if (statusRaw.includes('lost')) status = 'not_keen';
 
         const id = generateUUID();
         const now = new Date().toISOString();
 
+        const tags = [];
+        if (selectedCampaign) tags.push(`Campaign: ${selectedCampaign}`);
+        else if (campaignCol) tags.push(`Campaign: ${campaignCol}`);
+
         return {
             ...INITIAL_CRM_STATE,
+            expenses: INITIAL_EXPENSES,
+            cpfState: INITIAL_CPF,
+            cashflowState: INITIAL_CASHFLOW,
+            insuranceState: INITIAL_INSURANCE,
+            investorState: INITIAL_INVESTOR,
+            propertyState: INITIAL_PROPERTY,
+            wealthState: INITIAL_WEALTH,
+            retirement: INITIAL_RETIREMENT,
+            customExpenses: [],
             id,
             advisorId: targetAdvisorId,
             _ownerId: targetAdvisorId,
@@ -122,13 +261,26 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onClose, o
             phone,
             email,
             company,
+            jobTitle,
             platform,
+            goals,
+            retirementAge: parseInt(retireAge, 10),
             lastUpdated: now,
             lastContact: now,
-            profile: { ...INITIAL_PROFILE, name, phone, email },
+            stage: 'New Lead',
+            profile: { 
+                ...INITIAL_PROFILE, 
+                name, phone, email, 
+                gender: gender as any,
+                jobTitle,
+                monthlyInvestmentAmount: savings,
+                retirementAge: retireAge,
+                tags 
+            },
+            tags: tags,
             followUp: { status },
             notes: notes ? [{ id: `note_${id}`, content: notes, date: now, author: 'Import' }] : []
-        };
+        } as Client;
       });
 
       onImport(newClients);
@@ -156,7 +308,9 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onClose, o
             {step === 'mapping' && (
                 <>
                     <Button variant="ghost" onClick={() => setStep('input')}>Back</Button>
-                    <Button variant="primary" onClick={() => setStep('preview')}>Next: Preview</Button>
+                    <Button variant="primary" onClick={() => setStep('preview')} disabled={!mappings['name'] && !mappings['phone']}>
+                        {(!mappings['name'] && !mappings['phone']) ? 'Map Name or Phone' : 'Next: Preview'}
+                    </Button>
                 </>
             )}
             {step === 'preview' && (
@@ -187,23 +341,34 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onClose, o
 
         {step === 'mapping' && (
             <div className="space-y-4">
-                <div className="bg-indigo-50 p-3 rounded-lg text-xs text-indigo-700 mb-4">
-                    Confirm how your columns match the system fields.
+                <div className="flex justify-between items-center bg-indigo-50 p-3 rounded-lg">
+                    <p className="text-xs text-indigo-700 font-medium">
+                        {isMappingAi ? '🤖 AI is analyzing columns...' : 'Verify column mapping.'}
+                    </p>
+                    <button 
+                        onClick={() => executeAiMapping(headers, rows, mappings)} 
+                        disabled={isMappingAi}
+                        className="text-[10px] font-bold bg-white text-indigo-600 px-3 py-1.5 rounded-lg shadow-sm hover:bg-indigo-50 transition-colors flex items-center gap-1 border border-indigo-100"
+                    >
+                        {isMappingAi ? 'Scanning...' : '✨ AI Re-Map'}
+                    </button>
                 </div>
-                <div className="grid grid-cols-2 gap-4 max-h-[400px] overflow-y-auto">
+                <div className="grid grid-cols-2 gap-4 max-h-[400px] overflow-y-auto custom-scrollbar">
                     {DESTINATION_FIELDS.map(field => (
                         <div key={field.key} className="space-y-1">
-                            <label className="text-[10px] font-bold text-slate-500 uppercase">
+                            <label className={`text-[10px] font-bold uppercase ${field.required && !mappings[field.key] ? 'text-red-500' : 'text-slate-500'}`}>
                                 {field.label} {field.required && '*'}
                             </label>
                             <select
-                                className="w-full p-2 rounded border border-slate-300 text-xs"
+                                className={`w-full p-2 rounded border text-xs ${mappings[field.key] ? 'bg-indigo-50 border-indigo-200 text-indigo-800' : 'border-slate-300'}`}
                                 value={mappings[field.key] || ''}
                                 onChange={(e) => setMappings({...mappings, [field.key]: e.target.value})}
                             >
                                 <option value="">(Skip)</option>
                                 {headers.map((h, i) => (
-                                    <option key={i} value={i}>{h}</option>
+                                    <option key={i} value={i}>
+                                        {h} {rows[0] ? `(${rows[0][i]?.substring(0, 15)}...)` : ''}
+                                    </option>
                                 ))}
                             </select>
                         </div>
@@ -214,18 +379,33 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onClose, o
 
         {step === 'preview' && (
             <div className="space-y-6">
-                <div>
-                    <label className="block text-xs font-bold text-slate-700 uppercase mb-2">Assign To Advisor</label>
-                    <select 
-                        className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm font-bold text-slate-900 outline-none focus:ring-2 focus:ring-indigo-500"
-                        value={targetAdvisorId}
-                        onChange={(e) => setTargetAdvisorId(e.target.value)}
-                    >
-                        <option value="">-- Select Target --</option>
-                        {advisors.map(adv => (
-                            <option key={adv.id} value={adv.id}>{adv.name} ({adv.email})</option>
-                        ))}
-                    </select>
+                <div className="grid grid-cols-2 gap-4">
+                    <div>
+                        <label className="block text-xs font-bold text-slate-700 uppercase mb-2">Assign To Advisor</label>
+                        <select 
+                            className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm font-bold text-slate-900 outline-none focus:ring-2 focus:ring-indigo-500"
+                            value={targetAdvisorId}
+                            onChange={(e) => setTargetAdvisorId(e.target.value)}
+                        >
+                            <option value="">-- Select Target --</option>
+                            {advisors.map(adv => (
+                                <option key={adv.id} value={adv.id}>{adv.name} ({adv.email})</option>
+                            ))}
+                        </select>
+                    </div>
+                    <div>
+                        <label className="block text-xs font-bold text-slate-700 uppercase mb-2">Campaign Tag Override</label>
+                        <select 
+                            className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm font-bold text-slate-900 outline-none focus:ring-2 focus:ring-indigo-500"
+                            value={selectedCampaign}
+                            onChange={(e) => setSelectedCampaign(e.target.value)}
+                        >
+                            <option value="">(Use CSV Column)</option>
+                            {campaignOptions.map(c => (
+                                <option key={c} value={c}>{c}</option>
+                            ))}
+                        </select>
+                    </div>
                 </div>
 
                 <div className="border border-slate-200 rounded-xl overflow-hidden">
@@ -234,15 +414,15 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onClose, o
                             <tr>
                                 <th className="p-3">Name</th>
                                 <th className="p-3">Phone</th>
-                                <th className="p-3">Status</th>
+                                <th className="p-3">Goals / Win Reason</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
                             {rows.slice(0, 5).map((row, i) => (
                                 <tr key={i}>
-                                    <td className="p-3 font-bold">{getMappedValue(row, 'name')}</td>
+                                    <td className="p-3 font-bold">{getMappedValue(row, 'name') || 'Unknown'}</td>
                                     <td className="p-3">{getMappedValue(row, 'phone')}</td>
-                                    <td className="p-3">{getMappedValue(row, 'status') || 'New'}</td>
+                                    <td className="p-3 truncate max-w-[150px]">{getMappedValue(row, 'goals') || '-'}</td>
                                 </tr>
                             ))}
                         </tbody>
@@ -255,6 +435,7 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onClose, o
                 </div>
             </div>
         )}
+
       </div>
     </Modal>
   );

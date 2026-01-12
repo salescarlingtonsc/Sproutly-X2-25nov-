@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { db } from '../../lib/db';
-import { Client, Product, Sale } from '../../types';
+import { Client, Product, Sale, ContactStatus } from '../../types';
 import { useAuth } from '../../contexts/AuthContext';
 import { ClientCard } from '../crm/components/ClientCard';
 import { AddSaleModal } from '../crm/components/AddSaleModal';
@@ -97,7 +97,7 @@ const RemindersTab: React.FC = () => {
           ...saleClient,
           sales: [...(saleClient.sales || []), sale],
           stage: 'Client',
-          followUp: { ...saleClient.followUp, status: 'client' },
+          followUp: { ...saleClient.followUp, status: 'client' as ContactStatus },
           momentumScore: 100,
           lastUpdated: new Date().toISOString(),
           stageHistory: [...(saleClient.stageHistory || []), { stage: 'Client', date: new Date().toISOString() }],
@@ -220,7 +220,7 @@ const RemindersTab: React.FC = () => {
   });
 
   const pendingOverdue = filteredClients.filter(c => {
-    if (c.followUp.status !== 'pending_decision' && c.followUp.status !== 'Pending Decision') return false;
+    if (c.followUp.status !== 'pending_decision') return false;
     const lastDate = c.followUp.lastContactedAt || c.lastUpdated;
     const daysSince = (now.getTime() - new Date(lastDate).getTime()) / (1000 * 3600 * 24);
     return daysSince > 3; 

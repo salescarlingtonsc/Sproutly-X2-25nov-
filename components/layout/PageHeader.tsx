@@ -3,7 +3,7 @@ import React, { ReactNode } from 'react';
 
 interface PageHeaderProps {
   title: string;
-  subtitle?: string;
+  subtitle?: ReactNode;
   icon?: string;
   action?: ReactNode;
   className?: string;
@@ -18,9 +18,9 @@ const PageHeader: React.FC<PageHeaderProps> = ({ title, subtitle, icon, action, 
           {title}
         </h1>
         {subtitle && (
-          <p className="text-sm font-medium text-slate-500 mt-1 max-w-2xl">
+          <div className="text-sm font-medium text-slate-500 mt-1 max-w-2xl">
             {subtitle}
-          </p>
+          </div>
         )}
       </div>
       {action && (

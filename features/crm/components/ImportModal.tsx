@@ -1,11 +1,13 @@
 
-import React, { useState, useMemo } from 'react';
-import Modal from '../../../components/ui/Modal';
-import Button from '../../../components/ui/Button';
-import { db } from '../../../lib/db';
+import React, { useState } from 'react';
 import { useAuth } from '../../../contexts/AuthContext';
 import { useToast } from '../../../contexts/ToastContext';
-import { INITIAL_PROFILE, INITIAL_CRM_STATE } from '../../../contexts/ClientContext';
+import Modal from '../../../components/ui/Modal';
+import Button from '../../../components/ui/Button';
+import { GoogleGenAI } from '@google/genai';
+import { db } from '../../../lib/db';
+import { INITIAL_PROFILE, INITIAL_CRM_STATE, INITIAL_EXPENSES, INITIAL_CPF, INITIAL_CASHFLOW, INITIAL_INSURANCE, INITIAL_INVESTOR, INITIAL_PROPERTY, INITIAL_WEALTH, INITIAL_RETIREMENT } from '../../../contexts/ClientContext';
+import { Client } from '../../../types';
 
 interface ImportModalProps {
   isOpen: boolean;
@@ -15,26 +17,36 @@ interface ImportModalProps {
 
 const DESTINATION_FIELDS = [
   { key: 'name', label: 'Full Name', required: true },
-  { key: 'phone', label: 'Phone', required: false },
-  { key: 'email', label: 'Email', required: false },
-  { key: 'company', label: 'Company / Job Title', required: false },
-  { key: 'status', label: 'Status', required: false },
-  { key: 'notes', label: 'Notes / Context', required: false },
+  { key: 'phone', label: 'Phone Number', required: true },
+  { key: 'email', label: 'Email Address' },
+  { key: 'company', label: 'Company / Job' },
+  { key: 'jobTitle', label: 'Job Title' },
+  { key: 'status', label: 'Status / Stage' },
+  { key: 'notes', label: 'Notes / Remarks' },
+  { key: 'monthlyInvestmentAmount', label: 'Savings Amount' },
+  { key: 'retirementAge', label: 'Retirement Age' },
+  { key: 'goals', label: 'Goals / Context' },
+  { key: 'source', label: 'Source / Platform' },
+  { key: 'campaign', label: 'Campaign' }
 ];
 
 const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, onComplete }) => {
   const { user } = useAuth();
   const toast = useToast();
-  const [rawText, setRawText] = useState('');
-  const [step, setStep] = useState<'input' | 'mapping' | 'preview'>('input');
-  const [isProcessing, setIsProcessing] = useState(false);
   
-  // Parsing State
+  const [step, setStep] = useState<'input' | 'mapping' | 'preview'>('input');
+  const [rawText, setRawText] = useState('');
   const [headers, setHeaders] = useState<string[]>([]);
   const [rows, setRows] = useState<string[][]>([]);
   const [mappings, setMappings] = useState<Record<string, string>>({});
+  const [isMappingAi, setIsMappingAi] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
 
+  // Safe UUID Generator
   const generateUUID = () => {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+      try { return crypto.randomUUID(); } catch(e) {}
+    }
     return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
       var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
       return v.toString(16);
@@ -48,149 +60,227 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, onComplete }
     }
     
     const lines = rawText.trim().split('\n');
-    const delimiter = lines[0].includes('\t') ? '\t' : ','; // Auto-detect tab or comma
+    const delimiter = lines[0].includes('\t') ? '\t' : ',';
     
-    // Parse
-    const parsedHeaders = lines[0].split(delimiter).map(h => h.trim().replace(/^"|"$/g, ''));
-    const parsedRows = lines.slice(1)
+    let parsedHeaders = lines[0].split(delimiter).map(h => h.trim().replace(/^"|"$/g, ''));
+    let parsedRows = lines.slice(1)
         .map(line => line.split(delimiter).map(cell => cell.trim().replace(/^"|"$/g, '')))
-        .filter(row => row.length > 1 && row.some(cell => cell)); // Skip empty rows
+        .filter(row => row.length > 0 && row.some(cell => cell));
 
-    setHeaders(parsedHeaders);
-    setRows(parsedRows);
+    // Smart detection for headerless data
+    const firstRowLooksLikeData = parsedHeaders.some(h => 
+        h.includes('p:+') || 
+        h.match(/\d{1,2}\/\d{1,2}\/\d{2,4}/) || 
+        h === 'ig' || h === 'fb' ||
+        h.includes('$') ||
+        (parsedHeaders.length > 3 && !h.toLowerCase().includes('name'))
+    );
 
-    // Auto-Map Logic
+    let finalHeaders = parsedHeaders;
+    let finalRows = parsedRows;
+    let isHeaderless = false;
+
+    if (lines.length > 0 && (parsedRows.length === 0 || firstRowLooksLikeData)) {
+        finalRows = lines.map(line => line.split(delimiter).map(cell => cell.trim().replace(/^"|"$/g, ''))).filter(row => row.length > 0);
+        const colCount = finalRows[0]?.length || 0;
+        finalHeaders = Array.from({ length: colCount }, (_, i) => `Column ${i + 1}`);
+        isHeaderless = true;
+        toast.info("Raw data detected. Switched to 'Headerless' mode.");
+    }
+
+    if (finalRows.length === 0) {
+        toast.error("No data rows found.");
+        return;
+    }
+
+    setHeaders(finalHeaders);
+    setRows(finalRows);
+
+    // Initial Heuristic Mapping
     const newMappings: Record<string, string> = {};
-    parsedHeaders.forEach((h, idx) => {
-        const lower = h.toLowerCase();
+    finalHeaders.forEach((h, idx) => {
+        const lower = h.toLowerCase().trim().replace(/_/g, ' ');
         const idxStr = idx.toString();
         
         if (lower.includes('name')) newMappings['name'] = idxStr;
         else if (lower.includes('phone') || lower.includes('mobile')) newMappings['phone'] = idxStr;
         else if (lower.includes('email')) newMappings['email'] = idxStr;
         else if (lower.includes('company') || lower.includes('job') || lower.includes('title')) newMappings['company'] = idxStr;
+        else if (lower.includes('saving') || lower.includes('investment')) newMappings['monthlyInvestmentAmount'] = idxStr;
+        else if ((lower.includes('retire') && lower.includes('age')) || lower.includes('when_do_you')) newMappings['retirementAge'] = idxStr;
+        else if (lower.includes('goal') || lower.includes('win')) newMappings['goals'] = idxStr;
         else if (lower.includes('status') || lower.includes('stage')) newMappings['status'] = idxStr;
-        else if (lower.includes('note') || lower.includes('remarks') || lower.includes('context')) newMappings['notes'] = idxStr;
+        else if (lower.includes('campaign')) newMappings['campaign'] = idxStr;
+        else if (lower.includes('source') || lower.includes('platform')) newMappings['source'] = idxStr;
+        else if (lower.includes('note') || lower.includes('remarks')) newMappings['notes'] = idxStr;
     });
 
     setMappings(newMappings);
     setStep('mapping');
-  };
 
-  const getMappedValue = (row: string[], fieldKey: string) => {
-      const colIndex = parseInt(mappings[fieldKey]);
-      if (isNaN(colIndex) || !row[colIndex]) return '';
-      return row[colIndex];
-  };
-
-  const cleanPhoneNumber = (raw: string) => {
-      let cleaned = raw.replace(/[^\d+]/g, '');
-      if (cleaned.startsWith('8') && cleaned.length === 8) cleaned = '+65' + cleaned;
-      if (cleaned.startsWith('9') && cleaned.length === 8) cleaned = '+65' + cleaned;
-      return cleaned;
-  };
-
-  const handleImport = async () => {
-    setIsProcessing(true);
-    try {
-      const newClients = rows.map(row => {
-        const name = getMappedValue(row, 'name') || 'Unknown Lead';
-        const phone = cleanPhoneNumber(getMappedValue(row, 'phone'));
-        const email = getMappedValue(row, 'email');
-        const company = getMappedValue(row, 'company');
-        const statusRaw = getMappedValue(row, 'status').toLowerCase();
-        const notes = getMappedValue(row, 'notes');
-
-        // Normalize status
-        let status = 'new';
-        if (statusRaw.includes('contact')) status = 'contacted';
-        if (statusRaw.includes('client')) status = 'client';
-        if (statusRaw.includes('lost')) status = 'not_keen';
-
-        const id = generateUUID();
-        const now = new Date().toISOString();
-
-        return {
-            ...INITIAL_CRM_STATE,
-            id,
-            advisorId: user?.id,
-            _ownerId: user?.id,
-            name,
-            phone,
-            email,
-            company,
-            lastUpdated: now,
-            lastContact: now,
-            profile: { ...INITIAL_PROFILE, name, phone, email },
-            followUp: { status },
-            notes: notes ? [{ id: `note_${id}`, content: notes, date: now, author: 'Import' }] : []
-        };
-      });
-
-      await db.createClientsBulk(newClients, user?.id || '');
-      toast.success(`Successfully imported ${newClients.length} leads.`);
-      onComplete();
-      onClose();
-    } catch (e: any) {
-      toast.error("Import failed: " + e.message);
-    } finally {
-      setIsProcessing(false);
+    // Auto trigger AI if headerless
+    if (isHeaderless) {
+        setTimeout(() => executeAiMapping(finalHeaders, finalRows, newMappings), 100);
     }
   };
 
-  const previewData = rows.slice(0, 3);
+  const executeAiMapping = async (currentHeaders: string[], currentRows: string[][], currentMappings: Record<string, string>) => {
+    setIsMappingAi(true);
+    try {
+        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        const sampleRow = currentRows.length > 0 ? currentRows[0].join(' | ') : '';
+        
+        const prompt = `
+            Match CSV headers to system fields.
+            Headers: ${JSON.stringify(currentHeaders)}
+            Sample Data: ${sampleRow}
+            Fields: ${JSON.stringify(DESTINATION_FIELDS.map(f => f.key))}
+            
+            Return JSON object { [fieldKey]: index_integer }.
+        `;
+
+        const response = await ai.models.generateContent({
+            model: 'gemini-3-flash-preview',
+            contents: prompt,
+            config: { responseMimeType: "application/json" }
+        });
+
+        const result = JSON.parse(response.text || '{}');
+        const merged = { ...currentMappings };
+        
+        Object.entries(result).forEach(([k, v]) => {
+            if (v !== undefined && v !== null && String(v) !== '') {
+                if (!isNaN(Number(v))) {
+                    merged[k] = String(v);
+                }
+            }
+        });
+        
+        setMappings(merged);
+        toast.success("AI Mapping Applied");
+    } catch (e) {
+        // Silent error
+    } finally {
+        setIsMappingAi(false);
+    }
+  };
+
+  const handleAiAutoMap = () => executeAiMapping(headers, rows, mappings);
+
+  const handleImport = async () => {
+      if (!user) return;
+      setIsProcessing(true);
+      
+      try {
+          const clientsToImport = rows.map(row => {
+              const getValue = (key: string) => {
+                  const idx = parseInt(mappings[key]);
+                  return (idx >= 0 && row[idx]) ? row[idx] : '';
+              };
+
+              const rawName = getValue('name');
+              const rawPhone = getValue('phone');
+              
+              // Fallback name if missing
+              const name = rawName || `Lead ${rawPhone.replace(/\D/g, '') || 'Unknown'}`;
+              
+              const phone = rawPhone;
+              const email = getValue('email');
+              const company = getValue('company');
+              const jobTitle = getValue('jobTitle');
+              const statusRaw = getValue('status').toLowerCase();
+              const notes = getValue('notes');
+              
+              let status = 'new';
+              if (statusRaw.includes('contact')) status = 'contacted';
+              if (statusRaw.includes('client')) status = 'client';
+              
+              const id = generateUUID();
+              const now = new Date().toISOString();
+
+              return {
+                  ...INITIAL_CRM_STATE,
+                  expenses: INITIAL_EXPENSES,
+                  cpfState: INITIAL_CPF,
+                  cashflowState: INITIAL_CASHFLOW,
+                  insuranceState: INITIAL_INSURANCE,
+                  investorState: INITIAL_INVESTOR,
+                  propertyState: INITIAL_PROPERTY,
+                  wealthState: INITIAL_WEALTH,
+                  retirement: INITIAL_RETIREMENT,
+                  customExpenses: [],
+                  id,
+                  advisorId: user.id,
+                  _ownerId: user.id,
+                  name,
+                  phone,
+                  email,
+                  company,
+                  jobTitle,
+                  lastUpdated: now,
+                  lastContact: now,
+                  stage: 'New Lead',
+                  profile: { 
+                      ...INITIAL_PROFILE, 
+                      name, phone, email, 
+                      jobTitle,
+                      monthlyInvestmentAmount: getValue('monthlyInvestmentAmount'),
+                      retirementAge: getValue('retirementAge'), 
+                  },
+                  followUp: { status },
+                  goals: getValue('goals'),
+                  platform: getValue('source') || 'Import',
+                  notes: notes ? [{ id: `note_${id}`, content: notes, date: now, author: 'Import' }] : []
+              } as Client;
+          });
+
+          await db.createClientsBulk(clientsToImport, user.id);
+          toast.success(`Imported ${clientsToImport.length} clients.`);
+          onComplete();
+      } catch (e: any) {
+          toast.error("Import failed: " + e.message);
+      } finally {
+          setIsProcessing(false);
+      }
+  };
 
   return (
     <Modal 
       isOpen={isOpen} 
       onClose={onClose} 
-      title="Mass Import Utility"
+      title="Data Import Wizard"
       footer={
         <div className="flex gap-2 w-full justify-end">
             {step === 'input' && (
                 <>
                     <Button variant="ghost" onClick={onClose}>Cancel</Button>
-                    <Button variant="primary" onClick={handleParse} disabled={!rawText}>Next: Map Columns</Button>
+                    <Button variant="primary" onClick={handleParse} disabled={!rawText}>Next: Map Fields</Button>
                 </>
             )}
             {step === 'mapping' && (
                 <>
                     <Button variant="ghost" onClick={() => setStep('input')}>Back</Button>
-                    <Button variant="primary" onClick={() => setStep('preview')}>Next: Verify</Button>
+                    <Button variant="primary" onClick={() => setStep('preview')} disabled={!mappings['name'] && !mappings['phone']}>
+                        {(!mappings['name'] && !mappings['phone']) ? 'Map Name or Phone' : 'Next: Preview'}
+                    </Button>
                 </>
             )}
             {step === 'preview' && (
                 <>
                     <Button variant="ghost" onClick={() => setStep('mapping')}>Back</Button>
-                    <Button variant="primary" onClick={handleImport} isLoading={isProcessing} leftIcon="🚀">Import {rows.length} Leads</Button>
+                    <Button variant="primary" onClick={handleImport} isLoading={isProcessing}>Import Data</Button>
                 </>
             )}
         </div>
       }
     >
       <div className="space-y-6">
-        
-        {/* PROGRESS STEPPER */}
-        <div className="flex justify-between items-center px-4">
-            <div className={`text-xs font-bold ${step === 'input' ? 'text-indigo-600' : 'text-slate-400'}`}>1. Paste</div>
-            <div className="h-px w-8 bg-slate-200"></div>
-            <div className={`text-xs font-bold ${step === 'mapping' ? 'text-indigo-600' : 'text-slate-400'}`}>2. Map</div>
-            <div className="h-px w-8 bg-slate-200"></div>
-            <div className={`text-xs font-bold ${step === 'preview' ? 'text-indigo-600' : 'text-slate-400'}`}>3. Verify</div>
-        </div>
-
         {step === 'input' && (
-            <div className="space-y-4">
-                <div className="bg-indigo-50 p-4 rounded-xl border border-indigo-100 flex gap-4">
-                    <div className="text-2xl">📋</div>
-                    <div>
-                        <h4 className="font-bold text-indigo-900 text-xs uppercase mb-1">Paste from Excel/Sheets</h4>
-                        <p className="text-xs text-indigo-700 leading-relaxed">Copy your rows (including headers) and paste them below. We support tab-separated and comma-separated formats.</p>
-                    </div>
-                </div>
+            <div>
+                <p className="text-xs text-slate-500 mb-2">Paste your CSV or Spreadsheet data (with headers) below.</p>
                 <textarea
-                    className="w-full h-48 p-4 bg-slate-50 border-2 border-slate-200 rounded-xl text-xs font-mono focus:border-indigo-500 focus:outline-none resize-none placeholder-slate-400 whitespace-pre"
-                    placeholder={`Name\tPhone\tEmail\tNotes\nJohn Doe\t91234567\tjohn@email.com\tMet at roadshow...`}
+                    className="w-full h-60 bg-slate-50 border border-slate-300 rounded-lg p-3 text-xs font-mono focus:ring-2 focus:ring-indigo-500 outline-none resize-none"
+                    placeholder={`Name,Phone,Email,Status\nJohn Doe,91234567,john@test.com,New`}
                     value={rawText}
                     onChange={(e) => setRawText(e.target.value)}
                 />
@@ -199,11 +289,20 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, onComplete }
 
         {step === 'mapping' && (
             <div className="space-y-4">
-                <p className="text-xs text-slate-500 font-medium">Match your spreadsheet columns to Sproutly fields.</p>
-                <div className="grid grid-cols-2 gap-4">
+                <div className="flex justify-between items-center bg-indigo-50 p-3 rounded-lg">
+                    <p className="text-xs text-indigo-700 font-medium">Verify column mapping.</p>
+                    <button 
+                        onClick={handleAiAutoMap} 
+                        disabled={isMappingAi}
+                        className="text-[10px] font-bold bg-white text-indigo-600 px-3 py-1.5 rounded-lg shadow-sm hover:bg-indigo-50 transition-colors flex items-center gap-1 border border-indigo-100"
+                    >
+                        {isMappingAi ? 'Scanning...' : '✨ AI Re-Map'}
+                    </button>
+                </div>
+                <div className="grid grid-cols-2 gap-4 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
                     {DESTINATION_FIELDS.map(field => (
                         <div key={field.key} className="space-y-1">
-                            <label className="text-[10px] font-bold text-slate-400 uppercase flex items-center gap-1">
+                            <label className={`text-[10px] font-bold uppercase flex items-center gap-1 ${field.required && !mappings[field.key] ? 'text-red-500' : 'text-slate-400'}`}>
                                 {field.label}
                                 {field.required && <span className="text-red-500">*</span>}
                             </label>
@@ -214,7 +313,9 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, onComplete }
                             >
                                 <option value="">(Skip)</option>
                                 {headers.map((h, i) => (
-                                    <option key={i} value={i}>{h}</option>
+                                    <option key={i} value={i}>
+                                        {h} {rows[0] ? `(${rows[0][i]?.substring(0, 15)}...)` : ''}
+                                    </option>
                                 ))}
                             </select>
                         </div>
@@ -224,36 +325,35 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, onComplete }
         )}
 
         {step === 'preview' && (
-            <div className="space-y-4">
-                <div className="flex justify-between items-center">
-                    <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider">Data Preview ({rows.length} Rows)</h4>
-                </div>
-                <div className="border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+            <div>
+                <p className="text-xs text-slate-500 mb-2">Ready to import <strong>{rows.length}</strong> records.</p>
+                <div className="border border-slate-200 rounded-xl overflow-hidden max-h-[300px] overflow-y-auto">
                     <table className="w-full text-xs text-left">
                         <thead className="bg-slate-50 border-b border-slate-200 font-bold text-slate-500">
                             <tr>
                                 <th className="p-3">Name</th>
                                 <th className="p-3">Phone</th>
-                                <th className="p-3">Email</th>
                                 <th className="p-3">Status</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
-                            {previewData.map((row, i) => (
-                                <tr key={i} className="bg-white">
-                                    <td className="p-3 font-bold text-slate-800">{getMappedValue(row, 'name') || '-'}</td>
-                                    <td className="p-3 font-mono text-slate-600">{getMappedValue(row, 'phone') || '-'}</td>
-                                    <td className="p-3 text-slate-600">{getMappedValue(row, 'email') || '-'}</td>
-                                    <td className="p-3"><span className="bg-slate-100 px-2 py-0.5 rounded uppercase text-[9px] font-bold">New</span></td>
-                                </tr>
-                            ))}
+                            {rows.slice(0, 10).map((row, i) => {
+                                const getName = () => { const idx = parseInt(mappings['name']); return (idx >= 0 && row[idx]) ? row[idx] : '-'; };
+                                const getPhone = () => { const idx = parseInt(mappings['phone']); return (idx >= 0 && row[idx]) ? row[idx] : '-'; };
+                                const getStatus = () => { const idx = parseInt(mappings['status']); return (idx >= 0 && row[idx]) ? row[idx] : '-'; };
+                                return (
+                                    <tr key={i}>
+                                        <td className="p-3 font-bold">{getName()}</td>
+                                        <td className="p-3">{getPhone()}</td>
+                                        <td className="p-3">{getStatus()}</td>
+                                    </tr>
+                                );
+                            })}
                         </tbody>
                     </table>
                 </div>
-                <p className="text-center text-[10px] text-slate-400 italic">...and {rows.length - 3} more rows.</p>
             </div>
         )}
-
       </div>
     </Modal>
   );

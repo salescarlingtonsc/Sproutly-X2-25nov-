@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { Client, FamilyMember, Policy, UserProfile, Sale, Product } from '../../../types';
+import { Client, FamilyMember, Policy, UserProfile, Sale, Product, ContactStatus } from '../../../types';
 import { analyzeClientMomentum, generateInvestmentReport } from '../../../lib/gemini';
 import { DEFAULT_SETTINGS } from '../../../lib/config';
 import { FinancialTools } from './FinancialTools';
@@ -142,7 +142,7 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
   const handleUpdateField = (field: keyof Client | string, val: any) => {
       const now = new Date();
       
-      if (field === 'gender' || field === 'monthlyInvestmentAmount') {
+      if (field === 'gender' || field === 'monthlyInvestmentAmount' || field === 'dob') {
           const newProfile = { ...client.profile, [field]: val };
           onUpdate({ ...client, profile: newProfile });
           return;
@@ -155,7 +155,9 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
       }
 
       if (field === 'nextFollowUpDate') {
-          const newFollowUp = { ...(client.followUp || {}), nextFollowUpDate: val };
+          // Cast val to string or whatever type nextFollowUpDate expects if needed,
+          // but mainly spread client.followUp to preserve required status field.
+          const newFollowUp = { ...client.followUp, nextFollowUpDate: val };
           onUpdate({ ...client, followUp: newFollowUp });
           return;
       }
@@ -172,7 +174,7 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
           onUpdate({ 
              ...client, 
              stage: val,
-             followUp: { ...client.followUp, status: statusKey, lastContactedAt: now.toISOString() },
+             followUp: { ...client.followUp, status: statusKey as ContactStatus, lastContactedAt: now.toISOString() },
              notes: [logEntry, ...(client.notes || [])],
              lastUpdated: now.toISOString(),
              stageHistory: [...(client.stageHistory || []), { stage: val, date: now.toISOString() }] 
@@ -281,7 +283,13 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
   };
 
   const handleDeleteSale = async (saleId: string) => {
-      if (!confirm("Delete this sale record?")) return;
+      const isConfirmed = await confirm({
+          title: "Delete Sale?",
+          message: "Delete this sale record?",
+          confirmText: "Delete",
+          isDestructive: true
+      });
+      if (!isConfirmed) return;
       const sales = (client.sales || []).filter(s => s.id !== saleId);
       const updatedClient = { ...client, sales, lastUpdated: new Date().toISOString() };
       onUpdate(updatedClient);
@@ -477,7 +485,7 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
               <EditableField label="Status" value={client.contactStatus} onChange={(v:any) => handleUpdateField('contactStatus', v)} type="select" options={['Uncontacted', 'Attempted', 'Active']} />
               <EditableField label="Phone" value={client.phone} onChange={(v:any) => handleUpdateField('phone', v)} type="text" />
               <EditableField label="Email" value={client.email} onChange={(v:any) => handleUpdateField('email', v)} type="text" />
-              <EditableField label="DOB" value={client.dob} onChange={(v:any) => handleUpdateField('dob', v)} type="date" />
+              <EditableField label="DOB" value={client.profile?.dob} onChange={(v:any) => handleUpdateField('dob', v)} type="date" />
           </div>
           
           {/* NEW SECTION: EXPANDED LEAD CONTEXT BOX */}

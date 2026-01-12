@@ -144,6 +144,8 @@ const CashflowTab: React.FC = () => {
                const diff = m - startM;
                let add = false;
                if (i.frequency === 'monthly') add = true;
+               if (i.frequency === 'quarterly' && diff % 3 === 0) add = true;
+               if (i.frequency === 'semi_annual' && diff % 6 === 0) add = true;
                if (i.frequency === 'yearly' && diff % 12 === 0) add = true;
                if (add) additionalIncome += toNum(i.amount);
             }
@@ -162,6 +164,8 @@ const CashflowTab: React.FC = () => {
                  const diff = m - startM;
                  let sub = false;
                  if (w.frequency === 'monthly') sub = true;
+                 if (w.frequency === 'quarterly' && diff % 3 === 0) sub = true;
+                 if (w.frequency === 'semi_annual' && diff % 6 === 0) sub = true;
                  if (w.frequency === 'yearly' && diff % 12 === 0) sub = true;
                  if (sub) withdrawalAmount += toNum(w.amount);
              }
@@ -332,7 +336,7 @@ const CashflowTab: React.FC = () => {
                <div className="flex-1 w-full text-center">
                   <div className="inline-block p-3 bg-emerald-100 rounded-full text-2xl mb-2">📥</div>
                   <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Monthly Inflow</div>
-                  <div className="text-2xl font-black text-emerald-600">{fmtSGD(cashflowData.takeHome)}</div>
+                  <div className="text-xl md:text-2xl font-black text-emerald-600">{fmtSGD(cashflowData.takeHome)}</div>
                   <div className="text-xs text-gray-500 mt-1">Take-Home Pay</div>
                </div>
 
@@ -346,7 +350,7 @@ const CashflowTab: React.FC = () => {
                <div className={`flex-1 w-full p-6 rounded-2xl border-2 text-center relative overflow-hidden ${cashflowData.monthlySavings >= 0 ? 'bg-emerald-50 border-emerald-200' : 'bg-red-50 border-red-200'}`}>
                   <div className="relative z-10">
                      <div className="text-[10px] font-bold uppercase tracking-widest mb-1 opacity-60">Net Free Cash</div>
-                     <div className={`text-4xl font-black ${cashflowData.monthlySavings >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
+                     <div className={`text-2xl md:text-3xl font-black break-words ${cashflowData.monthlySavings >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
                         {cashflowData.monthlySavings >= 0 ? '+' : ''}{fmtSGD(cashflowData.monthlySavings)}
                      </div>
                      <div className="text-xs font-bold opacity-50 mt-2">
@@ -365,7 +369,7 @@ const CashflowTab: React.FC = () => {
                <div className="flex-1 w-full text-center">
                   <div className="inline-block p-3 bg-red-100 rounded-full text-2xl mb-2">💸</div>
                   <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Monthly Burn</div>
-                  <div className="text-2xl font-black text-red-600">{fmtSGD(cashflowData.totalExpenses)}</div>
+                  <div className="text-xl md:text-2xl font-black text-red-600">{fmtSGD(cashflowData.totalExpenses)}</div>
                   <div className="text-xs text-gray-500 mt-1">Fixed + Variable</div>
                </div>
             </div>
@@ -462,8 +466,10 @@ const CashflowTab: React.FC = () => {
                         </select>
                         {i.type === 'recurring' && (
                            <select value={i.frequency} onChange={(e) => updateIncomeItem(i.id, 'frequency', e.target.value)} className="bg-white border border-emerald-200 rounded px-1 py-0.5 text-[10px]">
-                              <option value="monthly">Mthly</option>
-                              <option value="yearly">Yrly</option>
+                              <option value="monthly">Monthly</option>
+                              <option value="quarterly">Quarterly</option>
+                              <option value="semi_annual">Semi-Annual</option>
+                              <option value="yearly">Yearly</option>
                            </select>
                         )}
                         <div className="flex items-center gap-1 ml-auto">
@@ -515,8 +521,10 @@ const CashflowTab: React.FC = () => {
                         </select>
                         {w.type === 'recurring' && (
                            <select value={w.frequency} onChange={(e) => updateWithdrawalItem(w.id, 'frequency', e.target.value)} className="bg-white border border-red-200 rounded px-1 py-0.5 text-[10px]">
-                              <option value="monthly">Mthly</option>
-                              <option value="yearly">Yrly</option>
+                              <option value="monthly">Monthly</option>
+                              <option value="quarterly">Quarterly</option>
+                              <option value="semi_annual">Semi-Annual</option>
+                              <option value="yearly">Yearly</option>
                            </select>
                         )}
                         <div className="flex items-center gap-1 ml-auto">

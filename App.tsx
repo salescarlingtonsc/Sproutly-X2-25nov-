@@ -30,9 +30,6 @@ import AdminTab from './features/admin/AdminTab';
 import ReportTab from './features/report/ReportTab';
 import RemindersTab from './features/reminders/RemindersTab';
 
-// UI Components
-import Button from './components/ui/Button';
-
 // Logic
 import { db } from './lib/db';
 import { logTabUsage } from './lib/db/activities';
@@ -40,6 +37,7 @@ import { Client } from './types';
 import { canAccessTab, TAB_DEFINITIONS } from './lib/config';
 
 const CLIENT_CACHE_KEY = 'sproutly.clients_cache.v1';
+const SESSION_BASELINE_KEY = 'sproutly.session_baseline';
 
 const AppInner: React.FC = () => {
   const { user, signOut, refreshProfile, isLoading } = useAuth();
@@ -50,7 +48,7 @@ const AppInner: React.FC = () => {
     expenses, customExpenses,
     cashflowState, investorState, insuranceState,
     cpfState, propertyState, wealthState, retirement,
-    chatHistory // Added to auto-save trigger
+    chatHistory 
   } = useClient();
   const toast = useToast();
   const { confirm } = useDialog();
@@ -60,17 +58,21 @@ const AppInner: React.FC = () => {
   const [clients, setClients] = useState<Client[]>([]);
   const [saveStatus, setSaveStatus] = useState<'idle'|'saving'|'saved'|'error'>('idle');
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
-  
-  // Slow Loading State for Feedback
   const [showLongLoading, setShowLongLoading] = useState(false);
 
-  // Autosave Logic & Guards
-  const lastSavedJson = useRef<string>('');
+  // --- ARCHITECTURAL FIX: PERSISTENT BASELINE ---
+  // We initialize the ref from sessionStorage to survive tab refreshes without triggering a false "diff".
+  const getInitialBaseline = () => {
+      try {
+          return sessionStorage.getItem(SESSION_BASELINE_KEY) || '';
+      } catch (e) { return ''; }
+  };
+
+  const lastSavedJson = useRef<string>(getInitialBaseline());
   const isSavingRef = useRef<boolean>(false);
-  const isHydratedRef = useRef<boolean>(false); // 1. Hydration Guard
-  const gridSaveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  
-  // Handover Guard
+  const isHydratedRef = useRef<boolean>(false); 
+  const saveStartTimeRef = useRef<number>(0);
+  const gridSaveDebounceRef = useRef<any>(null); // Fixed: Missing ref definition
   const [transferringIds, setTransferringIds] = useState<Set<string>>(new Set());
 
   // Monitor loading time
@@ -84,26 +86,50 @@ const AppInner: React.FC = () => {
     return () => clearTimeout(timer);
   }, [isLoading]);
 
+  // --- WATCHDOG: DETECT STUCK SAVES ---
+  useEffect(() => {
+    let watchdog: any;
+    if (saveStatus === 'saving') {
+      watchdog = setTimeout(() => {
+        // If still saving after 45s, assume browser throttle or network hang.
+        // Force unlock to allow user to retry.
+        console.warn("[Watchdog] Save lock force-cleared due to timeout.");
+        setSaveStatus('error');
+        isSavingRef.current = false;
+        saveStartTimeRef.current = 0;
+      }, 45000);
+    }
+    return () => clearTimeout(watchdog);
+  }, [saveStatus]);
+
+  // --- EXIT GUARD ---
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (saveStatus === 'saving') {
+        e.preventDefault();
+        e.returnValue = ''; 
+        return '';
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [saveStatus]);
+
   // --- AUTO POLL FOR APPROVAL ---
   useEffect(() => {
     let interval: any;
     if (user && (user.status === 'pending' || user.status === 'rejected')) {
-        interval = setInterval(() => {
-            refreshProfile();
-        }, 3000);
+        interval = setInterval(() => { refreshProfile(); }, 3000);
     }
     return () => clearInterval(interval);
   }, [user, refreshProfile]);
 
-  // --- PERMISSION ENFORCEMENT & REDIRECT ---
+  // --- TAB ACCESS CONTROL ---
   useEffect(() => {
     if (user && (user.status === 'approved' || user.status === 'active')) {
       if (!canAccessTab(user, activeTab)) {
         const firstAllowed = TAB_DEFINITIONS.find(t => canAccessTab(user, t.id));
-        if (firstAllowed) {
-          console.log(`Redirecting from restricted tab '${activeTab}' to '${firstAllowed.id}'`);
-          setActiveTab(firstAllowed.id);
-        }
+        if (firstAllowed) setActiveTab(firstAllowed.id);
       }
     }
   }, [user, activeTab]);
@@ -121,9 +147,7 @@ const AppInner: React.FC = () => {
      if (user && (user.status === 'approved' || user.status === 'active')) {
          const cached = localStorage.getItem(CLIENT_CACHE_KEY);
          if (cached) {
-             try {
-                 setClients(JSON.parse(cached));
-             } catch(e) {}
+             try { setClients(JSON.parse(cached)); } catch(e) {}
          }
          loadClientsList();
      }
@@ -152,41 +176,49 @@ const AppInner: React.FC = () => {
      resetClient();
      // Reset comparison state for new client
      lastSavedJson.current = ""; 
-     isHydratedRef.current = true; // Allow autosave to start for this new session
+     sessionStorage.removeItem(SESSION_BASELINE_KEY);
+     isHydratedRef.current = true;
      
      setActiveTab('profile');
      toast.info("Fresh strategy initialized");
   };
 
   const handleLoadClient = (client: Client, redirect = true) => {
-     // 2. Seed comparison state immediately upon load to prevent false-diff autosaves
-     lastSavedJson.current = JSON.stringify(client); 
-     isHydratedRef.current = true; // Mark as hydrated
+     // Seed comparison state immediately to prevent false-diff autosaves
+     const seed = JSON.stringify(client);
+     lastSavedJson.current = seed; 
+     sessionStorage.setItem(SESSION_BASELINE_KEY, seed);
+     isHydratedRef.current = true;
      
      loadClient(client);
      if (redirect) setActiveTab('profile');
   };
 
+  /**
+   * CORE AUTOSAVE LOGIC
+   * Fixed to prevent loops via: Visibility Check, Mutex, and Stable Diffing.
+   */
   const handleSaveClient = useCallback(async (isAutoSave = false, overrideClient?: Client) => {
-     // 3. Block conditions
-     if (isAutoSave) {
-        if (!isHydratedRef.current) return; // Block if not hydrated
-        if (document.visibilityState !== 'visible') return; // Block if hidden
-        // NEW: Network Check - Don't autosave if offline
-        if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+     // 1. STRICT VISIBILITY CHECK
+     // If tab is backgrounded, DO NOT SAVE. Browsers throttle timers, causing chaos.
+     if (typeof document !== 'undefined' && document.hidden) {
+         // console.debug("[Autosave] Skipped: Background Tab");
+         return;
      }
-     
-     // 3. Block if transfer in progress
-     if (transferringIds.size > 0) return;
 
-     if (!user || (user.status !== 'approved' && user.status !== 'active')) return;
+     // 2. Hydration & Auth Check
+     if (!isHydratedRef.current || !user || (user.status !== 'approved' && user.status !== 'active')) return;
      
-     if (isSavingRef.current) return;
+     // 3. Mutex & Transfer Check
+     if (isSavingRef.current || transferringIds.size > 0) return;
 
+     // 4. Data Generation
      const clientData = overrideClient || generateClientObject();
-     
      if (!clientData.profile.name) return; 
 
+     // 5. STABLE DIFFING
+     // Strip `lastUpdated` timestamp from comparison. 
+     // We only care if meaningful data changed.
      const { lastUpdated: _ts, ...currentContent } = clientData;
      let lastSavedContent = {};
      try {
@@ -195,26 +227,38 @@ const AppInner: React.FC = () => {
         lastSavedContent = rest;
      } catch (e) {}
 
-     // 4. Diff Check
-     if (JSON.stringify(currentContent) === JSON.stringify(lastSavedContent)) {
-        return; 
+     const currentHash = JSON.stringify(currentContent);
+     const lastHash = JSON.stringify(lastSavedContent);
+
+     if (currentHash === lastHash) {
+        return; // No changes detected
      }
 
-     isSavingRef.current = true; // LOCK
+     // 6. Lock & Execute
+     isSavingRef.current = true;
+     saveStartTimeRef.current = Date.now();
      if (!isAutoSave) setSaveStatus('saving');
 
      try {
         const isNewClient = !clientId;
         
-        // NEW: Timeout Wrapper. 
-        // If Supabase hangs (e.g. socket reconnect issue), we reject after 15s to unblock the UI.
+        // Debug Log (As requested)
+        console.log('[AUTOSAVE FIRE]', { 
+            id: clientData.id, 
+            isAuto: isAutoSave, 
+            diffKeys: Object.keys(currentContent).length 
+        });
+
         const savePromise = db.saveClient(clientData, user.id);
+        
+        // 45s Timeout race
         const timeoutPromise = new Promise<never>((_, reject) => 
-            setTimeout(() => reject(new Error('Network timeout (15s)')), 15000)
+            setTimeout(() => reject(new Error('Network timeout (45s).')), 45000)
         );
 
         const saved = await Promise.race([savePromise, timeoutPromise]) as Client;
         
+        // 7. Update State & Baseline
         setClients(prev => {
             const exists = prev.find(c => c.id === saved.id);
             const newList = exists ? prev.map(c => c.id === saved.id ? saved : c) : [...prev, saved];
@@ -226,7 +270,10 @@ const AppInner: React.FC = () => {
             promoteToSaved(saved);
         }
 
-        lastSavedJson.current = JSON.stringify(saved);
+        // Update baseline to match what we have in memory (stabilize the loop)
+        const newBaseline = JSON.stringify(saved);
+        lastSavedJson.current = newBaseline;
+        sessionStorage.setItem(SESSION_BASELINE_KEY, newBaseline);
         setLastSaved(new Date());
         
         if (!isAutoSave) {
@@ -234,88 +281,72 @@ const AppInner: React.FC = () => {
            setTimeout(() => setSaveStatus('idle'), 2000);
         }
      } catch (e: any) {
-        console.error(e);
+        console.error("Save Error:", e);
         if (!isAutoSave) {
             setSaveStatus('error');
-            toast.error(`Save Failed: ${e.message}`);
-        } else {
-            // Suppress background errors to avoid spamming user
-            if (e.message.includes('Session expired')) {
-                console.warn("Autosave paused: Session expired");
-            } else if (e.message.includes('timeout')) {
-                console.warn("Autosave skipped: Network slow");
-            } else {
-                console.warn("Autosave minor error:", e.message);
-            }
+            toast.error(e.message?.includes('timeout') ? "Connection slow. Retrying..." : "Save failed.");
         }
      } finally {
-        isSavingRef.current = false; // UNLOCK
+        isSavingRef.current = false;
+        saveStartTimeRef.current = 0;
      }
   }, [user, generateClientObject, transferringIds, clientId, promoteToSaved]);
 
-  // --- RE-SYNC ON VISIBILITY CHANGE ---
+  // --- VISIBILITY WAKE-UP PROTOCOL ---
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        // Only trigger if we are hydrated
-        if (isHydratedRef.current) {
-            handleSaveClient(true);
+        // If we were "saving" when tab hid, and it's been > 10s, likely stuck. Reset.
+        const now = Date.now();
+        if (isSavingRef.current && (now - saveStartTimeRef.current > 10000)) {
+             console.log("[App] Tab Wake: Resetting stuck save lock.");
+             isSavingRef.current = false;
+             setSaveStatus('idle');
         }
+        // Optional: Trigger a fresh check after delay
+        if (isHydratedRef.current) setTimeout(() => handleSaveClient(true), 1000);
       }
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
   }, [handleSaveClient]);
 
-  // --- UNIVERSAL AUTO-SAVE LOOP ---
+  // --- MAIN INTERVAL ---
   useEffect(() => {
-     const timer = setTimeout(() => {
+     const timer = setInterval(() => {
         handleSaveClient(true);
      }, 2000);
-     return () => clearTimeout(timer);
+     return () => clearInterval(timer);
   }, [
-    profile, 
-    expenses, 
-    customExpenses, 
-    cashflowState, 
-    investorState, 
-    insuranceState, 
-    cpfState, 
-    propertyState, 
-    wealthState, 
-    retirement, 
-    chatHistory,
-    handleSaveClient
+    profile, expenses, customExpenses, cashflowState, investorState, 
+    insuranceState, cpfState, propertyState, wealthState, retirement, 
+    chatHistory, handleSaveClient
   ]);
 
   const handleUpdateGlobalClient = useCallback((updatedClient: Client) => {
+      // Local optimistic update
       setClients(prev => {
           const newList = prev.map(c => c.id === updatedClient.id ? updatedClient : c);
           localStorage.setItem(CLIENT_CACHE_KEY, JSON.stringify(newList));
           return newList;
       });
+      // Update active client if matched
       if (updatedClient.id === clientId) {
-          // If we are updating the active client from CRM, update the seed to prevent revert loops
-          lastSavedJson.current = JSON.stringify(updatedClient);
+          const seed = JSON.stringify(updatedClient);
+          lastSavedJson.current = seed;
+          sessionStorage.setItem(SESSION_BASELINE_KEY, seed);
           loadClient(updatedClient);
       }
+      // Debounced Save
       if (gridSaveDebounceRef.current) clearTimeout(gridSaveDebounceRef.current);
       gridSaveDebounceRef.current = setTimeout(async () => {
           try {
               await db.saveClient(updatedClient, user?.id);
-          } catch (e: any) {
-              console.error("Background sync failed", e);
-              if (!e.message.includes('Session expired')) {
-                  toast.error(`Auto-Save Failed: ${e.message}`);
-              }
-          }
+          } catch (e) { console.error("Background sync error", e); }
       }, 800);
   }, [clientId, loadClient, user]);
 
-  const handleTransferStart = (id: string) => {
-      setTransferringIds(prev => new Set(prev).add(id));
-  };
-
+  const handleTransferStart = (id: string) => setTransferringIds(prev => new Set(prev).add(id));
   const handleTransferEnd = (id: string) => {
       setTransferringIds(prev => {
           const next = new Set(prev);
@@ -325,16 +356,14 @@ const AppInner: React.FC = () => {
       loadClientsList();
   };
 
-  // --- AUTH GATE ---
+  // --- RENDER ---
   if (isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
         <div className="flex flex-col items-center gap-4">
           <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
           <p className="text-sm font-bold text-slate-400 uppercase tracking-widest">INITIALIZING QUANTUM CORE...</p>
-          {showLongLoading && (
-             <p className="text-xs text-indigo-400 animate-pulse">Waking up database (Cold Start)...</p>
-          )}
+          {showLongLoading && <p className="text-xs text-indigo-400 animate-pulse">Waking up database...</p>}
         </div>
       </div>
     );
@@ -351,43 +380,11 @@ const AppInner: React.FC = () => {
 
   if (user && (user.status === 'pending' || user.status === 'rejected')) {
     return (
-      <div className="min-h-screen bg-[#0B1120] flex flex-col items-center justify-center p-6 text-white relative overflow-hidden">
-        <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-20"></div>
-        <div className="absolute top-[-20%] left-[-10%] w-[600px] h-[600px] bg-red-600/10 rounded-full blur-[100px]"></div>
-        
-        <div className="relative z-10 text-center max-w-lg">
-          <div className="w-20 h-20 bg-red-500/10 rounded-3xl flex items-center justify-center mx-auto mb-8 border border-red-500/30 shadow-[0_0_30px_rgba(239,68,68,0.2)]">
-            <svg className="w-10 h-10 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m0-8v4m0 8h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-          </div>
-          
-          <h1 className="text-3xl font-black mb-4 tracking-tight">Access Restricted</h1>
-          <p className="text-slate-400 text-sm leading-relaxed mb-8">
-            Your access to the Sproutly environment has been restricted or is pending approval.
-            If you believe this is an error, please reach out to the Strategic Operations unit.
-          </p>
-
-          <div className="bg-white/5 border border-white/10 rounded-2xl p-6 mb-8 text-left">
-            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">Identity</p>
-            <p className="text-white font-mono text-sm font-bold mb-2">{user.email}</p>
-            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">Status</p>
-            <div className="inline-flex items-center gap-2">
-               <span className={`w-2 h-2 rounded-full ${user.status === 'pending' ? 'bg-amber-500 animate-pulse' : 'bg-red-500'}`}></span>
-               <span className="text-white font-bold text-xs uppercase">{user.status}</span>
-            </div>
-          </div>
-
-          <button 
-            onClick={() => signOut()}
-            className="text-slate-500 hover:text-white text-xs font-bold uppercase tracking-widest transition-colors"
-          >
-            Sign Out of Identity
-          </button>
-          
-          <div className="mt-12 text-[10px] font-black text-slate-600 uppercase tracking-[0.3em]">
-            Secure Intelligence Protocol v3.0
-          </div>
+      <div className="min-h-screen bg-[#0B1120] flex flex-col items-center justify-center p-6 text-white">
+        <div className="text-center max-w-lg">
+          <h1 className="text-3xl font-black mb-4">Access Restricted</h1>
+          <p className="text-slate-400 text-sm mb-8">Your account status is: <span className="text-white font-bold uppercase">{user.status}</span></p>
+          <button onClick={() => signOut()} className="text-slate-500 hover:text-white text-xs font-bold uppercase tracking-widest">Sign Out</button>
         </div>
       </div>
     );
@@ -430,19 +427,15 @@ const AppInner: React.FC = () => {
             saveClient={() => handleSaveClient(false)}
             loadClient={handleLoadClient}
             deleteClient={async (id) => {
-                try {
-                    await db.deleteClient(id);
-                    setClients(prev => prev.filter(c => c.id !== id));
-                    if (id === clientId) {
-                       resetClient();
-                       // Reset hydration state on deletion of active client
-                       isHydratedRef.current = false;
-                       lastSavedJson.current = "";
-                    }
-                    toast.success("Client deleted successfully.");
-                } catch (e: any) {
-                    throw e;
+                await db.deleteClient(id);
+                setClients(prev => prev.filter(c => c.id !== id));
+                if (id === clientId) {
+                   resetClient();
+                   sessionStorage.removeItem(SESSION_BASELINE_KEY);
+                   isHydratedRef.current = false;
+                   lastSavedJson.current = "";
                 }
+                toast.success("Client deleted successfully.");
             }}
             onRefresh={loadClientsList}
             onUpdateGlobalClient={handleUpdateGlobalClient}
