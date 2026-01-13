@@ -20,17 +20,17 @@ export const TIER_CONFIG: Record<SubscriptionTier, { label: string; clientLimit:
   'platinum': {
     label: 'Platinum',
     clientLimit: 50,
-    allowedTabs: ['dashboard', 'profile', 'children', 'cpf', 'cashflow', 'crm', 'disclaimer', 'reminders']
+    allowedTabs: ['dashboard', 'profile', 'children', 'cpf', 'cashflow', 'crm', 'disclaimer', 'reminders', 'portfolio', 'market']
   },
   'diamond': {
     label: 'Diamond',
     clientLimit: 9999,
-    allowedTabs: ['dashboard', 'profile', 'life_events', 'children', 'cpf', 'cashflow', 'insurance', 'retirement', 'investor', 'wealth', 'property', 'vision', 'analytics', 'crm', 'report', 'reminders', 'admin', 'disclaimer']
+    allowedTabs: ['dashboard', 'profile', 'life_events', 'children', 'cpf', 'cashflow', 'insurance', 'retirement', 'investor', 'wealth', 'property', 'vision', 'analytics', 'crm', 'report', 'reminders', 'admin', 'disclaimer', 'portfolio', 'market']
   },
   'organisation': {
     label: 'Organisation',
     clientLimit: 99999,
-    allowedTabs: ['dashboard', 'profile', 'life_events', 'children', 'cpf', 'cashflow', 'insurance', 'retirement', 'investor', 'wealth', 'property', 'vision', 'analytics', 'crm', 'report', 'reminders', 'admin', 'disclaimer']
+    allowedTabs: ['dashboard', 'profile', 'life_events', 'children', 'cpf', 'cashflow', 'insurance', 'retirement', 'investor', 'wealth', 'property', 'vision', 'analytics', 'crm', 'report', 'reminders', 'admin', 'disclaimer', 'portfolio', 'market']
   }
 };
 
@@ -38,6 +38,8 @@ export const TAB_DEFINITIONS = [
   { id: 'dashboard', label: 'Dashboard', icon: '📊' },
   { id: 'reminders', label: 'Action Center', icon: '🔔' },
   { id: 'crm', label: 'CRM', icon: '👥' },
+  { id: 'market', label: 'Market Intel', icon: '📡' },
+  { id: 'portfolio', label: 'AUM Tracker', icon: '📈' },
   { id: 'profile', label: 'Profile', icon: '👤' },
   { id: 'children', label: 'Education', icon: '🎓' },
   { id: 'cpf', label: 'CPF Planning', icon: '🦁' },
@@ -56,7 +58,7 @@ export const TAB_DEFINITIONS = [
 ];
 
 export const TAB_GROUPS = [
-  { title: 'Command', tabs: ['dashboard', 'reminders', 'crm'] },
+  { title: 'Command', tabs: ['dashboard', 'reminders', 'crm', 'market', 'portfolio'] },
   { title: 'Core Planning', tabs: ['profile', 'children', 'cpf', 'cashflow', 'insurance', 'retirement'] },
   { title: 'Advanced Tools', tabs: ['investor', 'wealth', 'property', 'life_events', 'analytics', 'vision'] },
   { title: 'System', tabs: ['report', 'admin', 'disclaimer'] }

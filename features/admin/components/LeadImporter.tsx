@@ -36,13 +36,14 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onClose, o
   const { user } = useAuth();
   const toast = useToast();
   
-  const [step, setStep] = useState<'input' | 'mapping' | 'preview'>('input');
+  const [step, setStep] = useState<'input' | 'mapping' | 'preview' | 'success'>('input');
   const [rawText, setRawText] = useState('');
   const [headers, setHeaders] = useState<string[]>([]);
   const [rows, setRows] = useState<string[][]>([]);
   const [mappings, setMappings] = useState<Record<string, string>>({});
   const [isMappingAi, setIsMappingAi] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [importCount, setImportCount] = useState(0);
   
   const [targetAdvisorId, setTargetAdvisorId] = useState('');
   const [selectedCampaign, setSelectedCampaign] = useState('');
@@ -76,7 +77,11 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onClose, o
     }
     
     const lines = rawText.trim().split('\n');
-    const delimiter = lines[0].includes('\t') ? '\t' : ',';
+    // Improved delimiter detection
+    const firstLine = lines[0];
+    const tabCount = (firstLine.match(/\t/g) || []).length;
+    const commaCount = (firstLine.match(/,/g) || []).length;
+    const delimiter = tabCount > commaCount ? '\t' : ',';
     
     let parsedHeaders = lines[0].split(delimiter).map(h => h.trim().replace(/^"|"$/g, ''));
     let parsedRows = lines.slice(1)
@@ -164,6 +169,7 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onClose, o
             - Date -> 'dob'
             - Name-like string -> 'name'
             - Job title -> 'jobTitle'
+            - "65" or "5 years later" -> 'retirementAge'
         `;
 
         const response = await ai.models.generateContent({
@@ -225,7 +231,32 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onClose, o
         const jobTitle = getMappedValue(row, 'jobTitle');
         const company = getMappedValue(row, 'company');
         const savings = getMappedValue(row, 'monthlyInvestmentAmount').replace(/[^\d]/g, '');
-        const retireAge = getMappedValue(row, 'retirementAge').replace(/[^\d]/g, '') || '65';
+        
+        // Smart Date Parsing for DOB
+        const dobRaw = getMappedValue(row, 'dob');
+        let dob = '';
+        let currentAge = 30;
+        if (dobRaw) {
+            const d = new Date(dobRaw);
+            if (!isNaN(d.getTime())) {
+                dob = d.toISOString().split('T')[0];
+                currentAge = new Date().getFullYear() - d.getFullYear();
+            }
+        }
+
+        // Smart Parsing for Retirement Age (Handle "5 years later")
+        let retireAgeStr = getMappedValue(row, 'retirementAge');
+        let retireAge = 65;
+        if (retireAgeStr.toLowerCase().includes('year')) {
+             // Relative age
+             const years = parseInt(retireAgeStr.replace(/[^\d]/g, ''), 10);
+             if (!isNaN(years)) retireAge = currentAge + years;
+        } else {
+             // Absolute age
+             const val = parseInt(retireAgeStr.replace(/[^\d]/g, ''), 10);
+             if (!isNaN(val)) retireAge = val;
+        }
+
         const goals = getMappedValue(row, 'goals');
         const campaignCol = getMappedValue(row, 'campaign');
         const statusRaw = getMappedValue(row, 'status').toLowerCase();
@@ -264,7 +295,7 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onClose, o
             jobTitle,
             platform,
             goals,
-            retirementAge: parseInt(retireAge, 10),
+            retirementAge: retireAge,
             lastUpdated: now,
             lastContact: now,
             stage: 'New Lead',
@@ -274,7 +305,8 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onClose, o
                 gender: gender as any,
                 jobTitle,
                 monthlyInvestmentAmount: savings,
-                retirementAge: retireAge,
+                retirementAge: retireAge.toString(),
+                dob,
                 tags 
             },
             tags: tags,
@@ -283,14 +315,19 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onClose, o
         } as Client;
       });
 
+      // Call parent import function which calls db
       onImport(newClients);
-      onClose();
+      setImportCount(newClients.length);
+      setStep('success'); // Show success step instead of closing immediately
     } catch (e: any) {
       toast.error("Import failed: " + e.message);
     } finally {
       setIsProcessing(false);
     }
   };
+
+  // Filter fields that are actually mapped to show in preview
+  const activeFields = DESTINATION_FIELDS.filter(field => mappings[field.key]);
 
   return (
     <Modal 
@@ -317,9 +354,12 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onClose, o
                 <>
                     <Button variant="ghost" onClick={() => setStep('mapping')}>Back</Button>
                     <Button variant="primary" onClick={handleImport} isLoading={isProcessing} leftIcon="🚀" disabled={!targetAdvisorId}>
-                        Assign & Import
+                        Assign & Import {rows.length} Leads
                     </Button>
                 </>
+            )}
+            {step === 'success' && (
+                <Button variant="primary" onClick={onClose}>Close & Refresh</Button>
             )}
         </div>
       }
@@ -408,30 +448,47 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onClose, o
                     </div>
                 </div>
 
-                <div className="border border-slate-200 rounded-xl overflow-hidden">
-                    <table className="w-full text-xs text-left">
-                        <thead className="bg-slate-50 border-b border-slate-200 font-bold text-slate-500">
-                            <tr>
-                                <th className="p-3">Name</th>
-                                <th className="p-3">Phone</th>
-                                <th className="p-3">Goals / Win Reason</th>
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100">
-                            {rows.slice(0, 5).map((row, i) => (
-                                <tr key={i}>
-                                    <td className="p-3 font-bold">{getMappedValue(row, 'name') || 'Unknown'}</td>
-                                    <td className="p-3">{getMappedValue(row, 'phone')}</td>
-                                    <td className="p-3 truncate max-w-[150px]">{getMappedValue(row, 'goals') || '-'}</td>
+                <div className="border border-slate-200 rounded-xl overflow-hidden flex flex-col h-[400px]">
+                    <div className="bg-slate-50 p-2 text-xs font-bold text-slate-500 border-b border-slate-200">
+                        Previewing {rows.length} rows to be imported
+                    </div>
+                    <div className="overflow-auto flex-1">
+                        <table className="w-full text-xs text-left">
+                            <thead className="bg-slate-50 border-b border-slate-200 font-bold text-slate-500 sticky top-0 z-10">
+                                <tr>
+                                    <th className="p-3 bg-slate-50 w-12">#</th>
+                                    {activeFields.map(field => (
+                                        <th key={field.key} className="p-3 bg-slate-50 whitespace-nowrap">{field.label}</th>
+                                    ))}
                                 </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                    {rows.length > 5 && (
-                        <div className="p-2 text-center text-[10px] text-slate-400 bg-slate-50">
-                            ...and {rows.length - 5} more
-                        </div>
-                    )}
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                                {rows.map((row, i) => (
+                                    <tr key={i} className="hover:bg-slate-50">
+                                        <td className="p-3 text-slate-400 font-mono text-[10px]">{i + 1}</td>
+                                        {activeFields.map(field => (
+                                            <td key={field.key} className="p-3 whitespace-nowrap max-w-[200px] truncate">
+                                                {getMappedValue(row, field.key) || '-'}
+                                            </td>
+                                        ))}
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        )}
+
+        {step === 'success' && (
+            <div className="text-center py-8 space-y-4">
+                <div className="text-5xl">🎉</div>
+                <h3 className="text-xl font-bold text-slate-800">Import Complete</h3>
+                <p className="text-slate-500 text-sm">
+                    Successfully queued <strong>{importCount}</strong> leads for distribution.
+                </p>
+                <div className="bg-amber-50 p-4 rounded-xl border border-amber-100 text-left text-xs text-amber-800 mx-auto max-w-sm">
+                    <strong>Note:</strong> Due to security protocols, newly assigned leads may require a few seconds to appear in the dashboard. If they do not appear immediately, please refresh the page.
                 </div>
             </div>
         )}

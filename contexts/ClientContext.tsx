@@ -1,8 +1,9 @@
+
 import React, { createContext, useContext, useState, useMemo, useEffect, ReactNode, useRef } from 'react';
 import { 
   Profile, Expenses, CustomExpense, Child, CpfState, CashflowState, 
   InsuranceState, InvestorState, PropertyState, WealthState, Client, 
-  RetirementSettings, CpfData, CashflowData, Sale, FamilyMember, Policy, Note, ChatMessage, ContactStatus
+  RetirementSettings, CpfData, CashflowData, Sale, FamilyMember, Policy, Note, ChatMessage, ContactStatus, PortfolioItem
 } from '../types';
 import { getAge, toNum } from '../lib/helpers';
 import { computeCpf } from '../lib/calculators';
@@ -35,7 +36,8 @@ export const INITIAL_CRM_STATE = {
   notes: [] as Note[],
   goals: '',
   milestones: { createdAt: new Date().toISOString() },
-  nextAction: ''
+  nextAction: '',
+  portfolios: [] as PortfolioItem[]
 };
 
 // Status Mapping for Readable UI
@@ -227,7 +229,8 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         createdAt: c.milestones?.createdAt || c.lastUpdated,
         ...c.milestones
       },
-      nextAction: c.nextAction || ''
+      nextAction: c.nextAction || '',
+      portfolios: c.portfolios || []
     });
   };
 
@@ -323,7 +326,8 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       notes: crmState.notes,
       goals: crmState.goals,
       milestones: crmState.milestones,
-      nextAction: crmState.nextAction
+      nextAction: crmState.nextAction,
+      portfolios: crmState.portfolios
     };
   };
 

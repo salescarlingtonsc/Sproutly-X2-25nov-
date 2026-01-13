@@ -66,6 +66,36 @@ export interface Sale {
   notes?: string;
 }
 
+export interface PortfolioItem {
+  id: string;
+  planName: string;
+  insurer: string;
+  inceptionDate: string;
+  premium: number;
+  frequency: 'monthly' | 'quarterly' | 'half_yearly' | 'yearly' | 'lump_sum';
+  currentValue: number;
+  lastUpdated: string;
+  fundAllocation?: string;
+  policyNumber?: string;
+}
+
+// Market Intelligence Types
+export interface MarketNewsItem {
+  id: string;
+  headline: string;
+  summary: string;
+  reason: string; // "Why it happened"
+  impact_short: string;
+  impact_mid: string;
+  impact_long: string;
+  sentiment: 'bullish' | 'bearish' | 'neutral' | 'volatile';
+  regions: string[]; // e.g. ['SG', 'US']
+  tickers?: string[]; // e.g. ['D05.SI', 'TSLA']
+  created_at: string;
+  source_label: string; // "Manual Intel" or "Bloomberg"
+  author_id?: string;
+}
+
 export interface FamilyMember {
   id: string;
   name: string;
@@ -376,6 +406,9 @@ export interface Client {
   wealthState: WealthState;
   retirement: RetirementSettings;
   
+  // New: AUM Portfolio
+  portfolios?: PortfolioItem[];
+
   // CRM Deep Data
   followUp: {
     status: ContactStatus; // Keeping this sync'd with root status

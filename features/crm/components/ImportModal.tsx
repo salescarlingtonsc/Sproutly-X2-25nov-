@@ -167,6 +167,12 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, onComplete }
 
   const handleAiAutoMap = () => executeAiMapping(headers, rows, mappings);
 
+  const getMappedValue = (row: string[], fieldKey: string) => {
+      const colIndex = parseInt(mappings[fieldKey]);
+      if (isNaN(colIndex) || !row[colIndex]) return '';
+      return row[colIndex];
+  };
+
   const handleImport = async () => {
       if (!user) return;
       setIsProcessing(true);
@@ -244,6 +250,9 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, onComplete }
       }
   };
 
+  // Active columns
+  const activeFields = DESTINATION_FIELDS.filter(field => mappings[field.key]);
+
   return (
     <Modal 
       isOpen={isOpen} 
@@ -268,7 +277,7 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, onComplete }
             {step === 'preview' && (
                 <>
                     <Button variant="ghost" onClick={() => setStep('mapping')}>Back</Button>
-                    <Button variant="primary" onClick={handleImport} isLoading={isProcessing}>Import Data</Button>
+                    <Button variant="primary" onClick={handleImport} isLoading={isProcessing}>Import {rows.length} Leads</Button>
                 </>
             )}
         </div>
@@ -325,32 +334,33 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, onComplete }
         )}
 
         {step === 'preview' && (
-            <div>
-                <p className="text-xs text-slate-500 mb-2">Ready to import <strong>{rows.length}</strong> records.</p>
-                <div className="border border-slate-200 rounded-xl overflow-hidden max-h-[300px] overflow-y-auto">
-                    <table className="w-full text-xs text-left">
-                        <thead className="bg-slate-50 border-b border-slate-200 font-bold text-slate-500">
-                            <tr>
-                                <th className="p-3">Name</th>
-                                <th className="p-3">Phone</th>
-                                <th className="p-3">Status</th>
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100">
-                            {rows.slice(0, 10).map((row, i) => {
-                                const getName = () => { const idx = parseInt(mappings['name']); return (idx >= 0 && row[idx]) ? row[idx] : '-'; };
-                                const getPhone = () => { const idx = parseInt(mappings['phone']); return (idx >= 0 && row[idx]) ? row[idx] : '-'; };
-                                const getStatus = () => { const idx = parseInt(mappings['status']); return (idx >= 0 && row[idx]) ? row[idx] : '-'; };
-                                return (
-                                    <tr key={i}>
-                                        <td className="p-3 font-bold">{getName()}</td>
-                                        <td className="p-3">{getPhone()}</td>
-                                        <td className="p-3">{getStatus()}</td>
+            <div className="flex flex-col h-[400px]">
+                <div className="text-xs text-slate-500 mb-2 font-bold">Ready to import {rows.length} records.</div>
+                <div className="border border-slate-200 rounded-xl overflow-hidden flex-1 flex flex-col">
+                    <div className="overflow-auto flex-1">
+                        <table className="w-full text-xs text-left">
+                            <thead className="bg-slate-50 border-b border-slate-200 font-bold text-slate-500 sticky top-0 z-10">
+                                <tr>
+                                    <th className="p-3 bg-slate-50 w-12">#</th>
+                                    {activeFields.map(f => (
+                                        <th key={f.key} className="p-3 bg-slate-50 whitespace-nowrap">{f.label}</th>
+                                    ))}
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                                {rows.map((row, i) => (
+                                    <tr key={i} className="hover:bg-slate-50">
+                                        <td className="p-3 text-slate-400 font-mono text-[10px]">{i + 1}</td>
+                                        {activeFields.map(f => (
+                                            <td key={f.key} className="p-3 whitespace-nowrap max-w-[200px] truncate">
+                                                {getMappedValue(row, f.key) || '-'}
+                                            </td>
+                                        ))}
                                     </tr>
-                                );
-                            })}
-                        </tbody>
-                    </table>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
         )}

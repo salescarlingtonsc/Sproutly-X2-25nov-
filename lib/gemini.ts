@@ -171,6 +171,132 @@ export const runQuantumDeepDive = async (clientData: any) => {
   } catch (error) { throw error; }
 };
 
+// --- MARKET INTEL PARSER (MANUAL INPUT) ---
+export const analyzeMarketIntel = async (rawText: string) => {
+  const ai = getAI();
+  const prompt = `
+    Analyze the following market news/text and structure it for a Singaporean Investment Context.
+    Raw Text: "${rawText}"
+    Return JSON matching the schema.
+  `;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-pro-preview',
+      contents: prompt,
+      config: {
+        thinkingConfig: { thinkingBudget: 32768 },
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            headline: { type: Type.STRING },
+            summary: { type: Type.STRING },
+            reason: { type: Type.STRING },
+            impact_short: { type: Type.STRING },
+            impact_mid: { type: Type.STRING },
+            impact_long: { type: Type.STRING },
+            sentiment: { type: Type.STRING, enum: ['bullish', 'bearish', 'neutral', 'volatile'] },
+            regions: { type: Type.ARRAY, items: { type: Type.STRING } },
+            tickers: { type: Type.ARRAY, items: { type: Type.STRING } }
+          },
+          required: ['headline', 'reason', 'impact_short', 'impact_mid', 'impact_long', 'sentiment']
+        }
+      }
+    });
+    return JSON.parse(response.text || '{}');
+  } catch (e) {
+    console.error("Market Intel Error", e);
+    throw new Error("Failed to process intelligence.");
+  }
+};
+
+// --- LIVE MARKET NEWS FETCH (GOOGLE SEARCH GROUNDING) ---
+export const fetchLiveMarketNews = async () => {
+  const ai = getAI();
+  const prompt = `
+    Search for the top 3 most critical financial news stories affecting Singapore investors TODAY (include Global Macro, STI, REITs, US Tech, or Fed Rates).
+    
+    For EACH story, analyze it deeply and return a JSON object.
+    
+    Structure the response as a JSON ARRAY of objects with these keys:
+    - headline: string
+    - summary: string
+    - reason: string (Why it happened)
+    - impact_short: string (Immediate effect)
+    - impact_mid: string (6-12 months)
+    - impact_long: string (5+ years / Structural)
+    - sentiment: "bullish" | "bearish" | "neutral" | "volatile"
+    - tickers: array of strings (e.g. "D05.SI", "AAPL")
+    
+    IMPORTANT: Return ONLY the JSON array. Do not include markdown formatting or extra text.
+  `;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-pro-preview',
+      contents: prompt,
+      config: {
+        tools: [{ googleSearch: {} }] // Enable Google Search
+      }
+    });
+
+    const rawText = response.text || '';
+    
+    // Robust JSON extraction
+    let jsonStr = rawText;
+    const firstBracket = rawText.indexOf('[');
+    const lastBracket = rawText.lastIndexOf(']');
+    
+    if (firstBracket !== -1 && lastBracket !== -1) {
+        jsonStr = rawText.substring(firstBracket, lastBracket + 1);
+    } else {
+        // Fallback cleanup
+        jsonStr = rawText.replace(/```json|```/g, '').trim();
+    }
+    
+    // Try parsing
+    try {
+        const parsed = JSON.parse(jsonStr);
+        return Array.isArray(parsed) ? parsed : [parsed];
+    } catch (parseError) {
+        console.error("Failed to parse live news JSON:", rawText);
+        return [];
+    }
+  } catch (e) {
+    console.error("Live Market Sync Failed:", e);
+    throw new Error("Live sync unavailable.");
+  }
+};
+
+// --- MARKET PULSE GENERATOR ---
+export const generateMarketPulse = async (newsItems: any[]) => {
+  const ai = getAI();
+  const context = JSON.stringify(newsItems.slice(0, 10)); // Top 10 recent items
+  
+  const prompt = `
+    Act as a Chief Investment Officer for a top Singapore firm.
+    Based on the following recent market news items: ${context}
+    
+    Generate a "Smart Market Pulse" summary.
+    1. Current Market Mood.
+    2. Key Sector to Watch (SG Context).
+    3. One "Contrarian" thought or opportunity.
+    
+    Keep it punchy, professional, and insightful. No markdown.
+  `;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: prompt
+    });
+    return response.text;
+  } catch (e) {
+    return "Market Pulse data currently unavailable.";
+  }
+};
+
 // --- QUANTUM LEAD SCORING ---
 export const calculateLeadScore = async (clientData: any) => {
   const ai = getAI();

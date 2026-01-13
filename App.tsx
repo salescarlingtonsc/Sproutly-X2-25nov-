@@ -29,6 +29,8 @@ import CrmTab from './features/crm/CrmTab';
 import AdminTab from './features/admin/AdminTab';
 import ReportTab from './features/report/ReportTab';
 import RemindersTab from './features/reminders/RemindersTab';
+import PortfolioTab from './features/portfolio/PortfolioTab'; 
+import MarketNewsTab from './features/market/MarketNewsTab'; // NEW IMPORT
 
 // Logic
 import { db } from './lib/db';
@@ -48,7 +50,7 @@ const AppInner: React.FC = () => {
     expenses, customExpenses,
     cashflowState, investorState, insuranceState,
     cpfState, propertyState, wealthState, retirement,
-    chatHistory 
+    chatHistory, crmState // Ensure crmState (containing portfolios) is tracked
   } = useClient();
   const toast = useToast();
   const { confirm } = useDialog();
@@ -320,7 +322,7 @@ const AppInner: React.FC = () => {
   }, [
     profile, expenses, customExpenses, cashflowState, investorState, 
     insuranceState, cpfState, propertyState, wealthState, retirement, 
-    chatHistory, handleSaveClient
+    chatHistory, crmState, handleSaveClient // Added crmState dependency for portfolios
   ]);
 
   const handleUpdateGlobalClient = useCallback((updatedClient: Client) => {
@@ -443,6 +445,13 @@ const AppInner: React.FC = () => {
             onTransferEnd={handleTransferEnd}
           />
       )}
+      {activeTab === 'portfolio' && (
+          <PortfolioTab 
+             clients={clients}
+             onUpdateClient={handleUpdateGlobalClient}
+          />
+      )}
+      {activeTab === 'market' && <MarketNewsTab />}
       {activeTab === 'reminders' && <RemindersTab />}
       {activeTab === 'report' && <ReportTab />}
       {activeTab === 'admin' && <AdminTab />}
