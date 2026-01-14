@@ -201,8 +201,8 @@ const AppInner: React.FC = () => {
          return;
      }
 
-     // 2. Hydration & Auth Check
-     if (!isHydratedRef.current || !user || (user.status !== 'approved' && user.status !== 'active')) return;
+     // 2. Auth Check (Hydration check removed here to allow placebo save)
+     if (!user || (user.status !== 'approved' && user.status !== 'active')) return;
      
      // 3. Mutex & Transfer Check
      if (isSavingRef.current || transferringIds.size > 0) return;
@@ -211,8 +211,9 @@ const AppInner: React.FC = () => {
      const clientData = overrideClient || generateClientObject();
      
      // CRITICAL UX FIX: If in "browsing" mode (CRM tab) where global context is empty,
+     // OR if not hydrated (no client loaded),
      // still trigger "Saved" animation on manual click to reassure user.
-     if (!clientData.profile.name) {
+     if (!isHydratedRef.current || !clientData.profile.name) {
          if (!isAutoSave) {
              setSaveStatus('saved');
              setTimeout(() => setSaveStatus('idle'), 2000);
