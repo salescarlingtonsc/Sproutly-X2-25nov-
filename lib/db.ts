@@ -1,41 +1,12 @@
 
 import { supabase, isSupabaseConfigured } from './supabase';
 import { Client } from '../types';
-import { INITIAL_PROFILE, INITIAL_EXPENSES, INITIAL_CPF, INITIAL_CASHFLOW, INITIAL_INSURANCE, INITIAL_INVESTOR, INITIAL_PROPERTY, INITIAL_WEALTH, INITIAL_RETIREMENT } from '../contexts/ClientContext';
-import { adminDb } from './db/admin';
 
-const LOCAL_STORAGE_KEY = 'fa_clients';
+const LOCAL_STORAGE_KEY = 'sproutly_clients_v2';
 
-// Helper to ensure session exists or refresh it
-const getActiveSession = async () => {
-  if (!supabase) return null;
-  
-  try {
-    // 1. Try standard getSession
-    let { data: { session }, error } = await supabase.auth.getSession();
-    
-    // 2. If missing or error, force a refresh
-    if (!session || error) {
-      const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
-      if (refreshError) {
-        console.warn("Session refresh failed:", refreshError.message);
-        return null;
-      }
-      session = refreshData.session;
-    }
-    return session;
-  } catch (e) {
-    console.error("Session check exception:", e);
-    return null;
-  }
-};
-
-// Safe UUID Generator Fallback
-const safeUUID = () => {
+const generateUUID = () => {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-    try {
-      return crypto.randomUUID();
-    } catch (e) {}
+    try { return crypto.randomUUID(); } catch(e) {}
   }
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
     var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
@@ -43,350 +14,216 @@ const safeUUID = () => {
   });
 };
 
+// Helper to chunk arrays
+const chunkArray = <T>(array: T[], size: number): T[][] => {
+  const chunks = [];
+  for (let i = 0; i < array.length; i += size) {
+    chunks.push(array.slice(i, i + size));
+  }
+  return chunks;
+};
+
 export const db = {
   getClients: async (userId?: string): Promise<Client[]> => {
     if (isSupabaseConfigured() && supabase) {
       try {
-        const session = await getActiveSession();
-        const user = session?.user;
-        if (!user) return [];
-
-        // 1. Get Current User's Profile & Role
-        const { data: userProfile } = await supabase
-          .from('profiles')
-          .select('role, is_admin, id, reporting_to')
-          .eq('id', user.id)
-          .single();
-
-        const role = userProfile?.role || 'advisor';
-        const isAdmin = role === 'admin' || userProfile?.is_admin === true;
-        const isDirector = role === 'director';
-        const isManager = role === 'manager';
-
-        // 2. Determine Visibility Scope
-        let targetUserIds: string[] = [user.id]; // Always see own clients
-
-        if (isAdmin || isDirector) {
-           // LEVEL 1: VIEW ALL
-           // We don't filter by user_id, we fetch everything.
-           targetUserIds = []; 
-        } else if (isManager) {
-           // LEVEL 2: VIEW UNIT (Self + Team Members)
-           // Fetch the team where this manager is the leader
-           const settings = await adminDb.getSystemSettings();
-           const myTeam = settings?.teams?.find(t => t.leaderId === user.id);
-           
-           if (myTeam) {
-               // Find all advisors in this team
-               const { data: teamMembers } = await supabase
-                   .from('profiles')
-                   .select('id')
-                   .eq('reporting_to', myTeam.id);
-               
-               if (teamMembers) {
-                   const memberIds = teamMembers.map(m => m.id);
-                   targetUserIds = [...targetUserIds, ...memberIds];
-               }
-           }
-        } 
-        // LEVEL 3: ADVISOR (Default) -> Only sees self (targetUserIds = [user.id])
-
-        // 3. Construct Query
-        let query = supabase
-          .from('clients')
-          .select('id, data, user_id, updated_at')
-          .order('updated_at', { ascending: false });
-
-        // Apply Filter if not Admin/Director
-        if (targetUserIds.length > 0) {
-            query = query.in('user_id', targetUserIds);
-        }
-          
-        const { data: clients, error: clientError } = await query;
-          
-        if (clientError) {
-          console.error('Data retrieval error (clients):', clientError.message);
-          return [];
-        }
+        let query = supabase.from('clients').select('*');
+        const { data, error } = await query;
         
-        if (!clients) return [];
-
-        // 4. Map Owner Emails for UI Context
-        const uniqueUserIds = Array.from(new Set(clients.map((c: any) => c.user_id).filter(Boolean)));
-        const profileMap: Record<string, string> = {};
-        
-        if (uniqueUserIds.length > 0) {
-            const { data: profiles } = await supabase
-                .from('profiles')
-                .select('id, email')
-                .in('id', uniqueUserIds);
-            
-            if (profiles) {
-                profiles.forEach((p: any) => {
-                    profileMap[p.id] = p.email;
-                });
+        if (error) {
+            if (error.code === '42P01') {
+                console.warn("Table 'clients' not found in Supabase.");
+                return [];
             }
+            throw new Error(error.message);
         }
-
-        return clients.map((row: any) => {
-          const clientData = row.data || {};
-          const profile = clientData.profile || { ...INITIAL_PROFILE };
-          const realOwnerEmail = profileMap[row.user_id] || clientData._ownerEmail || `Advisor (${row.user_id?.substring(0,4)})`;
-
-          return {
-            ...clientData, 
-            id: row.id,
-            profile,
-            name: clientData.name || profile.name || 'Unnamed Client',
-            email: clientData.email || profile.email || '',
-            phone: clientData.phone || profile.phone || '',
-            followUp: clientData.followUp || { status: 'new' },
-            _ownerId: row.user_id,
-            _ownerEmail: realOwnerEmail
-          } as Client;
-        });
-      } catch (e: any) {
-        return [];
+        
+        return (data || [])
+            .map(row => ({
+                ...row.data,
+                id: row.id,
+                _ownerId: row.user_id,
+                lastUpdated: row.updated_at || row.data.lastUpdated
+            }))
+            .filter((c: Client) => c.profile?.name && c.profile.name.trim().length > 0);
+      } catch (e) {
+        console.warn("DB Fetch Error:", e);
+        return []; 
       }
     }
-
-    try {
-      const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
-      return saved ? JSON.parse(saved) : [];
-    } catch (e) {
-      return [];
-    }
-  },
-
-  transferOwnership: async (clientId: string, newUserId: string): Promise<void> => {
-    if (!supabase) throw new Error('Supabase not configured');
     
-    // Try RPC first (safest for RLS)
-    const { error: rpcError } = await supabase.rpc('transfer_client_owner', {
-      p_client_id: clientId,
-      p_new_user_id: newUserId,
-    });
-
-    if (rpcError) {
-        // Fallback to direct update if RPC missing (requires policy permission)
-        const { error: updateError } = await supabase
-            .from('clients')
-            .update({ user_id: newUserId })
-            .eq('id', clientId);
-            
-        if (updateError) throw new Error(rpcError.message + " | " + updateError.message);
-    }
+    try {
+        const local = localStorage.getItem(LOCAL_STORAGE_KEY);
+        const all = local ? JSON.parse(local) : [];
+        return all.filter((c: Client) => c.profile?.name && c.profile.name.trim().length > 0);
+    } catch { return []; }
   },
 
   saveClient: async (client: Client, userId?: string): Promise<Client> => {
-    if (!isSupabaseConfigured() || !supabase) {
-      const currentClientsStr = localStorage.getItem(LOCAL_STORAGE_KEY);
-      let currentClients: Client[] = currentClientsStr ? JSON.parse(currentClientsStr) : [];
-      const clientToSave = { ...client, lastUpdated: new Date().toISOString() };
-      const index = currentClients.findIndex(c => c.id === client.id);
-      if (index >= 0) currentClients[index] = clientToSave;
-      else currentClients.push(clientToSave);
-      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(currentClients));
-      return clientToSave;
+    if (!client.profile?.name || !client.profile.name.trim()) {
+        throw new Error("Client name is required.");
     }
 
-    const session = await getActiveSession();
-    const authUser = session?.user;
-    
-    if (!authUser) {
-       // Attempt one more proactive refresh if getActiveSession failed silently
-       const { data: refreshData } = await supabase.auth.refreshSession();
-       if (!refreshData.session?.user) {
-           throw new Error("Session expired. Please reload or log in.");
-       }
-    }
-
-    // Use specific user ID from session if valid, otherwise fallback
-    const validUserId = session?.user?.id || userId;
-    if (!validUserId) throw new Error("Authentication missing.");
-
-    const { _ownerId, _ownerEmail, ...payloadData } = client;
-    // Trust client-side owner ID if present, else default to current user (self)
-    const rowOwnerId = (_ownerId && _ownerId !== 'undefined') ? _ownerId : validUserId;
-
-    const payload: any = {
-      id: client.id,
-      user_id: rowOwnerId, 
-      data: { ...payloadData, lastUpdated: new Date().toISOString() },
-      updated_at: new Date().toISOString()
+    const now = new Date().toISOString();
+    const clientData = { 
+        ...client, 
+        lastUpdated: now,
+        id: client.id || generateUUID()
     };
-    
-    // UPSERT - Optimized to NOT select return data to avoid RLS read policy blocks for non-admin users
-    const { error } = await supabase.from('clients').upsert(payload, { onConflict: 'id' });
 
-    if (error) throw new Error(`Sync Error: ${error.message}`);
+    if (isSupabaseConfigured() && supabase) {
+        const { data: { session } } = await supabase.auth.getSession();
+        const activeUser = userId || session?.user?.id;
+        if (!activeUser) throw new Error("No authenticated user");
 
-    const isSelf = rowOwnerId === validUserId;
+        const targetOwner = clientData._ownerId || activeUser;
 
-    // We reconstruct the return object from payload since we trusted the client-side ID
-    return {
-      ...client,
-      id: payload.id,
-      _ownerId: rowOwnerId,
-      _ownerEmail: isSelf ? session?.user?.email : (client._ownerEmail || 'Pending Sync...')
-    };
-  },
+        const { data, error } = await supabase
+            .from('clients')
+            .upsert({
+                id: clientData.id,
+                user_id: targetOwner,
+                data: { ...clientData, _ownerId: targetOwner },
+                updated_at: now
+            })
+            .select()
+            .single();
 
-  createClientsBulk: async (leads: any[], targetUserId: string): Promise<number> => {
-    if (!supabase) return 0;
-    
-    const session = await getActiveSession();
-    const currentUserId = session?.user?.id;
-    if (!currentUserId) throw new Error("Not authenticated");
-
-    // STRATEGY: Insert as current user first (to satisfy RLS), then transfer ownership.
-    // This allows Admins to import leads for others even if "Insert for Others" policy is missing.
-    const insertAsSelf = currentUserId !== targetUserId;
-    
-    const payloads = leads.map(lead => {
-      // Robust UUID Check
-      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-      // If valid UUID use it, else generate new safely
-      const id = (lead.id && uuidRegex.test(lead.id)) ? lead.id : safeUUID();
-      
-      const mergedProfile = {
-          ...INITIAL_PROFILE,
-          ...(lead.profile || {}),
-          name: lead.name || lead.profile?.name || 'Unnamed Lead',
-          email: lead.email || lead.profile?.email || '',
-          phone: lead.phone || lead.profile?.phone || ''
-      };
-
-      return {
-        id,
-        user_id: insertAsSelf ? currentUserId : targetUserId, 
-        data: {
-          expenses: INITIAL_EXPENSES,
-          retirement: INITIAL_RETIREMENT,
-          cpfState: INITIAL_CPF,
-          cashflowState: INITIAL_CASHFLOW,
-          insuranceState: INITIAL_INSURANCE,
-          investorState: INITIAL_INVESTOR,
-          propertyState: INITIAL_PROPERTY,
-          wealthState: INITIAL_WEALTH,
-          followUp: { status: lead.status || lead.followUp?.status || 'new' },
-          
-          ...lead,
-          
-          id,
-          profile: mergedProfile,
-          lastUpdated: new Date().toISOString(),
-          _ownerId: targetUserId, // We intentionally put the TARGET as the data owner
-          advisorId: targetUserId 
-        },
-        updated_at: new Date().toISOString()
-      };
-    });
-
-    // 1. Insert (As Self or Target)
-    const { error } = await supabase.from('clients').insert(payloads, { count: 'exact' });
-    
-    if (error) {
-        console.error("Bulk Insert Error:", error);
-        throw new Error(error.message);
-    }
-
-    // 2. Transfer (If inserted as self but meant for target)
-    if (insertAsSelf) {
-        console.log(`Leads inserted as Admin. Transferring ${payloads.length} leads to ${targetUserId}...`);
-        
-        // We use a loop for reliability with RPC as it handles one ID at a time usually
-        // A bulk RPC would be better but this is safer without knowing DB schema fully
-        for (const p of payloads) {
-            try {
-                // Try RPC
-                const { error: rpcError } = await supabase.rpc('transfer_client_owner', {
-                    p_client_id: p.id,
-                    p_new_user_id: targetUserId
-                });
-                
-                if (rpcError) {
-                    // Fallback to direct update (if policy allows)
-                    await supabase.from('clients').update({ user_id: targetUserId }).eq('id', p.id);
-                }
-            } catch (e) {
-                console.warn(`Failed to transfer lead ${p.id}. It remains with Admin.`, e);
+        if (error) {
+            console.error("Supabase Save Error:", error);
+            
+            // SPECIFIC ERROR TRAP FOR RECURSION
+            if (error.message && (error.message.includes('stack depth') || error.message.includes('infinite recursion'))) {
+                 throw new Error("DATABASE ERROR: Permission Loop Detected. Please go to Admin > DB Repair and run the fix script.");
             }
+
+            const errMsg = error.message || error.details || (typeof error === 'object' ? JSON.stringify(error) : String(error));
+            throw new Error(errMsg);
         }
+        return { ...data.data, id: data.id, _ownerId: data.user_id };
     }
+
+    const local = localStorage.getItem(LOCAL_STORAGE_KEY);
+    const clients: Client[] = local ? JSON.parse(local) : [];
+    const idx = clients.findIndex(c => c.id === clientData.id);
+    if (idx >= 0) clients[idx] = clientData;
+    else clients.push(clientData);
+    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(clients));
     
-    return payloads.length;
+    return clientData;
   },
 
-  deleteClient: async (clientId: string): Promise<void> => {
-    // 1. Force use Supabase if object exists, ignoring flag
-    if (supabase) {
-      
-      const session = await getActiveSession();
-      if (!session) {
-          throw new Error("Authentication Error: You are not logged in. Please refresh.");
+  deleteClient: async (id: string) => {
+      if (isSupabaseConfigured() && supabase) {
+          const { error } = await supabase.from('clients').delete().eq('id', id);
+          if (error) throw new Error(error.message || JSON.stringify(error));
+          return;
       }
-
-      console.log(`[Delete Protocol] Removing ${clientId}...`);
-
-      // 1. Try manual clean first (helps if cascade is broken)
-      try {
-          await supabase.from('activities').delete().eq('client_id', clientId);
-          await supabase.from('client_files').delete().eq('client_id', clientId);
-          await supabase.from('client_field_values').delete().eq('client_id', clientId);
-      } catch (err) {
-          console.warn("Manual cascade warning:", err);
+      
+      const local = localStorage.getItem(LOCAL_STORAGE_KEY);
+      if (local) {
+          const clients = JSON.parse(local).filter((c: Client) => c.id !== id);
+          localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(clients));
       }
+  },
 
-      // 2. Attempt Standard Delete WITH TIMEOUT to prevent infinite lock waits
-      console.log("Attempting Standard Delete...");
-      
-      // We use Promise.race to enforce a 5s timeout on the delete call
-      const deletePromise = supabase
-        .from('clients')
-        .delete()
-        .eq('id', clientId)
-        .select('id');
-        
-      const timeoutPromise = new Promise<{ error: any; data: any }>((resolve) => 
-          setTimeout(() => resolve({ error: { message: "Database Lock Timeout" }, data: null }), 5000)
-      );
+  deleteClientsBulk: async (ids: string[]) => {
+      if (ids.length === 0) return;
 
-      const { error, data } = await Promise.race([deletePromise, timeoutPromise]);
+      if (isSupabaseConfigured() && supabase) {
+          const chunks = chunkArray(ids, 20);
+          for (const chunk of chunks) {
+             const { error } = await supabase.from('clients').delete().in('id', chunk);
+             if (error) throw new Error(error.message || JSON.stringify(error));
+          }
+          return;
+      }
       
-      // 3. AUTO-FALLBACK: If failed, timed out, or returned 0 rows (RLS blocked), try Superuser RPC
-      if (error || !data || data.length === 0) {
-          console.warn(`Standard delete failed/blocked (${error?.message || 'No Rows'}). Engaging Superuser Protocol...`);
+      const local = localStorage.getItem(LOCAL_STORAGE_KEY);
+      if (local) {
+          const clients = JSON.parse(local).filter((c: Client) => !ids.includes(c.id));
+          localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(clients));
+      }
+  },
+
+  transferClientsBulk: async (ids: string[], newOwnerId: string) => {
+      if (ids.length === 0) return;
+
+      if (isSupabaseConfigured() && supabase) {
+          const chunks = chunkArray(ids, 20);
           
-          // Call the RPC function (V26.0)
-          const { data: rpcData, error: rpcError } = await supabase.rpc('delete_client_admin', { 
-              target_client_id: clientId 
-          });
+          for (const chunk of chunks) {
+              const { data: clientsToUpdate, error: fetchErr } = await supabase
+                  .from('clients')
+                  .select('id, data')
+                  .in('id', chunk);
+              
+              if (fetchErr) throw new Error(fetchErr.message);
+              if (!clientsToUpdate || clientsToUpdate.length === 0) continue;
 
-          if (rpcError) {
-              console.error("Nuclear Delete Failed:", rpcError);
-              throw new Error(`DELETE FAILED: ${rpcError.message}. The database might be locked. Please refresh and try Admin Repair.`);
-          }
+              const updates = clientsToUpdate.map(row => ({
+                  id: row.id,
+                  user_id: newOwnerId,
+                  data: { ...row.data, _ownerId: newOwnerId },
+                  updated_at: new Date().toISOString()
+              }));
 
-          if (rpcData === true) {
-              console.log("Superuser Delete Successful.");
-              return; 
-          } else {
-              console.warn("Superuser Delete returned false (ID not found?). Assuming success.");
-              return;
+              const { error: updateErr } = await supabase
+                  .from('clients')
+                  .upsert(updates);
+              
+              if (updateErr) throw new Error(updateErr.message || JSON.stringify(updateErr));
           }
+          return;
       }
+      throw new Error("Bulk transfer requires cloud database");
+  },
 
-      console.log("Standard Delete Successful.");
-      return;
-    }
-    
-    // Local fallback
-    const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
-    if (saved) {
-      console.log("Deleting from Local Storage...");
-      const filtered = JSON.parse(saved).filter((c: any) => c.id !== clientId);
-      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(filtered));
-    }
+  createClientsBulk: async (clients: Client[], targetOwnerId: string) => {
+      const validClients = clients.filter(c => c.profile?.name && c.profile.name.trim().length > 0);
+      if (validClients.length === 0) return;
+
+      if (isSupabaseConfigured() && supabase) {
+          const rows = validClients.map(c => ({
+              id: c.id || generateUUID(),
+              user_id: targetOwnerId,
+              data: { ...c, _ownerId: targetOwnerId },
+              updated_at: new Date().toISOString()
+          }));
+          
+          const chunks = chunkArray(rows, 50);
+          for (const chunk of chunks) {
+              const { error } = await supabase.from('clients').insert(chunk);
+              if (error) throw new Error(error.message || JSON.stringify(error));
+          }
+          return;
+      }
+      
+      const local = localStorage.getItem(LOCAL_STORAGE_KEY);
+      const existing = local ? JSON.parse(local) : [];
+      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify([...existing, ...validClients]));
+  },
+
+  transferOwnership: async (clientId: string, newOwnerId: string) => {
+      if (isSupabaseConfigured() && supabase) {
+          const { data: current, error: fetchErr } = await supabase
+            .from('clients')
+            .select('data')
+            .eq('id', clientId)
+            .single();
+            
+          if (fetchErr || !current) throw new Error("Client not found");
+
+          const newData = { ...current.data, _ownerId: newOwnerId };
+          
+          const { error } = await supabase
+              .from('clients')
+              .update({ user_id: newOwnerId, data: newData })
+              .eq('id', clientId);
+          
+          if (error) throw new Error(error.message || JSON.stringify(error));
+          return;
+      }
+      throw new Error("Transfer requires cloud database connection");
   }
 };

@@ -1,105 +1,109 @@
 
-import { supabase } from '../supabase';
+import { adminDb } from './admin';
 import { MarketNewsItem } from '../../types';
+
+// Fallback Key
+const LOCAL_KEY = 'sproutly_market_news';
 
 export const marketDb = {
   // Fetch market news sorted by date
+  // NOW SHARED: Reads from Organization Settings
   getNews: async (): Promise<MarketNewsItem[]> => {
-    // Local storage key
-    const LOCAL_KEY = 'sproutly_market_news';
-
-    if (!supabase) {
+    try {
+        const settings = await adminDb.getSystemSettings();
+        if (settings?.marketIntel) {
+            return settings.marketIntel.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+        }
+        
+        // Fallback to local if no shared settings found (offline or uninitialized)
         const saved = localStorage.getItem(LOCAL_KEY);
         return saved ? JSON.parse(saved) : [];
-    }
-
-    try {
-        const { data, error } = await supabase
-            .from('market_news')
-            .select('*')
-            .order('created_at', { ascending: false });
-        
-        if (error) {
-            // Expanded Error Handling for Missing Table / Schema Cache issues
-            if (
-                error.code === '42P01' || 
-                error.message?.includes('market_news') || 
-                error.message?.includes('schema cache') ||
-                error.message?.includes('does not exist')
-            ) { 
-                console.warn("Market table missing or schema error, falling back to local storage.");
-                const saved = localStorage.getItem(LOCAL_KEY);
-                return saved ? JSON.parse(saved) : [];
-            }
-            throw error;
-        }
-        return data || [];
-    } catch (e: any) {
-        console.error("Market fetch error:", e.message || e);
-        // Fallback to local storage on error to keep app functional
+    } catch (e) {
+        console.warn("Market fetch error, using local:", e);
         const saved = localStorage.getItem(LOCAL_KEY);
         return saved ? JSON.parse(saved) : [];
     }
   },
 
   // Save new intelligence item
+  // NOW SHARED: Pushes to Organization Settings
   addNews: async (item: MarketNewsItem): Promise<void> => {
-    const LOCAL_KEY = 'sproutly_market_news';
-
-    if (!supabase) {
-        const current = JSON.parse(localStorage.getItem(LOCAL_KEY) || '[]');
-        localStorage.setItem(LOCAL_KEY, JSON.stringify([item, ...current]));
-        return;
-    }
-
     try {
-        const { data: { session } } = await supabase.auth.getSession();
-        const payload = { ...item, author_id: session?.user?.id };
+        const settings = await adminDb.getSystemSettings();
         
-        const { error } = await supabase.from('market_news').insert(payload);
+        // Default structure if empty
+        const safeSettings = settings || {
+            products: [],
+            teams: [],
+            appSettings: { statuses: [], platforms: [] },
+            marketIntel: []
+        };
+
+        const currentNews = safeSettings.marketIntel || [];
         
-        if (error) {
-             if (
-                error.code === '42P01' || 
-                error.message?.includes('market_news') || 
-                error.message?.includes('schema cache') ||
-                error.message?.includes('does not exist')
-            ) { 
-                // Table missing fallback
-                const current = JSON.parse(localStorage.getItem(LOCAL_KEY) || '[]');
-                localStorage.setItem(LOCAL_KEY, JSON.stringify([item, ...current]));
-                return;
-            }
-            throw error;
-        }
+        // Prepend new item and Limit to 50 items to keep JSON light
+        const updatedNews = [item, ...currentNews].slice(0, 50);
+        
+        // Save back to DB
+        await adminDb.saveSystemSettings({
+            ...safeSettings,
+            marketIntel: updatedNews
+        });
+
+        // Also sync local just in case
+        localStorage.setItem(LOCAL_KEY, JSON.stringify(updatedNews));
+
     } catch (e: any) {
-        console.error("Market save error:", e.message || e);
-        // Fallback to local
+        console.error("Market save error (Permissions?):", e.message);
+        // Fallback to local if DB write fails (e.g. Viewer role)
         const current = JSON.parse(localStorage.getItem(LOCAL_KEY) || '[]');
-        localStorage.setItem(LOCAL_KEY, JSON.stringify([item, ...current]));
+        const updated = [item, ...current];
+        localStorage.setItem(LOCAL_KEY, JSON.stringify(updated));
+        
+        // If it was a permission error, we rethrow so the UI can warn the user
+        if (e.message?.includes('permission') || e.message?.includes('policy')) {
+            throw new Error("Shared Database Write Failed (Permission Denied). Saved locally only.");
+        }
     }
   },
 
   // Delete item
   deleteNews: async (id: string): Promise<void> => {
-      const LOCAL_KEY = 'sproutly_market_news';
-
-      if (!supabase) {
-          const current = JSON.parse(localStorage.getItem(LOCAL_KEY) || '[]');
-          const filtered = current.filter((i: any) => i.id !== id);
-          localStorage.setItem(LOCAL_KEY, JSON.stringify(filtered));
-          return;
-      }
-
       try {
-          const { error } = await supabase.from('market_news').delete().eq('id', id);
-          if (error) throw error;
+          const settings = await adminDb.getSystemSettings();
+          if (!settings?.marketIntel) return;
+          
+          const updatedNews = settings.marketIntel.filter(i => i.id !== id);
+          
+          await adminDb.saveSystemSettings({
+              ...settings,
+              marketIntel: updatedNews
+          });
+          
+          // Sync local
+          localStorage.setItem(LOCAL_KEY, JSON.stringify(updatedNews));
+
       } catch (e) {
           console.warn("Market delete error, syncing local");
-          // Fallback local delete
           const current = JSON.parse(localStorage.getItem(LOCAL_KEY) || '[]');
           const filtered = current.filter((i: any) => i.id !== id);
           localStorage.setItem(LOCAL_KEY, JSON.stringify(filtered));
+      }
+  },
+  
+  // New: Clear All
+  clearAllNews: async (): Promise<void> => {
+      try {
+          const settings = await adminDb.getSystemSettings();
+          if (!settings) return;
+          
+          await adminDb.saveSystemSettings({
+              ...settings,
+              marketIntel: []
+          });
+          localStorage.removeItem(LOCAL_KEY);
+      } catch (e) {
+          localStorage.removeItem(LOCAL_KEY);
       }
   }
 };

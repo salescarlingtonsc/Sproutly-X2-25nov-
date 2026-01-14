@@ -1,4 +1,3 @@
-
 import React, { useState, useMemo, useEffect } from 'react';
 import { Advisor, Team, UserRole, SubscriptionTier } from '../../../types';
 import { ALL_AVAILABLE_TABS, TIER_CONFIG, DEFAULT_SETTINGS } from '../../../lib/config';
@@ -156,7 +155,10 @@ const AdvisorRow: React.FC<{
             <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold ${isLeader ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-200 text-slate-600'}`}>{user.avatar}</div>
             <div>
                 <span className={`font-medium block ${isLeader ? 'text-indigo-900' : 'text-slate-900'}`}>{user.name}</span>
-                <div className="flex gap-1 flex-wrap">
+                <div className="flex gap-1 flex-wrap items-center">
+                    {/* ID Badge for Debugging */}
+                    <span className="text-[8px] text-slate-300 font-mono" title={`Full ID: ${user.id}`}>{user.id.substring(0, 4)}...</span>
+                    
                     {user.isAgencyAdmin && <span className="text-[10px] bg-slate-800 text-white px-1.5 py-0.5 rounded">Director</span>}
                     {user.role === 'director' && !user.isAgencyAdmin && <span className="text-[10px] bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded">Director</span>}
                     {user.role === 'manager' && <span className="text-[10px] bg-teal-100 text-teal-700 px-1.5 py-0.5 rounded">Manager</span>}
@@ -319,12 +321,16 @@ export const UserManagement: React.FC<UserManagementProps> = ({ advisors, teams,
   const groupedAdvisors = useMemo(() => {
       const groups: { [key: string]: Advisor[] } = {};
       const unassigned: Advisor[] = [];
+      
+      // FIX: Get set of valid team IDs to detect orphans
+      const validTeamIds = new Set(visibleTeams.map(t => t.id));
 
       activeUsers.forEach(user => {
-          if (user.teamId) {
+          if (user.teamId && validTeamIds.has(user.teamId)) {
               if (!groups[user.teamId]) groups[user.teamId] = [];
               groups[user.teamId].push(user);
           } else {
+              // If no team ID OR team ID is invalid/not visible, treat as unassigned
               unassigned.push(user);
           }
       });
@@ -340,35 +346,55 @@ export const UserManagement: React.FC<UserManagementProps> = ({ advisors, teams,
       });
 
       return { groups, unassigned };
-  }, [activeUsers]);
+  }, [activeUsers, visibleTeams]);
 
   // --- TREE CONSTRUCTION ---
   const hierarchyTree = useMemo(() => {
+      // 1. Find Root
       let root = activeUsers.find(a => a.isAgencyAdmin || a.role === 'director');
       if (!root && activeUsers.length > 0) root = activeUsers[0]; 
-
       if (!root) return null;
 
+      // 2. Identify all Managers (leaders of visible teams)
+      const managerIds = new Set(visibleTeams.map(t => t.leaderId));
+
       const buildNode = (person: Advisor): TreeNode => {
-          const ledTeam = visibleTeams.find(t => t.leaderId === person.id);
-          let childrenAdvisors: Advisor[] = [];
-          
-          if (ledTeam) {
-              childrenAdvisors = activeUsers.filter(a => a.teamId === ledTeam.id && a.id !== person.id);
-          } else if (person.isAgencyAdmin || person.role === 'director') {
-              childrenAdvisors = activeUsers.filter(a => {
-                  if (a.id === person.id) return false;
-                  if (a.teamId) {
-                      const leaderId = visibleTeams.find(t => t.id === a.teamId)?.leaderId;
-                      return leaderId === person.id;
-                  }
-                  return true;
+          let children: Advisor[] = [];
+
+          // A. If person is Root (Director)
+          if (person.id === root?.id) {
+              // 1. Managers (excluding self if root is also a manager/team leader)
+              const managers = activeUsers.filter(u => managerIds.has(u.id) && u.id !== person.id);
+              
+              // 2. Direct Unit Members (if root leads a team)
+              const rootTeam = visibleTeams.find(t => t.leaderId === person.id);
+              const directUnitMembers = rootTeam 
+                  ? activeUsers.filter(u => u.teamId === rootTeam.id && u.id !== person.id) 
+                  : [];
+
+              // 3. Unassigned / Orphans (anyone not a manager, not in root's team, and not in any other valid team)
+              const others = activeUsers.filter(u => {
+                  if (u.id === person.id) return false;
+                  if (managerIds.has(u.id)) return false; // Already captured in managers
+                  if (u.teamId && visibleTeams.some(t => t.id === u.teamId)) return false; // Belongs to a valid team (will be captured under that manager)
+                  return true; // No team, or invalid team -> Orphan
               });
+
+              // Combine unique (using Set to prevent dupes if logic overlaps, though filtered above)
+              const childSet = new Set([...managers, ...directUnitMembers, ...others]);
+              children = Array.from(childSet);
+
+          } else {
+              // B. Regular Manager or Team Lead
+              const ledTeam = visibleTeams.find(t => t.leaderId === person.id);
+              if (ledTeam) {
+                  children = activeUsers.filter(u => u.teamId === ledTeam.id && u.id !== person.id);
+              }
           }
 
           return {
               advisor: person,
-              children: childrenAdvisors.map(child => buildNode(child))
+              children: children.map(c => buildNode(c))
           };
       };
 

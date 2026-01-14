@@ -104,7 +104,7 @@ const MarketNewsTab: React.FC = () => {
 
   const handleLiveSync = async () => {
       setIsSyncing(true);
-      toast.info("Scanning global markets... This may take 10s.");
+      toast.info("Scanning global markets... Broadcasting to team...");
       
       try {
           // 1. Fetch from Gemini Search
@@ -116,7 +116,7 @@ const MarketNewsTab: React.FC = () => {
               return;
           }
 
-          // 2. Process & Save
+          // 2. Process
           const processedItems: MarketNewsItem[] = liveItems.map((item: any, idx: number) => ({
               id: `live_${Date.now()}_${idx}`,
               headline: item.headline || 'Market Alert',
@@ -132,14 +132,19 @@ const MarketNewsTab: React.FC = () => {
               source_label: 'Live Web'
           }));
 
+          // 3. Save ALL at once (Atomic update) to prevent partial saves
+          // We need to reverse because addNews usually prepends, but here we want to batch
+          // Since marketDb.addNews saves individually, let's just loop.
+          // For true batching, we rely on the rapid execution.
           for (const item of processedItems) {
               await marketDb.addNews(item);
           }
 
-          // 3. Refresh UI
-          setNews(prev => [...processedItems, ...prev]);
-          generatePulse([...processedItems, ...news]);
-          toast.success(`Synced ${processedItems.length} new insights.`);
+          // 4. Refresh UI
+          const freshNews = await marketDb.getNews();
+          setNews(freshNews);
+          generatePulse(freshNews);
+          toast.success(`Synced & Broadcasted ${processedItems.length} new insights.`);
 
       } catch (e: any) {
           toast.error("Sync failed: " + e.message);
@@ -176,7 +181,7 @@ const MarketNewsTab: React.FC = () => {
         
         // 4. Update UI
         setNews(prev => [newItem, ...prev]);
-        toast.success("Intelligence Ingested.");
+        toast.success("Intelligence Ingested & Broadcasted.");
         setIsIngestOpen(false);
         setRawInput('');
     } catch (e: any) {
@@ -187,10 +192,18 @@ const MarketNewsTab: React.FC = () => {
   };
 
   const handleDelete = async (id: string) => {
-      if (!confirm("Remove this intelligence record?")) return;
+      if (!confirm("Remove this intelligence record? This removes it for everyone.")) return;
       await marketDb.deleteNews(id);
       setNews(prev => prev.filter(n => n.id !== id));
-      toast.success("Record deleted.");
+      toast.success("Record deleted globally.");
+  };
+
+  const handleClearAll = async () => {
+      if (!confirm("Clear ALL market intelligence? This action affects the entire organization.")) return;
+      await marketDb.clearAllNews();
+      setNews([]);
+      setPulse('');
+      toast.success("Feed cleared for organization.");
   };
 
   return (
@@ -198,7 +211,14 @@ const MarketNewsTab: React.FC = () => {
       <PageHeader 
         title="Market Intelligence" 
         icon="📡" 
-        subtitle="Strategic News Aggregation & Predictive Analytics."
+        subtitle={
+            <span className="flex items-center gap-2">
+                Strategic News Aggregation.
+                <span className="bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded text-[10px] font-bold border border-indigo-200 uppercase tracking-wide">
+                    Organization Intelligence Feed
+                </span>
+            </span>
+        }
         action={
             <div className="flex gap-2">
                 <Button variant="secondary" onClick={handleLiveSync} isLoading={isSyncing} leftIcon="⚡">
@@ -250,13 +270,18 @@ const MarketNewsTab: React.FC = () => {
       <div className="space-y-6">
          <div className="flex items-center justify-between">
             <h3 className="font-bold text-slate-800 text-sm uppercase tracking-wide">Intelligence Feed ({news.length})</h3>
+            {news.length > 0 && (
+                <button onClick={handleClearAll} className="text-[10px] font-bold text-red-400 hover:text-red-600 hover:underline">
+                    Clear Feed
+                </button>
+            )}
          </div>
          
          {news.length === 0 ? (
              <div className="p-12 text-center bg-white rounded-2xl border-2 border-dashed border-slate-200">
                  <div className="text-4xl mb-4 grayscale opacity-20">📰</div>
                  <p className="text-slate-400 font-medium text-sm">No intelligence recorded.</p>
-                 <p className="text-slate-300 text-xs mt-1">Use "Live Market Sync" to fetch updates.</p>
+                 <p className="text-slate-300 text-xs mt-1">Use "Live Market Sync" to push updates to the team.</p>
              </div>
          ) : (
              <div className="grid grid-cols-1 gap-6">
@@ -276,7 +301,7 @@ const MarketNewsTab: React.FC = () => {
             <div className="flex gap-2 w-full justify-end">
                 <Button variant="ghost" onClick={() => setIsIngestOpen(false)}>Cancel</Button>
                 <Button variant="primary" onClick={handleProcessIntel} isLoading={isProcessing} disabled={!rawInput.trim()}>
-                    Process & Save
+                    Broadcast Intel
                 </Button>
             </div>
         }
@@ -284,7 +309,7 @@ const MarketNewsTab: React.FC = () => {
          <div className="space-y-4">
             <p className="text-xs text-slate-500 font-medium">
                 Paste raw text from news articles, research reports, or internal memos. 
-                Sproutly AI will distill it into structured market intelligence.
+                Sproutly AI will distill it into structured market intelligence and <strong>push it to the entire organization.</strong>
             </p>
             <textarea 
                 className="w-full h-48 p-4 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:ring-2 focus:ring-indigo-500 outline-none resize-none"

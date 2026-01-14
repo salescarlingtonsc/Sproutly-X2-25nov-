@@ -1,11 +1,10 @@
-
 import React, { createContext, useContext, useState, useMemo, useEffect, ReactNode, useRef } from 'react';
 import { 
   Profile, Expenses, CustomExpense, Child, CpfState, CashflowState, 
   InsuranceState, InvestorState, PropertyState, WealthState, Client, 
   RetirementSettings, CpfData, CashflowData, Sale, FamilyMember, Policy, Note, ChatMessage, ContactStatus, PortfolioItem
 } from '../types';
-import { getAge, toNum } from '../lib/helpers';
+import { getAge, toNum, generateRefCode } from '../lib/helpers';
 import { computeCpf } from '../lib/calculators';
 
 // --- INITIAL STATES ---
@@ -140,7 +139,7 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   // Stable Draft IDs (Prevent Duplicates on Autosave)
   // These persist across renders even if state updates haven't propagated
   const draftId = useRef<string>(safeUUID());
-  const draftRefCode = useRef<string>(`REF-${Math.floor(Math.random()*10000)}`);
+  const draftRefCode = useRef<string>(generateRefCode());
 
   const [lastUpdated, setLastUpdated] = useState<string>(new Date().toISOString());
   const [followUp, setFollowUp] = useState<any>({ status: 'new' });
@@ -195,7 +194,14 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     setClientId(c.id);
     setClientRef(c.referenceCode || null);
     setLastUpdated(c.lastUpdated);
-    setFollowUp(c.followUp || { status: 'new' });
+    
+    // SAFETY SYNC: Ensure dealValue is populated from value if missing
+    const safeFollowUp = c.followUp || { status: 'new' };
+    if (c.value && !safeFollowUp.dealValue) {
+        safeFollowUp.dealValue = c.value.toString();
+    }
+    setFollowUp(safeFollowUp);
+    
     setAppointments(c.appointments || {});
     setDocuments(c.documents || []);
     setOwnerId(c._ownerId || null);
@@ -247,7 +253,7 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     setClientRef(null);
     // Regenerate stable drafts for new session
     draftId.current = safeUUID();
-    draftRefCode.current = `REF-${Math.floor(Math.random()*10000)}`;
+    draftRefCode.current = generateRefCode();
 
     setLastUpdated(new Date().toISOString());
     setFollowUp({ status: 'new' });

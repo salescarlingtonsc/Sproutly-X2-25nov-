@@ -171,6 +171,54 @@ export const runQuantumDeepDive = async (clientData: any) => {
   } catch (error) { throw error; }
 };
 
+// --- DIRECTOR BRIEFING ENGINE (NEW) ---
+export const generateDirectorBriefing = async (stats: any) => {
+  const ai = getAI();
+  const prompt = `
+    ACT AS AN ELITE AGENCY DIRECTOR.
+    Analyze this team performance data: ${JSON.stringify(stats)}
+    
+    Stats Legend:
+    - Efficiency: Appointment Set Rate (Contact -> Set)
+    - Close Rate: Appointment Met -> Closed
+    - Activity: Total seconds online
+    
+    TASK:
+    1. Identify the single biggest bottleneck in the agency pipeline.
+    2. Provide a specific, psychological coaching intervention for the team.
+    3. Highlight one "Star Performer" pattern if visible, or a risk pattern.
+    
+    RESPONSE FORMAT (JSON):
+    {
+      "bottleneck": "...",
+      "coaching_tip": "...",
+      "strategic_observation": "..."
+    }
+  `;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-pro-preview',
+      contents: prompt,
+      config: {
+        thinkingConfig: { thinkingBudget: 16000 },
+        responseMimeType: "application/json",
+        responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+                bottleneck: { type: Type.STRING },
+                coaching_tip: { type: Type.STRING },
+                strategic_observation: { type: Type.STRING }
+            }
+        }
+      }
+    });
+    return JSON.parse(response.text || '{}');
+  } catch (e) {
+    return { bottleneck: "Data Analysis Unavailable", coaching_tip: "Focus on fundamentals.", strategic_observation: "Ensure data accuracy." };
+  }
+};
+
 // --- MARKET INTEL PARSER (MANUAL INPUT) ---
 export const analyzeMarketIntel = async (rawText: string) => {
   const ai = getAI();

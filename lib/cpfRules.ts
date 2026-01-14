@@ -1,3 +1,4 @@
+
 // CPF Ordinary Wage Ceiling - Graduated increases:
 // 2023 (Sep-Dec): $6,300
 // 2024: $6,800

@@ -8,12 +8,14 @@ import { AddSaleModal } from '../crm/components/AddSaleModal';
 import { useToast } from '../../contexts/ToastContext';
 import { logActivity } from '../../lib/db/activities';
 import { adminDb } from '../../lib/db/admin';
+import { supabase } from '../../lib/supabase'; // Import Supabase
 
 const RemindersTab: React.FC = () => {
   const { user } = useAuth();
   const toast = useToast();
   const [clients, setClients] = useState<Client[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
+  const [advisorMap, setAdvisorMap] = useState<Record<string, string>>({}); // New state for advisor names/emails
   
   // Filter State
   const [advisorFilter, setAdvisorFilter] = useState<string>('All');
@@ -33,24 +35,67 @@ const RemindersTab: React.FC = () => {
     fetchConfig();
   }, [user]);
 
+  // Fetch Advisor Profiles to resolve IDs to Emails/Names
+  useEffect(() => {
+    const resolveAdvisorProfiles = async () => {
+        if (!supabase || clients.length === 0) return;
+        
+        const uniqueIds = new Set<string>();
+        clients.forEach(c => {
+            if (c._ownerId) uniqueIds.add(c._ownerId);
+        });
+
+        if (uniqueIds.size === 0) return;
+
+        try {
+            const { data } = await supabase
+                .from('profiles')
+                .select('id, name, email')
+                .in('id', Array.from(uniqueIds));
+
+            if (data) {
+                const newMap: Record<string, string> = {};
+                data.forEach(p => {
+                    // Prefer: Name (Email) > Email > Name
+                    let displayLabel = p.email || 'Unknown';
+                    if (p.name && p.name.trim() !== '' && p.email) {
+                        displayLabel = `${p.name} (${p.email})`;
+                    } else if (p.name) {
+                        displayLabel = p.name;
+                    }
+                    newMap[p.id] = displayLabel;
+                });
+                setAdvisorMap(newMap);
+            }
+        } catch (e) {
+            console.debug('Failed to fetch advisor profiles for filter.');
+        }
+    };
+    
+    resolveAdvisorProfiles();
+  }, [clients]);
+
   const refreshData = () => {
     if (user) {
       db.getClients(user.id).then(setClients);
     }
   };
 
-  // Derive unique advisors from the loaded clients
+  // Derive unique advisors from the loaded clients, using the resolved Map
   const availableAdvisors = useMemo(() => {
       const map = new Map<string, string>();
       clients.forEach(c => {
           if (c._ownerId) {
-              // Use email part before @ as name if available, else 'Advisor'
-              const name = c._ownerEmail ? c._ownerEmail.split('@')[0] : `Advisor ${c._ownerId.slice(0,4)}`;
+              // Priority: Resolved Map > Client stored email > Fallback ID
+              let name = advisorMap[c._ownerId];
+              if (!name) {
+                  name = c._ownerEmail || `Advisor ${c._ownerId.slice(0,4)}`;
+              }
               map.set(c._ownerId, name);
           }
       });
       return Array.from(map.entries()).map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
-  }, [clients]);
+  }, [clients, advisorMap]);
 
   // Filter clients based on selection
   const filteredClients = useMemo(() => {
@@ -315,11 +360,11 @@ const RemindersTab: React.FC = () => {
                                         </span>
                                     </div>
                                     
-                                    {/* Advisor Name if viewing All */}
+                                    {/* Advisor Name if viewing All - UPDATED to show Email if available */}
                                     {advisorFilter === 'All' && c._ownerEmail && (
                                         <div className="mt-1 flex items-center gap-1">
-                                            <span className="text-[8px] uppercase font-bold text-slate-300 bg-slate-50 px-1 rounded">
-                                                {c._ownerEmail.split('@')[0]}
+                                            <span className="text-[8px] uppercase font-bold text-slate-300 bg-slate-50 px-1 rounded truncate max-w-[120px]">
+                                                {c._ownerEmail}
                                             </span>
                                         </div>
                                     )}

@@ -45,7 +45,8 @@ export const WhatsAppModal: React.FC<WhatsAppModalProps> = ({ client, templates,
   }, [selectedTemplateId, client, templates]);
 
   const handleSend = () => {
-    const phoneNumber = client.phone.replace(/[^0-9]/g, '');
+    const phoneProp = client.phone || client.profile?.phone || '';
+    const phoneNumber = phoneProp.replace(/[^0-9]/g, '');
     const url = `https://wa.me/${phoneNumber}?text=${encodeURIComponent(message)}`;
     window.open(url, '_blank');
     onClose();

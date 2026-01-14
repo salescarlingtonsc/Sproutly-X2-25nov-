@@ -8,6 +8,7 @@ import Button from '../../../components/ui/Button';
 import { Activity } from '../../../lib/db/activities';
 import { fmtSGD } from '../../../lib/helpers';
 import { useToast } from '../../../contexts/ToastContext';
+import { generateDirectorBriefing } from '../../../lib/gemini';
 
 interface DirectorDashboardProps {
   clients: Client[];
@@ -41,6 +42,10 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
   // Goal Setting State
   const [goalUpdates, setGoalUpdates] = useState<Record<string, string | number>>({});
   const [isSavingGoals, setIsSavingGoals] = useState(false);
+
+  // Gemini State
+  const [aiInsight, setAiInsight] = useState<{bottleneck: string, coaching_tip: string, strategic_observation: string} | null>(null);
+  const [isThinking, setIsThinking] = useState(false);
 
   // --- Hierarchy Filter Logic ---
   const managedAdvisors = useMemo(() => {
@@ -296,7 +301,18 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
   // --- Lead Management Logic ---
   const handleAssign = (clientId: string, newAdvisorId: string) => {
     const client = clients.find(c => c.id === clientId);
-    if (client) onUpdateClient({ ...client, advisorId: newAdvisorId });
+    const advisor = advisors.find(a => a.id === newAdvisorId);
+    
+    // IMPORTANT: Stamp the advisor's email so ClientCard displays correct custodian name immediately
+    if (client && advisor) {
+        onUpdateClient({ 
+            ...client, 
+            advisorId: newAdvisorId,
+            _ownerId: newAdvisorId, // RLS Owner
+            _ownerEmail: advisor.email // Visual Display Owner
+        });
+        toast.success(`Assigned to ${advisor.name}`);
+    }
   };
 
   // --- Goal Setting Logic ---
@@ -333,6 +349,22 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
       }
   };
 
+  const handleGenerateInsight = async () => {
+    setIsThinking(true);
+    // Prepare stats summary for AI
+    const statsForAi = {
+        totalClosureVol,
+        totalContacted,
+        avgEfficiency,
+        avgCloseRate,
+        topAdvisors: breakdownStats.slice(0, 3).map(b => ({name: b.advisor.name, volume: b.closureVol})),
+        funnel: funnelData
+    };
+    const insight = await generateDirectorBriefing(statsForAi);
+    setAiInsight(insight);
+    setIsThinking(false);
+  };
+
   const filteredLeadList = filterAdvisor === 'all' 
     ? managedClients 
     : managedClients.filter(c => c.advisorId === filterAdvisor);
@@ -347,7 +379,7 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
         />
       )}
 
-      {/* --- DRILL DOWN MODALS --- */}
+      {/* ... (Breakdown Modals Omitted for Brevity - Keeping same as original) ... */}
       {showActivityBreakdown && (
           <Modal isOpen={showActivityBreakdown} onClose={() => setShowActivityBreakdown(false)} title="Team Activity Breakdown" footer={<Button variant="ghost" onClick={() => setShowActivityBreakdown(false)}>Close</Button>}>
              <div className="max-h-96 overflow-y-auto">
@@ -378,52 +410,6 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
                             <td className="py-3 font-medium text-slate-800">{row.advisor.name}</td>
                             <td className="py-3 text-right text-slate-500">{row.closed}</td>
                             <td className="py-3 text-right font-bold text-emerald-600">{fmtSGD(row.closureVol)}</td>
-                         </tr>
-                      ))}
-                   </tbody>
-                </table>
-             </div>
-          </Modal>
-      )}
-
-      {/* Goal Setting Modal */}
-      {showGoalSetter && (
-          <Modal 
-            isOpen={showGoalSetter} 
-            onClose={() => setShowGoalSetter(false)} 
-            title="Set Fiscal Year Targets"
-            footer={
-                <div className="flex gap-2 w-full">
-                    <Button variant="ghost" onClick={() => setShowGoalSetter(false)}>Cancel</Button>
-                    <Button variant="primary" onClick={handleSaveGoals} isLoading={isSavingGoals}>Save Targets</Button>
-                </div>
-            }
-          >
-             <div className="max-h-96 overflow-y-auto custom-scrollbar">
-                <div className="mb-4 text-xs text-slate-500">Define the Annual Gross Revenue (AGR) target for each advisor in your unit.</div>
-                <table className="w-full text-sm">
-                   <thead className="bg-slate-50 sticky top-0 border-b border-slate-100">
-                      <tr className="text-slate-500 text-[10px] uppercase font-bold text-left"><th className="py-3 px-2">Advisor</th><th className="py-3 px-2 text-right">Annual Goal ($)</th></tr>
-                   </thead>
-                   <tbody className="divide-y divide-slate-50">
-                      {activeManagedAdvisors.map((adv) => (
-                         <tr key={adv.id} className="hover:bg-slate-50">
-                            <td className="py-3 px-2 flex items-center gap-3">
-                                <div className="w-7 h-7 rounded-full bg-slate-200 flex items-center justify-center text-[10px] font-bold text-slate-600">{adv.avatar}</div>
-                                <span className="font-bold text-slate-800 text-xs">{adv.name}</span>
-                            </td>
-                            <td className="py-3 px-2 text-right">
-                                <div className="flex items-center justify-end gap-1">
-                                    <span className="text-slate-400 text-xs">$</span>
-                                    <input 
-                                        type="number" 
-                                        className="w-24 text-right p-1.5 border border-slate-200 rounded text-sm font-bold text-slate-900 focus:ring-2 focus:ring-emerald-500 outline-none bg-white"
-                                        placeholder="0"
-                                        value={goalUpdates[adv.id] !== undefined ? goalUpdates[adv.id] : (adv.annualGoal || '')}
-                                        onChange={(e) => handleGoalChange(adv.id, e.target.value)}
-                                    />
-                                </div>
-                            </td>
                          </tr>
                       ))}
                    </tbody>
@@ -468,6 +454,51 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
                             <td className="py-3 text-right text-slate-500">{row.apptMet}</td>
                             <td className="py-3 text-right text-slate-500">{row.closed}</td>
                             <td className={`py-3 text-right font-bold ${row.closeRate < 20 ? 'text-red-500' : 'text-emerald-600'}`}>{row.closeRate.toFixed(1)}%</td>
+                         </tr>
+                      ))}
+                   </tbody>
+                </table>
+             </div>
+          </Modal>
+      )}
+
+      {showGoalSetter && (
+          <Modal 
+            isOpen={showGoalSetter} 
+            onClose={() => setShowGoalSetter(false)} 
+            title="Set Fiscal Year Targets"
+            footer={
+                <div className="flex gap-2 w-full">
+                    <Button variant="ghost" onClick={() => setShowGoalSetter(false)}>Cancel</Button>
+                    <Button variant="primary" onClick={handleSaveGoals} isLoading={isSavingGoals}>Save Targets</Button>
+                </div>
+            }
+          >
+             <div className="max-h-96 overflow-y-auto custom-scrollbar">
+                <div className="mb-4 text-xs text-slate-500">Define the Annual Gross Revenue (AGR) target for each advisor in your unit.</div>
+                <table className="w-full text-sm">
+                   <thead className="bg-slate-50 sticky top-0 border-b border-slate-100">
+                      <tr className="text-slate-500 text-[10px] uppercase font-bold text-left"><th className="py-3 px-2">Advisor</th><th className="py-3 px-2 text-right">Annual Goal ($)</th></tr>
+                   </thead>
+                   <tbody className="divide-y divide-slate-50">
+                      {activeManagedAdvisors.map((adv) => (
+                         <tr key={adv.id} className="hover:bg-slate-50">
+                            <td className="py-3 px-2 flex items-center gap-3">
+                                <div className="w-7 h-7 rounded-full bg-slate-200 flex items-center justify-center text-[10px] font-bold text-slate-600">{adv.avatar}</div>
+                                <span className="font-bold text-slate-800 text-xs">{adv.name}</span>
+                            </td>
+                            <td className="py-3 px-2 text-right">
+                                <div className="flex items-center justify-end gap-1">
+                                    <span className="text-slate-400 text-xs">$</span>
+                                    <input 
+                                        type="number" 
+                                        className="w-24 text-right p-1.5 border border-slate-200 rounded text-sm font-bold text-slate-900 focus:ring-2 focus:ring-emerald-500 outline-none bg-white"
+                                        placeholder="0"
+                                        value={goalUpdates[adv.id] !== undefined ? goalUpdates[adv.id] : (adv.annualGoal || '')}
+                                        onChange={(e) => handleGoalChange(adv.id, e.target.value)}
+                                    />
+                                </div>
+                            </td>
                          </tr>
                       ))}
                    </tbody>
@@ -574,7 +605,6 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
               </div>
             </div>
 
-            {/* Rest of the Dashboard (Funnel, Products, etc.) */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
               <div className="lg:col-span-2 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
                 <h3 className="font-semibold text-slate-800 mb-6">Conversion Funnel ({timeFilter})</h3>
@@ -594,38 +624,60 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
                 </div>
               </div>
 
-              <div className="bg-slate-900 p-6 rounded-2xl text-white shadow-lg flex flex-col">
-                <h3 className="font-semibold text-white mb-4 flex items-center gap-2">
-                   <svg className="w-5 h-5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-                   Coaching Cue
+              {/* DYNAMIC AI COACHING CARD */}
+              <div className="bg-slate-900 p-6 rounded-2xl text-white shadow-lg flex flex-col relative overflow-hidden group">
+                {/* Visual Effect */}
+                <div className="absolute top-0 right-0 w-48 h-48 bg-indigo-500/20 rounded-full blur-[60px] group-hover:bg-indigo-500/30 transition-all duration-1000"></div>
+                
+                <h3 className="font-semibold text-white mb-4 flex items-center gap-2 relative z-10">
+                   <span className="text-2xl">🧠</span>
+                   Strategic Director
                 </h3>
-                <div className="flex-1">
-                   <div className="mb-6">
-                     <p className="text-xs text-slate-400 mb-1">Observation</p>
-                     <p className="text-sm font-medium leading-relaxed">
-                       {avgEfficiency < 20 ? 
-                         `High lead volume, but low appointment setting rate (${avgEfficiency.toFixed(1)}%).` : 
-                         `Strong appointment setting (${avgEfficiency.toFixed(1)}%), maintain close rate.`}
-                     </p>
-                   </div>
-                   <div className="mb-6">
-                     <p className="text-xs text-slate-400 mb-1">Recommendation</p>
-                     <p className="text-sm font-medium leading-relaxed text-emerald-300">
-                        {avgEfficiency < 20 ? 
-                         'Focus on "The First 30 Seconds". Roleplay the opening hook.' : 
-                         'Shift focus to closing techniques and objection handling.'}
-                     </p>
-                   </div>
+                
+                <div className="flex-1 relative z-10">
+                   {isThinking ? (
+                       <div className="flex flex-col items-center justify-center h-40 animate-pulse">
+                           <div className="w-8 h-8 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin mb-3"></div>
+                           <p className="text-xs text-indigo-300 font-medium">Analyzing agency data...</p>
+                       </div>
+                   ) : aiInsight ? (
+                       <div className="animate-in fade-in slide-in-from-bottom-2">
+                           <div className="mb-4">
+                               <p className="text-[10px] text-indigo-300 uppercase font-black tracking-widest mb-1">Identified Bottleneck</p>
+                               <p className="text-sm font-bold text-white leading-tight">{aiInsight.bottleneck}</p>
+                           </div>
+                           <div className="mb-4">
+                               <p className="text-[10px] text-emerald-400 uppercase font-black tracking-widest mb-1">Coaching Protocol</p>
+                               <p className="text-xs font-medium text-slate-300 leading-relaxed bg-white/5 p-2 rounded-lg border border-white/10">
+                                   "{aiInsight.coaching_tip}"
+                               </p>
+                           </div>
+                           <div>
+                               <p className="text-[10px] text-amber-400 uppercase font-black tracking-widest mb-1">Observation</p>
+                               <p className="text-xs text-slate-400 leading-tight">{aiInsight.strategic_observation}</p>
+                           </div>
+                       </div>
+                   ) : (
+                       <div className="flex flex-col justify-center h-40 text-center">
+                           <p className="text-sm text-slate-400 mb-2">Ready to analyze team performance.</p>
+                           <p className="text-xs text-indigo-400">Uses Gemini 3 Pro reasoning.</p>
+                       </div>
+                   )}
                 </div>
-                <button className="w-full py-3 bg-white text-slate-900 rounded-xl text-sm font-bold hover:bg-slate-100 transition-colors">
-                  Start Coaching Session
+                
+                <button 
+                    onClick={handleGenerateInsight}
+                    disabled={isThinking}
+                    className="w-full py-3 mt-4 bg-white text-slate-900 rounded-xl text-xs font-bold hover:bg-indigo-50 transition-colors shadow-lg relative z-10 disabled:opacity-50"
+                >
+                  {isThinking ? 'Processing...' : aiInsight ? '↻ Regenerate Strategy' : 'Generate Director Brief'}
                 </button>
               </div>
             </div>
           </>
         )}
 
-        {/* PRODUCTS TAB */}
+        {/* ... (Rest of the tabs: products, activity, leads remain unchanged) ... */}
         {activeTab === 'products' && (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col">

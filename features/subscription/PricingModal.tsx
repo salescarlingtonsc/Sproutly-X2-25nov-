@@ -102,44 +102,44 @@ const PricingModal: React.FC<PricingModalProps> = ({ isOpen, onClose }) => {
             </button>
           </div>
           
-          {/* Platinum Plan */}
+          {/* Platinum Plan (Pro Advisor) */}
           <div className="p-6 bg-indigo-50/30 relative">
             <div className="flex items-center justify-between mb-2">
-              <h3 className="text-lg font-bold text-indigo-900">{TIER_CONFIG.platinum.label}</h3>
+              <h3 className="text-lg font-bold text-indigo-900">Pro Advisor</h3>
               <span className="px-2 py-0.5 bg-red-100 text-red-600 text-[10px] font-bold rounded-full animate-pulse">PROMO</span>
             </div>
             
             {/* Promo Price Block */}
             <div className="mb-6 h-[72px]">
               <div className="flex items-end gap-2">
-                <span className="text-lg text-gray-400 line-through font-bold decoration-red-500">$150</span>
-                <span className="text-3xl font-extrabold text-indigo-900">$50</span>
+                <span className="text-lg text-gray-400 line-through font-bold decoration-red-500">$49</span>
+                <span className="text-3xl font-extrabold text-indigo-900">$29</span>
                 <span className="text-indigo-600 text-sm mb-1">/mo</span>
               </div>
               <div className="text-[11px] font-bold text-red-600 mt-1 bg-red-50 inline-block px-2 py-0.5 rounded border border-red-100">
-                 Year End Promo (First 2 Months)
+                 Limited Time Offer
               </div>
             </div>
 
             <ul className="space-y-3 mb-8 text-sm">
                <li className="flex items-center gap-2 text-gray-700 font-medium">
-                 <span className="text-indigo-500 font-bold">✓</span> {TIER_CONFIG.platinum.clientLimit} Client Profiles
+                 <span className="text-indigo-500 font-bold">✓</span> Hyper-Speed CRM & Profiles
                </li>
                <li className="flex items-center gap-2 text-gray-700 font-medium">
-                 <span className="text-indigo-500 font-bold">✓</span> <strong>Profile + Children + Cashflow</strong>
+                 <span className="text-indigo-500 font-bold">✓</span> WhatsApp & Calendar Neural Sync
                </li>
                <li className="flex items-center gap-2 text-gray-700 font-medium">
-                 <span className="text-indigo-500 font-bold">✓</span> CRM Access
+                 <span className="text-indigo-500 font-bold">✓</span> One-Click Hyper-Dialer
                </li>
-               <li className="flex items-center gap-2 text-gray-400">
-                 <span className="text-red-400 font-bold">✕</span> Advanced Wealth Tools
+               <li className="flex items-center gap-2 text-gray-700 font-medium">
+                 <span className="text-indigo-500 font-bold">✓</span> Automated Follow-up Protocols
                </li>
             </ul>
             <button 
                className="w-full py-2.5 bg-indigo-600 text-white font-bold rounded-lg hover:bg-indigo-700 transition-all text-sm shadow-lg shadow-indigo-200"
                onClick={() => alert('Contact administrator to claim offer.')}
             >
-              Claim Offer
+              Start Pro Trial
             </button>
           </div>
 
@@ -147,7 +147,7 @@ const PricingModal: React.FC<PricingModalProps> = ({ isOpen, onClose }) => {
           <div className="p-6 bg-emerald-50/30 relative overflow-hidden">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-bold text-emerald-900">{TIER_CONFIG.diamond.label}</h3>
-              <span className="px-2 py-0.5 bg-emerald-100 text-emerald-600 text-[10px] font-bold rounded-full">PRO</span>
+              <span className="px-2 py-0.5 bg-emerald-100 text-emerald-600 text-[10px] font-bold rounded-full">ELITE</span>
             </div>
             <div className="mb-6 h-[72px] flex flex-col justify-center">
               <div>
@@ -157,13 +157,13 @@ const PricingModal: React.FC<PricingModalProps> = ({ isOpen, onClose }) => {
             </div>
             <ul className="space-y-3 mb-8 text-sm">
                <li className="flex items-center gap-2 text-gray-700 font-medium">
-                 <span className="text-emerald-500 font-bold">✓</span> {TIER_CONFIG.diamond.clientLimit} Client Profiles
+                 <span className="text-emerald-500 font-bold">✓</span> Everything in Pro
                </li>
                <li className="flex items-center gap-2 text-gray-700 font-medium">
-                 <span className="text-emerald-500 font-bold">✓</span> <strong>ALL Tabs Unlocked</strong>
+                 <span className="text-emerald-500 font-bold">✓</span> <strong>ALL Financial Tools Unlocked</strong>
                </li>
                <li className="flex items-center gap-2 text-gray-700 font-medium">
-                 <span className="text-emerald-500 font-bold">✓</span> Property & Wealth Tools
+                 <span className="text-emerald-500 font-bold">✓</span> Wealth & Legacy Planning
                </li>
                <li className="flex items-center gap-2 text-gray-700 font-medium">
                  <span className="text-emerald-500 font-bold">✓</span> Priority Support

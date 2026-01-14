@@ -10,7 +10,7 @@ interface DashboardTabProps {
   user: UserProfile;
   clients: Client[];
   setActiveTab: (tab: string) => void;
-  onLoadClient: (client: Client, redirect?: boolean) => void; // Updated signature
+  onLoadClient: (client: Client, redirect?: boolean) => void; 
   onNewClient: () => void;
 }
 
@@ -101,19 +101,40 @@ const getFYProgress = (annualGoal: number, clients: Client[]) => {
 const DashboardTab: React.FC<DashboardTabProps> = ({ user, clients, onNewClient, onLoadClient, setActiveTab }) => {
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('Monthly');
   const [activeBreakdown, setActiveBreakdown] = useState<{ title: string; items: any[]; type: 'currency' | 'text' } | null>(null);
+  const [selectedAdvisor, setSelectedAdvisor] = useState<string>('All');
+
   const advisorBanding = user.bandingPercentage || 50;
   const benchmarks = DEFAULT_BENCHMARKS;
 
-  // --- FY GOAL TRACKER ---
+  // --- 1. EXTRACT ADVISORS (NEW) ---
+  const availableAdvisors = useMemo(() => {
+      const map = new Map<string, string>();
+      clients.forEach(c => {
+          if (c._ownerId) {
+              // Prefer Email for display as requested
+              const label = c._ownerEmail || `Advisor ${c._ownerId.slice(0, 4)}`;
+              map.set(c._ownerId, label);
+          }
+      });
+      return Array.from(map.entries()).map(([id, name]) => ({ id, name }));
+  }, [clients]);
+
+  // --- 2. FILTER CLIENTS (NEW) ---
+  const filteredClients = useMemo(() => {
+      if (selectedAdvisor === 'All') return clients;
+      return clients.filter(c => c._ownerId === selectedAdvisor);
+  }, [clients, selectedAdvisor]);
+
+  // --- FY GOAL TRACKER (Uses Filtered Clients) ---
   const fyStats = useMemo(() => {
-      const annualGoal = user.annualGoal || 120000; // Default fallback if not set
-      return getFYProgress(annualGoal, clients);
-  }, [user.annualGoal, clients]);
+      const annualGoal = user.annualGoal || 120000; 
+      return getFYProgress(annualGoal, filteredClients);
+  }, [user.annualGoal, filteredClients]);
 
   // --- ACTIVE LEADS CALCULATION ---
   const activeLeadsCount = useMemo(() => {
-      return clients.filter(c => !['client', 'case_closed', 'not_keen'].includes(c.followUp.status || '')).length;
-  }, [clients]);
+      return filteredClients.filter(c => !['client', 'case_closed', 'not_keen'].includes(c.followUp.status || '')).length;
+  }, [filteredClients]);
 
   const calculatePeriodStats = (offset: number) => {
       const { start, end } = getDateRange(timeFilter, offset);
@@ -129,7 +150,7 @@ const DashboardTab: React.FC<DashboardTabProps> = ({ user, clients, onNewClient,
       const apptSetList: any[] = [];
       const apptMetList: any[] = [];
 
-      clients.forEach(c => {
+      filteredClients.forEach(c => {
           (c.sales || []).forEach(sale => {
               const d = new Date(sale.date);
               if (d >= start && d <= end) {
@@ -187,8 +208,8 @@ const DashboardTab: React.FC<DashboardTabProps> = ({ user, clients, onNewClient,
       };
   };
 
-  const currentStats = useMemo(() => calculatePeriodStats(0), [clients, timeFilter, advisorBanding]);
-  const prevStats = useMemo(() => calculatePeriodStats(1), [clients, timeFilter, advisorBanding]);
+  const currentStats = useMemo(() => calculatePeriodStats(0), [filteredClients, timeFilter, advisorBanding]);
+  const prevStats = useMemo(() => calculatePeriodStats(1), [filteredClients, timeFilter, advisorBanding]);
 
   const getGrowth = (curr: number, prev: number) => {
       if (prev === 0) return curr > 0 ? 100 : 0;
@@ -212,23 +233,23 @@ const DashboardTab: React.FC<DashboardTabProps> = ({ user, clients, onNewClient,
   const productMix = useMemo(() => {
       const counts: Record<string, number> = {};
       const { start, end } = getDateRange(timeFilter, 0);
-      clients.forEach(c => {
+      filteredClients.forEach(c => {
           (c.sales || []).forEach(sale => {
               const d = new Date(sale.date);
               if (d >= start && d <= end) counts[sale.productName || 'Unknown'] = (counts[sale.productName || 'Unknown'] || 0) + 1;
           });
       });
       return Object.entries(counts).map(([name, value]) => ({ name, value }));
-  }, [clients, timeFilter]);
+  }, [filteredClients, timeFilter]);
 
   const pipelineData = useMemo(() => {
       return [
-        { name: 'Leads', value: clients.length, fill: '#64748b' },
-        { name: 'Contacted', value: clients.filter(c => c.stage !== 'New Lead').length, fill: '#3b82f6' },
-        { name: 'Appt Set', value: clients.filter(c => c.milestones?.appointmentSetAt).length, fill: '#8b5cf6' },
-        { name: 'Appt Met', value: clients.filter(c => c.milestones?.appointmentMetAt).length, fill: '#f59e0b' },
+        { name: 'Leads', value: filteredClients.length, fill: '#64748b' },
+        { name: 'Contacted', value: filteredClients.filter(c => c.stage !== 'New Lead').length, fill: '#3b82f6' },
+        { name: 'Appt Set', value: filteredClients.filter(c => c.milestones?.appointmentSetAt).length, fill: '#8b5cf6' },
+        { name: 'Appt Met', value: filteredClients.filter(c => c.milestones?.appointmentMetAt).length, fill: '#f59e0b' },
       ];
-  }, [clients]);
+  }, [filteredClients]);
 
   const GrowthBadge = ({ curr, prev, prefix = '', suffix = '' }: any) => {
       const growth = getGrowth(curr, prev);
@@ -246,8 +267,8 @@ const DashboardTab: React.FC<DashboardTabProps> = ({ user, clients, onNewClient,
   const cardClasses = "bg-white p-5 rounded-xl border border-slate-200 shadow-sm hover:shadow-md hover:border-indigo-300 hover:ring-2 hover:ring-indigo-50 transition-all cursor-pointer group active:scale-[0.98]";
 
   const handleRowClick = (client: Client) => {
-      onLoadClient(client, false); // Don't redirect default to profile
-      setActiveTab('crm'); // Navigate to CRM instead where the closures tab is
+      onLoadClient(client, false); 
+      setActiveTab('crm'); 
       setActiveBreakdown(null);
   };
 
@@ -320,16 +341,37 @@ const DashboardTab: React.FC<DashboardTabProps> = ({ user, clients, onNewClient,
             </div>
         </div>
 
-        {/* Existing Dashboard Controls */}
+        {/* CONTROLS */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
             <div>
                 <h1 className="text-2xl font-bold text-slate-800">Performance Pulse</h1>
                 <p className="text-slate-500">Activity & Pipeline tracking.</p>
             </div>
-            <div className="flex bg-white rounded-lg border border-slate-200 p-1 shadow-sm overflow-x-auto relative z-20">
-                {['Daily', 'Weekly', 'Monthly', 'Quarterly', 'Yearly'].map(tf => (
-                    <button key={tf} onClick={() => setTimeFilter(tf as TimeFilter)} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all whitespace-nowrap cursor-pointer ${timeFilter === tf ? 'bg-slate-900 text-white shadow ring-1 ring-slate-900' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-50'}`}>{tf}</button>
-                ))}
+            
+            <div className="flex gap-4">
+                {/* ADVISOR FILTER (NEW) */}
+                {availableAdvisors.length > 1 && (
+                    <div className="relative">
+                        <select 
+                            value={selectedAdvisor}
+                            onChange={(e) => setSelectedAdvisor(e.target.value)}
+                            className="appearance-none bg-white border border-slate-200 text-slate-700 text-xs font-bold py-1.5 pl-3 pr-8 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 hover:border-indigo-300 transition-all cursor-pointer shadow-sm h-full"
+                        >
+                            <option value="All">All Advisors</option>
+                            {availableAdvisors.map(adv => (
+                                <option key={adv.id} value={adv.id}>{adv.name}</option>
+                            ))}
+                        </select>
+                        <div className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 text-[8px]">▼</div>
+                    </div>
+                )}
+
+                {/* TIME FILTER */}
+                <div className="flex bg-white rounded-lg border border-slate-200 p-1 shadow-sm overflow-x-auto relative z-20">
+                    {['Daily', 'Weekly', 'Monthly', 'Quarterly', 'Yearly'].map(tf => (
+                        <button key={tf} onClick={() => setTimeFilter(tf as TimeFilter)} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all whitespace-nowrap cursor-pointer ${timeFilter === tf ? 'bg-slate-900 text-white shadow ring-1 ring-slate-900' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-50'}`}>{tf}</button>
+                    ))}
+                </div>
             </div>
         </div>
 

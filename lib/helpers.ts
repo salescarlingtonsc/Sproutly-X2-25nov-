@@ -98,3 +98,9 @@ export const convert24to12 = (time24: string): string => {
   const h12 = hours % 12 || 12;
   return `${h12}:${m} ${suffix}`;
 };
+
+export const generateRefCode = (): string => {
+  // Generates a unique REF code like: REF-9A2B-X7Y1
+  const segment = () => Math.random().toString(36).substr(2, 4).toUpperCase();
+  return `REF-${segment()}-${segment()}`;
+};

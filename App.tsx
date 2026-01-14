@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from './contexts/AuthContext';
 import { ClientProvider, useClient } from './contexts/ClientContext';
@@ -30,7 +29,7 @@ import AdminTab from './features/admin/AdminTab';
 import ReportTab from './features/report/ReportTab';
 import RemindersTab from './features/reminders/RemindersTab';
 import PortfolioTab from './features/portfolio/PortfolioTab'; 
-import MarketNewsTab from './features/market/MarketNewsTab'; // NEW IMPORT
+import MarketNewsTab from './features/market/MarketNewsTab';
 
 // Logic
 import { db } from './lib/db';
@@ -50,7 +49,7 @@ const AppInner: React.FC = () => {
     expenses, customExpenses,
     cashflowState, investorState, insuranceState,
     cpfState, propertyState, wealthState, retirement,
-    chatHistory, crmState // Ensure crmState (containing portfolios) is tracked
+    chatHistory, crmState 
   } = useClient();
   const toast = useToast();
   const { confirm } = useDialog();
@@ -63,7 +62,6 @@ const AppInner: React.FC = () => {
   const [showLongLoading, setShowLongLoading] = useState(false);
 
   // --- ARCHITECTURAL FIX: PERSISTENT BASELINE ---
-  // We initialize the ref from sessionStorage to survive tab refreshes without triggering a false "diff".
   const getInitialBaseline = () => {
       try {
           return sessionStorage.getItem(SESSION_BASELINE_KEY) || '';
@@ -74,7 +72,7 @@ const AppInner: React.FC = () => {
   const isSavingRef = useRef<boolean>(false);
   const isHydratedRef = useRef<boolean>(false); 
   const saveStartTimeRef = useRef<number>(0);
-  const gridSaveDebounceRef = useRef<any>(null); // Fixed: Missing ref definition
+  const gridSaveDebounceRef = useRef<any>(null); 
   const [transferringIds, setTransferringIds] = useState<Set<string>>(new Set());
 
   // Monitor loading time
@@ -93,8 +91,6 @@ const AppInner: React.FC = () => {
     let watchdog: any;
     if (saveStatus === 'saving') {
       watchdog = setTimeout(() => {
-        // If still saving after 45s, assume browser throttle or network hang.
-        // Force unlock to allow user to retry.
         console.warn("[Watchdog] Save lock force-cleared due to timeout.");
         setSaveStatus('error');
         isSavingRef.current = false;
@@ -160,6 +156,7 @@ const AppInner: React.FC = () => {
        const data = await db.getClients(user?.id);
        setClients(data);
        localStorage.setItem(CLIENT_CACHE_KEY, JSON.stringify(data));
+       setLastSaved(new Date()); // Signal data is fresh
      } catch (e) {
        console.error("Hydration failed.");
      }
@@ -176,7 +173,6 @@ const AppInner: React.FC = () => {
         if (!ok) return;
      }
      resetClient();
-     // Reset comparison state for new client
      lastSavedJson.current = ""; 
      sessionStorage.removeItem(SESSION_BASELINE_KEY);
      isHydratedRef.current = true;
@@ -186,7 +182,6 @@ const AppInner: React.FC = () => {
   };
 
   const handleLoadClient = (client: Client, redirect = true) => {
-     // Seed comparison state immediately to prevent false-diff autosaves
      const seed = JSON.stringify(client);
      lastSavedJson.current = seed; 
      sessionStorage.setItem(SESSION_BASELINE_KEY, seed);
@@ -198,13 +193,11 @@ const AppInner: React.FC = () => {
 
   /**
    * CORE AUTOSAVE LOGIC
-   * Fixed to prevent loops via: Visibility Check, Mutex, and Stable Diffing.
+   * Updated with forceSave to handle tab switching
    */
-  const handleSaveClient = useCallback(async (isAutoSave = false, overrideClient?: Client) => {
-     // 1. STRICT VISIBILITY CHECK
-     // If tab is backgrounded, DO NOT SAVE. Browsers throttle timers, causing chaos.
-     if (typeof document !== 'undefined' && document.hidden) {
-         // console.debug("[Autosave] Skipped: Background Tab");
+  const handleSaveClient = useCallback(async (isAutoSave = false, overrideClient?: Client, forceSave = false) => {
+     // 1. VISIBILITY CHECK (Override if forceSave is true)
+     if (!forceSave && typeof document !== 'undefined' && document.hidden) {
          return;
      }
 
@@ -216,11 +209,18 @@ const AppInner: React.FC = () => {
 
      // 4. Data Generation
      const clientData = overrideClient || generateClientObject();
-     if (!clientData.profile.name) return; 
+     
+     // CRITICAL UX FIX: If in "browsing" mode (CRM tab) where global context is empty,
+     // still trigger "Saved" animation on manual click to reassure user.
+     if (!clientData.profile.name) {
+         if (!isAutoSave) {
+             setSaveStatus('saved');
+             setTimeout(() => setSaveStatus('idle'), 2000);
+         }
+         return; 
+     }
 
      // 5. STABLE DIFFING
-     // Strip `lastUpdated` timestamp from comparison. 
-     // We only care if meaningful data changed.
      const { lastUpdated: _ts, ...currentContent } = clientData;
      let lastSavedContent = {};
      try {
@@ -233,7 +233,13 @@ const AppInner: React.FC = () => {
      const lastHash = JSON.stringify(lastSavedContent);
 
      if (currentHash === lastHash) {
-        return; // No changes detected
+        // UX FIX: Provide visual feedback for manual saves even if no changes detected
+        if (!isAutoSave) {
+            setLastSaved(new Date());
+            setSaveStatus('saved');
+            setTimeout(() => setSaveStatus('idle'), 2000);
+        }
+        return; 
      }
 
      // 6. Lock & Execute
@@ -244,16 +250,8 @@ const AppInner: React.FC = () => {
      try {
         const isNewClient = !clientId;
         
-        // Debug Log (As requested)
-        console.log('[AUTOSAVE FIRE]', { 
-            id: clientData.id, 
-            isAuto: isAutoSave, 
-            diffKeys: Object.keys(currentContent).length 
-        });
-
         const savePromise = db.saveClient(clientData, user.id);
         
-        // 45s Timeout race
         const timeoutPromise = new Promise<never>((_, reject) => 
             setTimeout(() => reject(new Error('Network timeout (45s).')), 45000)
         );
@@ -272,7 +270,6 @@ const AppInner: React.FC = () => {
             promoteToSaved(saved);
         }
 
-        // Update baseline to match what we have in memory (stabilize the loop)
         const newBaseline = JSON.stringify(saved);
         lastSavedJson.current = newBaseline;
         sessionStorage.setItem(SESSION_BASELINE_KEY, newBaseline);
@@ -281,31 +278,47 @@ const AppInner: React.FC = () => {
         if (!isAutoSave) {
            setSaveStatus('saved');
            setTimeout(() => setSaveStatus('idle'), 2000);
+        } else {
+           // For AutoSave, show brief feedback if idle to confirm background sync
+           if (saveStatus === 'idle') {
+               setSaveStatus('saved');
+               setTimeout(() => setSaveStatus('idle'), 2000);
+           }
         }
      } catch (e: any) {
         console.error("Save Error:", e);
+        setSaveStatus('error');
+
         if (!isAutoSave) {
-            setSaveStatus('error');
-            toast.error(e.message?.includes('timeout') ? "Connection slow. Retrying..." : "Save failed.");
+            let msg = "Unknown error";
+            if (e instanceof Error) msg = e.message;
+            else if (typeof e === 'string') msg = e;
+            else if (e && typeof e === 'object') msg = e.message || JSON.stringify(e);
+            
+            if (msg === '{}' || msg === '[object Object]') msg = 'Unknown save error (Check console)';
+            toast.error(msg.includes('timeout') ? "Connection slow. Retrying..." : "Save failed: " + msg);
         }
      } finally {
         isSavingRef.current = false;
         saveStartTimeRef.current = 0;
      }
-  }, [user, generateClientObject, transferringIds, clientId, promoteToSaved]);
+  }, [user, generateClientObject, transferringIds, clientId, promoteToSaved, saveStatus]);
 
-  // --- VISIBILITY WAKE-UP PROTOCOL ---
+  // --- VISIBILITY WAKE-UP & EXIT PROTOCOL ---
   useEffect(() => {
     const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        // If we were "saving" when tab hid, and it's been > 10s, likely stuck. Reset.
+      if (document.visibilityState === 'hidden') {
+          // EMERGENCY SAVE ON EXIT
+          console.log("Tab hidden - forcing immediate save.");
+          handleSaveClient(true, undefined, true);
+      } else if (document.visibilityState === 'visible') {
         const now = Date.now();
         if (isSavingRef.current && (now - saveStartTimeRef.current > 10000)) {
              console.log("[App] Tab Wake: Resetting stuck save lock.");
              isSavingRef.current = false;
              setSaveStatus('idle');
         }
-        // Optional: Trigger a fresh check after delay
+        // Debounced re-check on wake
         if (isHydratedRef.current) setTimeout(() => handleSaveClient(true), 1000);
       }
     };
@@ -322,29 +335,36 @@ const AppInner: React.FC = () => {
   }, [
     profile, expenses, customExpenses, cashflowState, investorState, 
     insuranceState, cpfState, propertyState, wealthState, retirement, 
-    chatHistory, crmState, handleSaveClient // Added crmState dependency for portfolios
+    chatHistory, crmState, handleSaveClient
   ]);
 
   const handleUpdateGlobalClient = useCallback((updatedClient: Client) => {
-      // Local optimistic update
       setClients(prev => {
           const newList = prev.map(c => c.id === updatedClient.id ? updatedClient : c);
           localStorage.setItem(CLIENT_CACHE_KEY, JSON.stringify(newList));
           return newList;
       });
-      // Update active client if matched
       if (updatedClient.id === clientId) {
           const seed = JSON.stringify(updatedClient);
           lastSavedJson.current = seed;
           sessionStorage.setItem(SESSION_BASELINE_KEY, seed);
           loadClient(updatedClient);
       }
-      // Debounced Save
       if (gridSaveDebounceRef.current) clearTimeout(gridSaveDebounceRef.current);
+      
+      // Update status to provide visual feedback for CRM edits
+      setSaveStatus('saving'); 
+      
       gridSaveDebounceRef.current = setTimeout(async () => {
           try {
               await db.saveClient(updatedClient, user?.id);
-          } catch (e) { console.error("Background sync error", e); }
+              setSaveStatus('saved');
+              setLastSaved(new Date());
+              setTimeout(() => setSaveStatus('idle'), 2000);
+          } catch (e) { 
+              console.error("Background sync error", e);
+              setSaveStatus('error'); 
+          }
       }, 800);
   }, [clientId, loadClient, user]);
 
@@ -358,7 +378,6 @@ const AppInner: React.FC = () => {
       loadClientsList();
   };
 
-  // --- RENDER ---
   if (isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">

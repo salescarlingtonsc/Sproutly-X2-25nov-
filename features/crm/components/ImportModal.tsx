@@ -1,11 +1,12 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../../contexts/AuthContext';
 import { useToast } from '../../../contexts/ToastContext';
 import Modal from '../../../components/ui/Modal';
 import Button from '../../../components/ui/Button';
 import { GoogleGenAI } from '@google/genai';
 import { db } from '../../../lib/db';
+import { generateRefCode } from '../../../lib/helpers';
 import { INITIAL_PROFILE, INITIAL_CRM_STATE, INITIAL_EXPENSES, INITIAL_CPF, INITIAL_CASHFLOW, INITIAL_INSURANCE, INITIAL_INVESTOR, INITIAL_PROPERTY, INITIAL_WEALTH, INITIAL_RETIREMENT } from '../../../contexts/ClientContext';
 import { Client } from '../../../types';
 
@@ -22,6 +23,7 @@ const DESTINATION_FIELDS = [
   { key: 'company', label: 'Company / Job' },
   { key: 'jobTitle', label: 'Job Title' },
   { key: 'status', label: 'Status / Stage' },
+  { key: 'value', label: 'Exp. Revenue / Deal Value' },
   { key: 'notes', label: 'Notes / Remarks' },
   { key: 'monthlyInvestmentAmount', label: 'Savings Amount' },
   { key: 'retirementAge', label: 'Retirement Age' },
@@ -41,6 +43,22 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, onComplete }
   const [mappings, setMappings] = useState<Record<string, string>>({});
   const [isMappingAi, setIsMappingAi] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  
+  // Safety & Duplication State
+  const [preparedClients, setPreparedClients] = useState<(Client & { isDuplicate?: boolean })[]>([]);
+  const [existingPhones, setExistingPhones] = useState<Set<string>>(new Set());
+  const [skipDuplicates, setSkipDuplicates] = useState(true);
+
+  // Load existing clients on mount to check for duplicates
+  useEffect(() => {
+    if (isOpen && user) {
+        // Fetch strictly for duplicate checking
+        db.getClients(user.id).then(clients => {
+            const phones = new Set(clients.map(c => (c.phone || '').replace(/\D/g, '')).filter(p => p.length > 0));
+            setExistingPhones(phones);
+        });
+    }
+  }, [isOpen, user]);
 
   // Safe UUID Generator
   const generateUUID = () => {
@@ -113,12 +131,12 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, onComplete }
         else if (lower.includes('campaign')) newMappings['campaign'] = idxStr;
         else if (lower.includes('source') || lower.includes('platform')) newMappings['source'] = idxStr;
         else if (lower.includes('note') || lower.includes('remarks')) newMappings['notes'] = idxStr;
+        else if (lower.includes('value') || lower.includes('revenue') || lower.includes('amount')) newMappings['value'] = idxStr;
     });
 
     setMappings(newMappings);
     setStep('mapping');
 
-    // Auto trigger AI if headerless
     if (isHeaderless) {
         setTimeout(() => executeAiMapping(finalHeaders, finalRows, newMappings), 100);
     }
@@ -167,10 +185,85 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, onComplete }
 
   const handleAiAutoMap = () => executeAiMapping(headers, rows, mappings);
 
-  const getMappedValue = (row: string[], fieldKey: string) => {
-      const colIndex = parseInt(mappings[fieldKey]);
-      if (isNaN(colIndex) || !row[colIndex]) return '';
-      return row[colIndex];
+  // --- PRE-CALCULATE FOR PREVIEW ---
+  const generatePreviewData = () => {
+      if (!user) return;
+      
+      const clients = rows.map(row => {
+          const getValue = (key: string) => {
+              const idx = parseInt(mappings[key]);
+              return (idx >= 0 && row[idx]) ? row[idx] : '';
+          };
+
+          const rawName = getValue('name');
+          const rawPhone = getValue('phone');
+          const name = rawName || `Lead ${rawPhone.replace(/\D/g, '') || 'Unknown'}`;
+          const phone = rawPhone;
+          const cleanPhone = phone.replace(/\D/g, '');
+          const email = getValue('email');
+          const company = getValue('company');
+          const jobTitle = getValue('jobTitle');
+          const statusRaw = getValue('status').toLowerCase();
+          const notes = getValue('notes');
+          
+          // Check for duplicate
+          const isDuplicate = existingPhones.has(cleanPhone);
+
+          let status = 'new';
+          if (statusRaw.includes('contact')) status = 'contacted';
+          if (statusRaw.includes('client')) status = 'client';
+          
+          const valueStr = getValue('value').replace(/[^\d.]/g, '');
+          const value = parseFloat(valueStr) || 0;
+
+          const id = generateUUID();
+          const now = new Date().toISOString();
+
+          // GENERATE UNIQUE CODE HERE
+          const uniqueRef = generateRefCode();
+
+          return {
+              ...INITIAL_CRM_STATE,
+              expenses: INITIAL_EXPENSES,
+              cpfState: INITIAL_CPF,
+              cashflowState: INITIAL_CASHFLOW,
+              insuranceState: INITIAL_INSURANCE,
+              investorState: INITIAL_INVESTOR,
+              propertyState: INITIAL_PROPERTY,
+              wealthState: INITIAL_WEALTH,
+              retirement: INITIAL_RETIREMENT,
+              customExpenses: [],
+              id,
+              referenceCode: uniqueRef, 
+              advisorId: user.id,
+              _ownerId: user.id,
+              _ownerEmail: user.email,
+              name,
+              phone,
+              email,
+              company,
+              jobTitle,
+              value,
+              lastUpdated: now,
+              lastContact: now,
+              stage: 'New Lead',
+              profile: { 
+                  ...INITIAL_PROFILE, 
+                  name, phone, email, 
+                  jobTitle,
+                  monthlyInvestmentAmount: getValue('monthlyInvestmentAmount'),
+                  retirementAge: getValue('retirementAge'), 
+              },
+              followUp: { status, dealValue: value.toString() },
+              goals: getValue('goals'),
+              platform: getValue('source') || 'Import',
+              notes: notes ? [{ id: `note_${id}`, content: notes, date: now, author: 'Import' }] : [],
+              isDuplicate // Flag used for UI highlighting
+          } as (Client & { isDuplicate?: boolean });
+      });
+
+      setPreparedClients(clients);
+      setStep('preview');
   };
 
   const handleImport = async () => {
@@ -178,70 +271,26 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, onComplete }
       setIsProcessing(true);
       
       try {
-          const clientsToImport = rows.map(row => {
-              const getValue = (key: string) => {
-                  const idx = parseInt(mappings[key]);
-                  return (idx >= 0 && row[idx]) ? row[idx] : '';
-              };
+          // Filter duplicates if toggle is ON
+          const finalClients = skipDuplicates 
+            ? preparedClients.filter(c => !c.isDuplicate)
+            : preparedClients;
 
-              const rawName = getValue('name');
-              const rawPhone = getValue('phone');
-              
-              // Fallback name if missing
-              const name = rawName || `Lead ${rawPhone.replace(/\D/g, '') || 'Unknown'}`;
-              
-              const phone = rawPhone;
-              const email = getValue('email');
-              const company = getValue('company');
-              const jobTitle = getValue('jobTitle');
-              const statusRaw = getValue('status').toLowerCase();
-              const notes = getValue('notes');
-              
-              let status = 'new';
-              if (statusRaw.includes('contact')) status = 'contacted';
-              if (statusRaw.includes('client')) status = 'client';
-              
-              const id = generateUUID();
-              const now = new Date().toISOString();
+          if (finalClients.length === 0) {
+             toast.info("No new clients to import (all duplicates skipped).");
+             onComplete();
+             return;
+          }
 
-              return {
-                  ...INITIAL_CRM_STATE,
-                  expenses: INITIAL_EXPENSES,
-                  cpfState: INITIAL_CPF,
-                  cashflowState: INITIAL_CASHFLOW,
-                  insuranceState: INITIAL_INSURANCE,
-                  investorState: INITIAL_INVESTOR,
-                  propertyState: INITIAL_PROPERTY,
-                  wealthState: INITIAL_WEALTH,
-                  retirement: INITIAL_RETIREMENT,
-                  customExpenses: [],
-                  id,
-                  advisorId: user.id,
-                  _ownerId: user.id,
-                  name,
-                  phone,
-                  email,
-                  company,
-                  jobTitle,
-                  lastUpdated: now,
-                  lastContact: now,
-                  stage: 'New Lead',
-                  profile: { 
-                      ...INITIAL_PROFILE, 
-                      name, phone, email, 
-                      jobTitle,
-                      monthlyInvestmentAmount: getValue('monthlyInvestmentAmount'),
-                      retirementAge: getValue('retirementAge'), 
-                  },
-                  followUp: { status },
-                  goals: getValue('goals'),
-                  platform: getValue('source') || 'Import',
-                  notes: notes ? [{ id: `note_${id}`, content: notes, date: now, author: 'Import' }] : []
-              } as Client;
-          });
+          // Clean up the extra 'isDuplicate' property before saving
+          const cleanClients = finalClients.map(({ isDuplicate, ...rest }) => rest);
 
-          await db.createClientsBulk(clientsToImport, user.id);
-          toast.success(`Imported ${clientsToImport.length} clients.`);
+          await db.createClientsBulk(cleanClients as Client[], user.id);
+          toast.success(`Imported ${cleanClients.length} clients.`);
+          if (skipDuplicates) {
+             const skipped = preparedClients.length - cleanClients.length;
+             if (skipped > 0) toast.info(`Skipped ${skipped} duplicate numbers.`);
+          }
           onComplete();
       } catch (e: any) {
           toast.error("Import failed: " + e.message);
@@ -252,6 +301,7 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, onComplete }
 
   // Active columns
   const activeFields = DESTINATION_FIELDS.filter(field => mappings[field.key]);
+  const duplicateCount = preparedClients.filter(c => c.isDuplicate).length;
 
   return (
     <Modal 
@@ -269,7 +319,7 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, onComplete }
             {step === 'mapping' && (
                 <>
                     <Button variant="ghost" onClick={() => setStep('input')}>Back</Button>
-                    <Button variant="primary" onClick={() => setStep('preview')} disabled={!mappings['name'] && !mappings['phone']}>
+                    <Button variant="primary" onClick={generatePreviewData} disabled={!mappings['name'] && !mappings['phone']}>
                         {(!mappings['name'] && !mappings['phone']) ? 'Map Name or Phone' : 'Next: Preview'}
                     </Button>
                 </>
@@ -277,7 +327,9 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, onComplete }
             {step === 'preview' && (
                 <>
                     <Button variant="ghost" onClick={() => setStep('mapping')}>Back</Button>
-                    <Button variant="primary" onClick={handleImport} isLoading={isProcessing}>Import {rows.length} Leads</Button>
+                    <Button variant="primary" onClick={handleImport} isLoading={isProcessing}>
+                        Confirm Import ({skipDuplicates ? preparedClients.length - duplicateCount : preparedClients.length})
+                    </Button>
                 </>
             )}
         </div>
@@ -335,29 +387,53 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, onComplete }
 
         {step === 'preview' && (
             <div className="flex flex-col h-[400px]">
-                <div className="text-xs text-slate-500 mb-2 font-bold">Ready to import {rows.length} records.</div>
+                <div className="flex justify-between items-center mb-2">
+                    <div className="text-xs text-slate-500 font-bold">Ready to import.</div>
+                    
+                    {/* DUPLICATE TOGGLE */}
+                    <label className="flex items-center gap-2 cursor-pointer bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 transition-colors">
+                        <input type="checkbox" checked={skipDuplicates} onChange={e => setSkipDuplicates(e.target.checked)} className="rounded text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer" />
+                        <span className="text-[10px] font-bold text-slate-600 uppercase">Skip {duplicateCount} Duplicates</span>
+                    </label>
+                </div>
+                
                 <div className="border border-slate-200 rounded-xl overflow-hidden flex-1 flex flex-col">
                     <div className="overflow-auto flex-1">
                         <table className="w-full text-xs text-left">
                             <thead className="bg-slate-50 border-b border-slate-200 font-bold text-slate-500 sticky top-0 z-10">
                                 <tr>
                                     <th className="p-3 bg-slate-50 w-12">#</th>
+                                    <th className="p-3 bg-slate-50 text-indigo-600">System ID</th>
                                     {activeFields.map(f => (
                                         <th key={f.key} className="p-3 bg-slate-50 whitespace-nowrap">{f.label}</th>
                                     ))}
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100">
-                                {rows.map((row, i) => (
-                                    <tr key={i} className="hover:bg-slate-50">
-                                        <td className="p-3 text-slate-400 font-mono text-[10px]">{i + 1}</td>
-                                        {activeFields.map(f => (
-                                            <td key={f.key} className="p-3 whitespace-nowrap max-w-[200px] truncate">
-                                                {getMappedValue(row, f.key) || '-'}
+                                {preparedClients.map((client, i) => {
+                                    const isDup = client.isDuplicate;
+                                    const willSkip = isDup && skipDuplicates;
+                                    return (
+                                        <tr key={i} className={`hover:bg-slate-50 transition-colors ${willSkip ? 'opacity-40 bg-slate-100' : isDup ? 'bg-amber-50' : ''}`}>
+                                            <td className="p-3 text-slate-400 font-mono text-[10px]">
+                                                {willSkip ? 'SKIP' : i + 1}
                                             </td>
-                                        ))}
-                                    </tr>
-                                ))}
+                                            <td className="p-3 font-mono text-[10px] font-bold text-indigo-600">
+                                                {client.referenceCode}
+                                                {isDup && <span className="ml-2 text-[8px] bg-amber-100 text-amber-700 px-1 rounded uppercase font-bold border border-amber-200">Duplicate</span>}
+                                            </td>
+                                            {activeFields.map(f => {
+                                                let val = (client as any)[f.key];
+                                                if (!val && client.profile) val = (client.profile as any)[f.key];
+                                                return (
+                                                    <td key={f.key} className="p-3 whitespace-nowrap max-w-[200px] truncate">
+                                                        {val || '-'}
+                                                    </td>
+                                                );
+                                            })}
+                                        </tr>
+                                    );
+                                })}
                             </tbody>
                         </table>
                     </div>

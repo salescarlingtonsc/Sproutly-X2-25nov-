@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { canAccessTab, TAB_DEFINITIONS } from '../../lib/config';
@@ -6,6 +5,9 @@ import { Client } from '../../types';
 import Sidebar from './Sidebar';
 import CommandPalette from './CommandPalette';
 import { fmtTime } from '../../lib/helpers';
+import Modal from '../ui/Modal'; 
+import Button from '../ui/Button'; 
+import { supabase } from '../../lib/supabase'; 
 
 interface AppShellProps {
   activeTab: string;
@@ -37,9 +39,13 @@ const AppShell: React.FC<AppShellProps> = ({
   clients = [],
   onLoadClient
 }) => {
-  const { user, signOut } = useAuth();
+  const { user, signOut, refreshProfile } = useAuth();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
+  const [isEditProfileOpen, setIsEditProfileOpen] = useState(false); // Edit Profile State
+  const [editName, setEditName] = useState('');
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
+
   const profileRef = useRef<HTMLDivElement>(null);
 
   // Close profile menu on click outside
@@ -65,6 +71,33 @@ const AppShell: React.FC<AppShellProps> = ({
 
   const handleClientSelect = (client: Client) => {
      if (onLoadClient) onLoadClient(client);
+  };
+
+  const handleEditProfile = () => {
+      setEditName(user?.name || '');
+      setIsEditProfileOpen(true);
+      setIsProfileMenuOpen(false);
+  };
+
+  const saveProfile = async () => {
+      if (!user || !supabase) return;
+      setIsSavingProfile(true);
+      try {
+          // Update Profile
+          const { error } = await supabase
+            .from('profiles')
+            .update({ name: editName })
+            .eq('id', user.id);
+            
+          if (error) throw error;
+          
+          await refreshProfile(); // Refresh context
+          setIsEditProfileOpen(false);
+      } catch (e) {
+          alert("Failed to update profile.");
+      } finally {
+          setIsSavingProfile(false);
+      }
   };
 
   const getBadgeColor = (tier: string) => {
@@ -140,25 +173,33 @@ const AppShell: React.FC<AppShellProps> = ({
                
                {/* Save Status - Always visible now */}
                {!isReadOnly && (
-                  <div className="flex flex-col items-end mr-1 md:mr-2">
+                  <div className="flex flex-col items-end mr-1 md:mr-2 min-w-[80px]">
                      {saveStatus === 'saving' && (
-                        <span className="text-[10px] text-indigo-600 font-bold flex items-center gap-1 bg-indigo-50 px-2 py-1 rounded-full">
+                        <span className="text-[10px] text-indigo-600 font-bold flex items-center gap-1 bg-indigo-50/80 backdrop-blur-sm px-2 py-1 rounded-full border border-indigo-100 transition-all animate-pulse">
                            <span className="animate-spin">↻</span> <span className="hidden sm:inline">Syncing...</span>
                         </span>
                      )}
                      {saveStatus === 'saved' && (
-                        <span className="text-[10px] text-emerald-600 font-bold flex items-center gap-1 bg-emerald-50 px-2 py-1 rounded-full">
+                        <span className="text-[10px] text-emerald-600 font-bold flex items-center gap-1 bg-emerald-50/80 backdrop-blur-sm px-2 py-1 rounded-full border border-emerald-100 transition-all animate-in zoom-in-95 duration-200">
                            ✓ <span className="hidden sm:inline">Saved</span>
                         </span>
                      )}
                      {saveStatus === 'error' && (
-                        <span className="text-[10px] text-red-600 font-bold flex items-center gap-1 bg-red-50 px-2 py-1 rounded-full">
+                        <span className="text-[10px] text-red-600 font-bold flex items-center gap-1 bg-red-50/80 backdrop-blur-sm px-2 py-1 rounded-full border border-red-100 transition-all">
                            ⚠️ <span className="hidden sm:inline">Failed</span>
                         </span>
                      )}
-                     {saveStatus === 'idle' && lastSavedTime && (
-                        <span className="text-[10px] text-slate-400 font-medium flex items-center gap-1">
-                           <span className="hidden sm:inline">Saved</span> {fmtTime(lastSavedTime)}
+                     {saveStatus === 'idle' && (
+                        <span className="text-[10px] text-slate-400 font-medium flex items-center gap-1 transition-opacity duration-500">
+                           {lastSavedTime ? (
+                               <>
+                                 <span className="hidden sm:inline">Saved</span> {fmtTime(lastSavedTime)}
+                               </>
+                           ) : (
+                               <span className="flex items-center gap-1 text-slate-400 bg-slate-50 px-2 py-0.5 rounded-full border border-slate-100">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span> Ready
+                               </span>
+                           )}
                         </span>
                      )}
                   </div>
@@ -172,10 +213,10 @@ const AppShell: React.FC<AppShellProps> = ({
                   <button
                      onClick={onSaveClick}
                      disabled={saveStatus === 'saving'}
-                     className="flex items-center gap-2 px-3 py-2 bg-slate-900 text-white rounded-lg text-xs font-bold hover:bg-slate-800 transition-all shadow-sm active:scale-95"
+                     className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-bold transition-all shadow-sm active:scale-95 ${saveStatus === 'saving' ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-slate-900 text-white hover:bg-slate-800'}`}
                      title="Save Changes"
                   >
-                     <span>💾</span> <span className="hidden sm:inline">Save</span>
+                     <span>{saveStatus === 'saving' ? '⏳' : '💾'}</span> <span className="hidden sm:inline">{saveStatus === 'saving' ? 'Saving...' : 'Save'}</span>
                   </button>
                )}
 
@@ -203,6 +244,12 @@ const AppShell: React.FC<AppShellProps> = ({
                               <p className="text-xs font-bold text-slate-900 truncate">{user.email}</p>
                               <p className="text-[10px] text-slate-500 capitalize">{user.role}</p>
                            </div>
+                           <button 
+                              onClick={handleEditProfile}
+                              className="w-full text-left px-4 py-2 text-xs font-bold text-slate-600 hover:bg-indigo-50 hover:text-indigo-600 flex items-center gap-2"
+                           >
+                              👤 Edit Profile
+                           </button>
                            <button 
                               onClick={() => { onPricingClick(); setIsProfileMenuOpen(false); }}
                               className="w-full text-left px-4 py-2 text-xs font-bold text-slate-600 hover:bg-indigo-50 hover:text-indigo-600 flex items-center gap-2"
@@ -244,6 +291,25 @@ const AppShell: React.FC<AppShellProps> = ({
          onNavigate={handleTabChange}
          onSelectClient={handleClientSelect}
       />
+
+      {/* Edit Profile Modal */}
+      <Modal isOpen={isEditProfileOpen} onClose={() => setIsEditProfileOpen(false)} title="Edit My Profile">
+          <div className="space-y-4">
+              <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Full Name</label>
+                  <input 
+                      className="w-full bg-slate-50 border border-slate-200 rounded-lg p-3 text-sm font-bold text-slate-900 outline-none focus:border-indigo-500 transition-all"
+                      placeholder="Enter your name"
+                      value={editName}
+                      onChange={(e) => setEditName(e.target.value)}
+                  />
+              </div>
+              <div className="flex justify-end gap-2 pt-2">
+                  <Button variant="ghost" onClick={() => setIsEditProfileOpen(false)}>Cancel</Button>
+                  <Button variant="primary" onClick={saveProfile} isLoading={isSavingProfile}>Save Changes</Button>
+              </div>
+          </div>
+      </Modal>
 
     </div>
   );

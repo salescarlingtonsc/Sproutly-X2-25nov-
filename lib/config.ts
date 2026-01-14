@@ -20,7 +20,8 @@ export const TIER_CONFIG: Record<SubscriptionTier, { label: string; clientLimit:
   'platinum': {
     label: 'Platinum',
     clientLimit: 50,
-    allowedTabs: ['dashboard', 'profile', 'children', 'cpf', 'cashflow', 'crm', 'disclaimer', 'reminders', 'portfolio', 'market']
+    // STRICT: Only CRM, Profile, and Communication tools. No financial planning calculators.
+    allowedTabs: ['dashboard', 'profile', 'crm', 'reminders', 'disclaimer']
   },
   'diamond': {
     label: 'Diamond',

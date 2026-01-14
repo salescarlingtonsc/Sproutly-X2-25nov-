@@ -1,3 +1,5 @@
+
+
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { UserProfile, SubscriptionTier } from '../types';
@@ -49,8 +51,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const checkSession = async () => {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
+        const { data: { session }, error } = await supabase.auth.getSession();
         
+        if (error) throw error;
+
         if (session?.user) {
           // 2. ZERO-LATENCY FALLBACK
           // If we have a session but no cache, UNBLOCK UI IMMEDIATELY with a temporary profile
@@ -64,7 +68,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 subscriptionTier: 'free', 
                 is_admin: false,
                 organizationId: 'org_default',
-                extraSlots: 0 // Added missing property
+                extraSlots: 0, 
+                modules: [],
+                name: session.user.user_metadata?.full_name || session.user.email?.split('@')[0]
              };
              setUser(fallbackUser);
              setIsLoading(false); // <--- CRITICAL: Remove loading screen immediately
@@ -81,7 +87,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
           setIsLoading(false);
         }
-      } catch (err) {
+      } catch (err: any) {
+        // Ignore abort errors which can happen in strict mode or rapid navigation
+        if (err.name === 'AbortError' || err.message?.includes('aborted')) {
+            return;
+        }
         console.error("Session check failed", err);
         if (!hasCache) setIsLoading(false);
       }
@@ -113,7 +123,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       // Attempt to fetch profile with a short timeout mechanism implicitly handled by Supabase
       const { data: profileData, error: fetchError } = await supabase
           .from('profiles')
-          .select('subscription_tier, role, is_admin, extra_slots, status, modules, organization_id')
+          .select('subscription_tier, role, is_admin, extra_slots, status, modules, organization_id, name')
           .eq('id', uid)
           .maybeSingle();
 
@@ -166,7 +176,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         modules: finalProfileData?.modules || [],
         is_admin: finalIsAdmin,
         isAgencyAdmin: finalIsAdmin,
-        organizationId: finalProfileData?.organization_id
+        organizationId: finalProfileData?.organization_id,
+        name: finalProfileData?.name
       };
 
       // UPDATE STATE

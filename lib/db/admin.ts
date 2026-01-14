@@ -1,12 +1,13 @@
 
 import { supabase } from '../supabase';
-import { Product, Team, AppSettings, Subscription } from '../../types';
+import { Product, Team, AppSettings, Subscription, MarketNewsItem } from '../../types';
 
 export interface SystemSettings {
   products: Product[];
   teams: Team[];
   appSettings: AppSettings;
   subscription?: Subscription;
+  marketIntel?: MarketNewsItem[];
 }
 
 export const adminDb = {

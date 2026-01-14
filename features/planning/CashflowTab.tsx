@@ -38,13 +38,16 @@ const CashflowTab: React.FC = () => {
   const updateCareerEvent = (id: number, field: string, val: any) => setCashflowState(prev => ({...prev, careerEvents: (prev.careerEvents||[]).map(e => e.id === id ? {...e, [field]: val} : e)}));
   const removeCareerEvent = (id: number) => setCashflowState(prev => ({...prev, careerEvents: (prev.careerEvents||[]).filter(e => e.id !== id)}));
   
-  const addIncome = () => setCashflowState(prev => ({...prev, additionalIncomes: [...prev.additionalIncomes, {id: Date.now(), name: '', amount: '', type: 'recurring', frequency: 'monthly', startAge: currentAge, startMonth: 0, endAge: '', endMonth: 11}]}));
+  const addIncome = () => setCashflowState(prev => ({...prev, additionalIncomes: [...prev.additionalIncomes, {id: Date.now(), name: '', amount: '', type: 'recurring', frequency: 'monthly', startAge: currentAge, startMonth: 0, endAge: '', endMonth: 11, isEnabled: true}]}));
   const updateIncomeItem = (id: number, field: string, val: any) => setCashflowState(prev => ({...prev, additionalIncomes: prev.additionalIncomes.map(i => i.id === id ? {...i, [field]: val} : i)}));
   const removeIncome = (id: number) => setCashflowState(prev => ({...prev, additionalIncomes: prev.additionalIncomes.filter(i => i.id !== id)}));
 
-  const addWithdrawal = () => setCashflowState(prev => ({...prev, withdrawals: [...prev.withdrawals, {id: Date.now(), name: '', amount: '', type: 'onetime', frequency: 'monthly', startAge: currentAge, startMonth: 0, endAge: '', endMonth: 11}]}));
+  const addWithdrawal = () => setCashflowState(prev => ({...prev, withdrawals: [...prev.withdrawals, {id: Date.now(), name: '', amount: '', type: 'onetime', frequency: 'monthly', startAge: currentAge, startMonth: 0, endAge: '', endMonth: 11, isEnabled: true}]}));
   const updateWithdrawalItem = (id: number, field: string, val: any) => setCashflowState(prev => ({...prev, withdrawals: prev.withdrawals.map(w => w.id === id ? {...w, [field]: val} : w)}));
   const removeWithdrawal = (id: number) => setCashflowState(prev => ({...prev, withdrawals: prev.withdrawals.filter(w => w.id !== id)}));
+
+  // Toggle Helper: Handles undefined as true (default enabled)
+  const toggleEnabled = (current: boolean | undefined) => current === false ? true : false;
 
   // --- CALCULATION ENGINE ---
   const monthlyProjection = useMemo(() => {
@@ -136,6 +139,7 @@ const CashflowTab: React.FC = () => {
 
       // Add. Income
       additionalIncomes.forEach(i => {
+         if (i.isEnabled === false) return; // Skip disabled
          const startM = (toNum(i.startAge) - currentAge)*12 + (toNum(i.startMonth)-startMonth);
          const endM = i.endAge ? (toNum(i.endAge)-currentAge)*12 + ((i.endMonth||11)-startMonth) : 9999;
          if (m >= startM && m <= endM) {
@@ -154,6 +158,7 @@ const CashflowTab: React.FC = () => {
 
       // Withdrawals
       withdrawals.forEach(w => {
+         if (w.isEnabled === false) return; // Skip disabled
          const startM = (toNum(w.startAge) - currentAge)*12 + (toNum(w.startMonth)-startMonth);
          const endM = w.endAge ? (toNum(w.endAge)-currentAge)*12 + ((w.endMonth||11)-startMonth) : 9999;
          
@@ -204,6 +209,8 @@ const CashflowTab: React.FC = () => {
          netCashflow: net,
          balance: balance, // Allow negative to show debt
          isCareerPaused,
+         hasAdditionalIncome: additionalIncome > 0,
+         hasLargeWithdrawal: withdrawalAmount > 0,
          // Snapshots
          annualIncomeSnapshot: yearlyIncomeAccumulator,
          annualWithdrawalSnapshot: yearlyWithdrawalAccumulator,
@@ -244,6 +251,17 @@ const CashflowTab: React.FC = () => {
   const startBal = toNum(currentSavings);
   // Calculate runway in months (if burning cash)
   const runwayMonths = (startNet < 0 && startBal > 0) ? (startBal / Math.abs(startNet)) : 0;
+
+  // Visual Explainer for Net Flow
+  const effectiveTakeHome = toNum(profile.takeHome) || (cpfData ? toNum(cpfData.takeHome) : 0);
+  const totalMonthlyExpenses = cashflowData ? cashflowData.totalExpenses : 0;
+  let displayedMonthlyInvestment = 0;
+  if (profile.monthlyInvestmentAmount !== undefined && profile.monthlyInvestmentAmount !== '') {
+    displayedMonthlyInvestment = toNum(profile.monthlyInvestmentAmount);
+  } else {
+    const investmentPercent = toNum(retirement.investmentPercent, 50);
+    displayedMonthlyInvestment = Math.max(0, (effectiveTakeHome - totalMonthlyExpenses) * (investmentPercent / 100));
+  }
 
   const headerAction = (
     <button 
@@ -321,6 +339,27 @@ const CashflowTab: React.FC = () => {
                         </div>
                     )}
                 </div>
+                
+                {/* Visual Explainer for Net Flow */}
+                <div className="mt-3 pt-3 border-t border-dashed border-gray-200 text-[10px] space-y-1">
+                    <div className="flex justify-between text-gray-500">
+                        <span>Monthly Surplus</span>
+                        <span>{fmtSGD(cashflowData.monthlySavings)}</span>
+                    </div>
+                    {displayedMonthlyInvestment > 0 && (
+                        <div className="flex justify-between text-indigo-500">
+                            <span>Less: Investments</span>
+                            <span>-{fmtSGD(displayedMonthlyInvestment)}</span>
+                        </div>
+                    )}
+                    <div className="flex justify-between font-bold border-t border-gray-100 pt-1">
+                        <span>Net Monthly Flow</span>
+                        <span className={startNet < 0 ? 'text-red-600' : 'text-emerald-600'}>
+                            {startNet < 0 ? '' : '+'}{fmtSGD(startNet)}
+                        </span>
+                    </div>
+                </div>
+
                 {startNet < 0 && startBal <= 0 && (
                     <div className="mt-2 text-[10px] font-bold text-red-600 bg-white px-2 py-1 rounded border border-red-100 text-center">
                         ⚠️ Immediate Deficit
@@ -372,6 +411,24 @@ const CashflowTab: React.FC = () => {
                   <div className="text-xl md:text-2xl font-black text-red-600">{fmtSGD(cashflowData.totalExpenses)}</div>
                   <div className="text-xs text-gray-500 mt-1">Fixed + Variable</div>
                </div>
+               
+               {/* INVESTMENT OUTFLOW INDICATOR (NEW) */}
+               {displayedMonthlyInvestment > 0 && (
+                   <>
+                       <div className="hidden md:flex flex-col items-center">
+                          <div className="w-full h-1 bg-gray-200 w-16 relative">
+                             <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2 h-2 bg-indigo-400 rounded-full"></div>
+                          </div>
+                       </div>
+                       
+                       <div className="flex-1 w-full text-center opacity-80">
+                          <div className="inline-block p-3 bg-indigo-50 rounded-full text-2xl mb-2 border border-indigo-100">📈</div>
+                          <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Investments</div>
+                          <div className="text-xl md:text-2xl font-black text-indigo-600">{fmtSGD(displayedMonthlyInvestment)}</div>
+                          <div className="text-xs text-gray-500 mt-1">To Portfolio</div>
+                       </div>
+                   </>
+               )}
             </div>
          </SectionCard>
       </div>
@@ -442,8 +499,15 @@ const CashflowTab: React.FC = () => {
          <SectionCard title="Additional Incomes" action={<button onClick={addIncome} className="text-xs bg-emerald-100 text-emerald-700 px-2 py-1 rounded hover:bg-emerald-200 transition-colors">＋ Add Stream</button>}>
             <div className="space-y-3">
                {additionalIncomes.map(i => (
-                  <div key={i.id} className="bg-emerald-50/50 p-3 rounded-lg border border-emerald-100 text-xs relative group">
-                     <div className="flex gap-2 mb-2">
+                  <div key={i.id} className={`bg-emerald-50/50 p-3 rounded-lg border border-emerald-100 text-xs relative group transition-opacity duration-300 ${i.isEnabled === false ? 'opacity-50 grayscale' : ''}`}>
+                     <div className="flex gap-2 mb-2 items-center">
+                        <button 
+                           onClick={() => updateIncomeItem(i.id, 'isEnabled', toggleEnabled(i.isEnabled))}
+                           className={`w-8 h-4 rounded-full transition-colors relative ${i.isEnabled !== false ? 'bg-emerald-500' : 'bg-slate-300'}`}
+                           title="Toggle On/Off"
+                        >
+                           <div className={`w-3 h-3 rounded-full bg-white absolute top-0.5 transition-transform ${i.isEnabled !== false ? 'right-0.5' : 'left-0.5'}`}></div>
+                        </button>
                         <input 
                            type="text" 
                            value={i.name} 
@@ -497,8 +561,15 @@ const CashflowTab: React.FC = () => {
          <SectionCard title="Major Expenses" action={<button onClick={addWithdrawal} className="text-xs bg-red-100 text-red-700 px-2 py-1 rounded hover:bg-red-200 transition-colors">＋ Add Expense</button>}>
             <div className="space-y-3">
                {withdrawals.map(w => (
-                  <div key={w.id} className="bg-red-50/50 p-3 rounded-lg border border-red-100 text-xs relative group">
-                     <div className="flex gap-2 mb-2">
+                  <div key={w.id} className={`bg-red-50/50 p-3 rounded-lg border border-red-100 text-xs relative group transition-opacity duration-300 ${w.isEnabled === false ? 'opacity-50 grayscale' : ''}`}>
+                     <div className="flex gap-2 mb-2 items-center">
+                        <button 
+                           onClick={() => updateWithdrawalItem(w.id, 'isEnabled', toggleEnabled(w.isEnabled))}
+                           className={`w-8 h-4 rounded-full transition-colors relative ${w.isEnabled !== false ? 'bg-red-500' : 'bg-slate-300'}`}
+                           title="Toggle On/Off"
+                        >
+                           <div className={`w-3 h-3 rounded-full bg-white absolute top-0.5 transition-transform ${w.isEnabled !== false ? 'right-0.5' : 'left-0.5'}`}></div>
+                        </button>
                         <input 
                            type="text" 
                            value={w.name} 
@@ -575,9 +646,12 @@ const CashflowTab: React.FC = () => {
                   {monthlyProjection
                      .filter((_, i) => ledgerView === 'monthly' ? true : (i + 1) % 12 === 0)
                      .map((row, idx) => (
-                     <tr key={idx} className={`hover:bg-gray-50 transition-colors ${row.monthName === 'Jan' && ledgerView === 'monthly' ? 'bg-indigo-50/30' : ''}`}>
+                     <tr 
+                        key={idx} 
+                        className={`hover:bg-gray-50 transition-colors ${row.monthName === 'Jan' && ledgerView === 'monthly' ? 'bg-indigo-50/30' : ''} ${row.hasAdditionalIncome ? 'bg-emerald-50/40' : ''} ${row.hasLargeWithdrawal ? 'bg-red-50/40' : ''}`}
+                     >
                         <td className="p-4 font-bold text-gray-700 bg-gray-50/30">
-                           {ledgerView === 'yearly' ? `Age ${row.age}` : `Age ${row.age} - ${row.monthName}`}
+                           {ledgerView === 'yearly' ? `Age ${row.age}` : `Age ${row.age} - ${row.monthName} ${row.year}`}
                         </td>
                         <td className="p-4 text-right text-emerald-600">
                             {fmtSGD(ledgerView === 'yearly' ? row.annualIncomeSnapshot : row.totalIncome)}
