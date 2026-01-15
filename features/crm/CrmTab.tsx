@@ -69,6 +69,7 @@ const CrmTab: React.FC<CrmTabProps> = ({
   const [advisorFilter, setAdvisorFilter] = useState<string>('All');
   const [viewMode, setViewMode] = useState<'cards' | 'list'>('list');
   const [isGrouped, setIsGrouped] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   
   // Sorting State
   const [sortConfig, setSortConfig] = useState<{ key: string; direction: 'asc' | 'desc' }>({ key: 'lastUpdated', direction: 'desc' });
@@ -87,7 +88,6 @@ const CrmTab: React.FC<CrmTabProps> = ({
   const [activeCommentsClient, setActiveCommentsClient] = useState<Client | null>(null);
   const [activeSaleClient, setActiveSaleClient] = useState<Client | null>(null);
   
-  // CHANGED: Store ID instead of Object for Single Source of Truth
   const [activeDetailClientId, setActiveDetailClientId] = useState<string | null>(null);
   const activeDetailClient = useMemo(() => clients.find(c => c.id === activeDetailClientId) || null, [clients, activeDetailClientId]);
 
@@ -101,6 +101,26 @@ const CrmTab: React.FC<CrmTabProps> = ({
   // Advisor Name Resolution Map
   const [advisorMap, setAdvisorMap] = useState<Record<string, string>>({});
   const [templates, setTemplates] = useState<WhatsAppTemplate[]>(DEFAULT_TEMPLATES.map(t => ({id: t.id, label: t.label, content: t.content})));
+
+  const handleManualRefresh = async () => {
+    setIsRefreshing(true);
+    toast.info("Forcing Cloud Sync...");
+    try {
+        await onRefresh();
+        toast.success("CRM Data Re-synced");
+    } catch (e) {
+        toast.error("Sync Failed");
+    } finally {
+        setIsRefreshing(false);
+    }
+  };
+
+  const clearAllFilters = () => {
+    setSearchTerm('');
+    setStageFilter('All');
+    setAdvisorFilter('All');
+    toast.success("Filters cleared.");
+  };
 
   const isAdmin = user?.role === 'admin' || user?.is_admin === true;
   const isDirector = user?.role === 'director';
@@ -392,6 +412,8 @@ const CrmTab: React.FC<CrmTabProps> = ({
       );
   };
 
+  const isFiltered = searchTerm !== '' || stageFilter !== 'All' || advisorFilter !== 'All';
+
   return (
     <div className="p-6 md:p-8 animate-fade-in pb-24 md:pb-8">
       <AnalyticsPanel clients={clients} advisorFilter={advisorFilter} setAdvisorFilter={setAdvisorFilter} availableAdvisors={availableAdvisors} />
@@ -420,12 +442,26 @@ const CrmTab: React.FC<CrmTabProps> = ({
              </div>
          </div>
          <div className="flex gap-3 w-full md:w-auto">
+             <button onClick={handleManualRefresh} disabled={isRefreshing} className="bg-white border border-slate-200 text-slate-400 p-2.5 rounded-xl hover:bg-slate-50 transition-all group" title="Force Cloud Sync">
+                <svg className={`w-5 h-5 ${isRefreshing ? 'animate-spin text-indigo-500' : 'group-hover:text-indigo-500'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+             </button>
              <button onClick={() => setIsTemplateManagerOpen(true)} className="hidden lg:flex bg-white border border-slate-200 text-slate-600 px-4 py-2 rounded-lg text-xs font-bold hover:bg-slate-50 transition-all items-center gap-2"><span>📝</span> Templates</button>
              <button onClick={() => setIsCallSessionOpen(true)} className="flex-1 md:flex-none bg-indigo-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-md hover:bg-indigo-700 transition-all flex items-center justify-center gap-2"><span>⚡</span> Power Dialer</button>
              <button onClick={() => setIsImportOpen(true)} className="flex-1 md:flex-none bg-emerald-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-md hover:bg-emerald-700 transition-all flex items-center justify-center gap-2"><span>📥</span> Import</button>
              <button onClick={newClient} className="flex-1 md:flex-none bg-slate-900 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-md hover:bg-slate-800 hover:shadow-lg transition-all flex items-center justify-center gap-2"><svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg> New Client</button>
          </div>
       </div>
+
+      {isFiltered && filteredClients.length === 0 && (
+          <div className="bg-amber-50 border border-amber-100 rounded-xl p-6 text-center mb-6 animate-in fade-in zoom-in-95">
+              <div className="text-3xl mb-2">🔍</div>
+              <h4 className="text-amber-900 font-bold">No results found for current filters</h4>
+              <p className="text-amber-700 text-sm mb-4">You might be looking for a client that doesn't match your search or stage selection.</p>
+              <button onClick={clearAllFilters} className="bg-white border border-amber-200 text-amber-900 px-4 py-2 rounded-lg text-xs font-bold hover:bg-amber-100 transition-all shadow-sm">
+                  Clear All Filters
+              </button>
+          </div>
+      )}
 
       {viewMode === 'cards' ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
@@ -539,7 +575,6 @@ const CrmTab: React.FC<CrmTabProps> = ({
                     <ClientCard 
                         client={activeDetailClient}
                         products={products} 
-                        // FIX: Remove local set, rely on prop propagation
                         onUpdate={(c) => { onUpdateGlobalClient(c); }} 
                         currentUser={user} 
                         onDelete={handleDeleteClientWrapper} 

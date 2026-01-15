@@ -36,6 +36,10 @@ const writeCloudQueue = (items: CloudQueueItem[]) => {
 };
 
 const enqueueCloudSync = (item: CloudQueueItem) => {
+  if (!item.user_id) {
+    console.error('[SYNC] Attempted to enqueue item with empty user_id. Aborting.');
+    return;
+  }
   const q = readCloudQueue();
   const idx = q.findIndex(x => x.id === item.id);
   if (idx >= 0) q[idx] = item;
@@ -43,7 +47,6 @@ const enqueueCloudSync = (item: CloudQueueItem) => {
   writeCloudQueue(q);
 };
 
-// Helper to chunk arrays
 const chunkArray = <T>(array: T[], size: number): T[][] => {
   const chunks = [];
   for (let i = 0; i < array.length; i += size) {
@@ -52,44 +55,54 @@ const chunkArray = <T>(array: T[], size: number): T[][] => {
   return chunks;
 };
 
-const getErrorMessage = (error: any): string => {
-  if (!error) return 'Unknown error';
-  if (typeof error === 'string') return error;
-  return error.message || JSON.stringify(error);
-};
-
 export const db = {
+  subscribeToChanges: (onEvent: (payload: any) => void) => {
+    if (!isSupabaseConfigured() || !supabase) return null;
+
+    const channel = supabase
+      .channel('realtime_clients')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'clients' },
+        (payload) => {
+          console.log('[REALTIME] Update Received:', payload);
+          onEvent(payload);
+        }
+      )
+      .subscribe();
+
+    return channel;
+  },
+
   getClients: async (userId?: string): Promise<Client[]> => {
     if (isSupabaseConfigured() && supabase) {
       try {
-        if (typeof navigator !== 'undefined' && !navigator.onLine) {
-            throw new Error("Offline");
-        }
-
         const { data, error } = await supabase.from('clients').select('*');
         if (error) throw error;
         
         const mappedData = (data || [])
-            .map(row => ({
-                ...row.data,
-                id: row.id,
-                _ownerId: row.user_id,
-                lastUpdated: row.updated_at || row.data.lastUpdated
-            }))
-            .filter((c: Client) => c.profile?.name && c.profile.name.trim().length > 0);
+            .map(row => {
+                const baseData = row.data || {};
+                return {
+                    ...baseData,
+                    id: row.id,
+                    _ownerId: row.user_id,
+                    lastUpdated: row.updated_at || baseData.lastUpdated || new Date().toISOString(),
+                    name: baseData.name || baseData.profile?.name || "Unnamed Client"
+                };
+            });
             
         localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(mappedData));
         return mappedData;
 
       } catch (e: any) {
+        console.warn('[DB] Sync fallback to local:', e.message);
         const local = localStorage.getItem(LOCAL_STORAGE_KEY);
         return local ? JSON.parse(local) : [];
       }
     }
-    try {
-        const local = localStorage.getItem(LOCAL_STORAGE_KEY);
-        return local ? JSON.parse(local) : [];
-    } catch { return []; }
+    const local = localStorage.getItem(LOCAL_STORAGE_KEY);
+    return local ? JSON.parse(local) : [];
   },
 
   flushCloudQueue: async (userId?: string) => {
@@ -99,8 +112,8 @@ export const db = {
     const q = readCloudQueue();
     if (q.length === 0) return;
 
+    console.log(`[SYNC] Flushing ${q.length} items from cloud queue...`);
     const remaining: CloudQueueItem[] = [];
-    console.log(`[PROBE] Flushing Cloud Queue (${q.length} items)...`);
 
     for (const item of q) {
       try {
@@ -110,9 +123,13 @@ export const db = {
           data: item.data,
           updated_at: item.updated_at
         });
-        if (error) throw error;
+        if (error) {
+          console.error(`[SYNC] Flush failed for ${item.id}:`, error.message);
+          remaining.push(item);
+        } else {
+          console.log(`[SYNC] Successfully flushed ${item.id}`);
+        }
       } catch (e: any) {
-        console.warn(`[PROBE] Queue Sync Failed for ${item.id}:`, e.message);
         remaining.push(item);
       }
     }
@@ -120,12 +137,6 @@ export const db = {
   },
 
   saveClient: async (client: Client, userId?: string): Promise<Client> => {
-    const probeId = `SAVE-${Date.now().toString().slice(-5)}`;
-    
-    if (!client.profile?.name || !client.profile.name.trim()) {
-        throw new Error("Client name is required.");
-    }
-
     const now = new Date().toISOString();
     const clientData = { 
         ...client, 
@@ -133,7 +144,7 @@ export const db = {
         id: client.id || generateUUID()
     };
 
-    // --- STEP 1: GUARANTEED LOCAL SAVE ---
+    // 1. INSTANT LOCAL WRITE
     try {
         const local = localStorage.getItem(LOCAL_STORAGE_KEY);
         const clients: Client[] = local ? JSON.parse(local) : [];
@@ -142,53 +153,66 @@ export const db = {
         else clients.push(clientData);
         localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(clients));
     } catch (e) {
-        console.error(`[PROBE ${probeId}] Local Write Failed`, e);
-        throw e; 
+        console.error('[DB] Local write failed', e);
     }
 
-    // --- STEP 2: FIRE-AND-FORGET CLOUD SYNC ---
+    // 2. NON-BLOCKING CLOUD PUSH
     if (isSupabaseConfigured() && supabase) {
-        const targetUserId = clientData._ownerId || userId;
-        
-        // Prepare Queue Item
-        const qItem: CloudQueueItem = {
-            id: clientData.id,
-            user_id: targetUserId || '',
-            updated_at: now,
-            data: { ...clientData, _ownerId: targetUserId }
-        };
+        // Resolve UID reliably
+        const performCloudSync = async () => {
+            const { data: { session } } = await supabase.auth.getSession();
+            const activeUid = clientData._ownerId || userId || session?.user?.id;
 
-        // Always put in queue first
-        enqueueCloudSync(qItem);
+            if (!activeUid) {
+                console.warn('[SYNC] No UID resolved for cloud push. Skipping Supabase.');
+                return;
+            }
 
-        // Try detached background sync
-        if (typeof navigator !== 'undefined' && navigator.onLine) {
-            (async () => {
+            const qItem: CloudQueueItem = {
+                id: clientData.id,
+                user_id: activeUid,
+                updated_at: now,
+                data: { ...clientData, _ownerId: activeUid }
+            };
+
+            if (typeof navigator !== 'undefined' && navigator.onLine) {
                 try {
-                    // Fast session check
-                    const { data: { session } } = await supabase.auth.getSession();
-                    const activeUser = targetUserId || session?.user?.id;
-                    if (!activeUser) return;
+                    // 10 Second Timeout Watchdog
+                    const timeoutPromise = new Promise((_, reject) => 
+                        setTimeout(() => reject(new Error('Push Timeout')), 10000)
+                    );
 
-                    const { error } = await supabase.from('clients').upsert({
+                    const upsertPromise = supabase.from('clients').upsert({
                         id: qItem.id,
-                        user_id: activeUser,
-                        data: { ...qItem.data, _ownerId: activeUser },
+                        user_id: qItem.user_id,
+                        data: qItem.data,
                         updated_at: qItem.updated_at
                     });
 
-                    if (!error) {
-                        // Success: remove specifically this ID from queue
+                    const { error } = await Promise.race([upsertPromise, timeoutPromise]) as any;
+
+                    if (error) {
+                        console.error('[SYNC] Supabase rejected update:', error.message);
+                        enqueueCloudSync(qItem);
+                    } else {
+                        // Success: Clean queue
                         const currentQ = readCloudQueue();
                         writeCloudQueue(currentQ.filter(x => x.id !== qItem.id));
-                        console.log(`[PROBE ${probeId}] Background Cloud Sync: SUCCESS`);
                     }
-                } catch (e) {}
-            })();
-        }
+                } catch (e: any) {
+                    console.warn('[SYNC] Cloud push timed out or crashed, moving to queue.');
+                    enqueueCloudSync(qItem);
+                }
+            } else {
+                enqueueCloudSync(qItem);
+            }
+        };
+
+        // Trigger background sync without awaiting
+        performCloudSync().catch(err => console.error('[SYNC] Background process crashed', err));
     }
 
-    // IMPORTANT: Return immediately. The UI will flip to "Saved" now.
+    // Return immediately to unblock UI
     return clientData;
   },
 
@@ -237,18 +261,16 @@ export const db = {
   },
 
   createClientsBulk: async (clients: Client[], targetOwnerId: string) => {
-      const validClients = clients.filter(c => c.profile?.name && c.profile.name.trim().length > 0);
-      if (validClients.length === 0) return;
+      const rows = clients.map(c => ({
+          id: c.id || generateUUID(),
+          user_id: targetOwnerId,
+          data: { ...c, _ownerId: targetOwnerId },
+          updated_at: new Date().toISOString()
+      }));
       const local = localStorage.getItem(LOCAL_STORAGE_KEY);
       const existing = local ? JSON.parse(local) : [];
-      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify([...existing, ...validClients]));
+      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify([...existing, ...rows.map(r => r.data)]));
       if (isSupabaseConfigured() && supabase) {
-          const rows = validClients.map(c => ({
-              id: c.id || generateUUID(),
-              user_id: targetOwnerId,
-              data: { ...c, _ownerId: targetOwnerId },
-              updated_at: new Date().toISOString()
-          }));
           const chunks = chunkArray(rows, 50);
           for (const chunk of chunks) {
               await supabase.from('clients').insert(chunk);
@@ -265,7 +287,7 @@ export const db = {
               .from('clients')
               .update({ user_id: newOwnerId, data: newData })
               .eq('id', clientId);
-          if (error) throw new Error(getErrorMessage(error));
+          if (error) throw new Error(error.message);
       }
   }
 };

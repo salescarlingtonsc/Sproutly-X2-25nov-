@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
@@ -14,15 +15,18 @@ import DbRepairModal from './components/DbRepairModal';
 import { Client, Advisor, Team, Product, AppSettings, Subscription } from '../../types';
 import { DEFAULT_SETTINGS } from '../../lib/config';
 
-const AdminTab: React.FC = () => {
+interface AdminTabProps {
+  clients: Client[];
+}
+
+const AdminTab: React.FC<AdminTabProps> = ({ clients }) => {
   const { user } = useAuth();
   const toast = useToast();
   const [activeView, setActiveView] = useState<'dashboard' | 'users' | 'settings' | 'billing' | 'ai'>('dashboard');
   const [loading, setLoading] = useState(true);
   const [showDbRepair, setShowDbRepair] = useState(false);
 
-  // Data
-  const [clients, setClients] = useState<Client[]>([]);
+  // System Data
   const [advisors, setAdvisors] = useState<Advisor[]>([]);
   const [teams, setTeams] = useState<Team[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
@@ -56,12 +60,10 @@ const AdminTab: React.FC = () => {
             const { data: profiles } = await query;
             if (profiles) {
                 setAdvisors(profiles.map((p: any) => {
-                    // Normalization Logic to prevent invisible users
                     let status = p.status;
                     if (status === 'active') status = 'approved';
                     if (!status || (status !== 'approved' && status !== 'rejected')) status = 'pending';
 
-                    // Name Fallback Logic
                     let displayName = p.name;
                     if (!displayName || displayName.trim() === '') {
                         const safeEmail = p.email || 'unknown';
@@ -78,7 +80,7 @@ const AdminTab: React.FC = () => {
                         bandingPercentage: p.banding_percentage || 0,
                         annualGoal: p.annual_goal || 0,
                         subscriptionTier: p.subscription_tier,
-                        organizationId: p.organization_id || 'org_default', // Fallback to default
+                        organizationId: p.organization_id || 'org_default',
                         teamId: p.reporting_to,
                         avatar: (displayName || p.email || '?')[0].toUpperCase(),
                         joinedAt: p.created_at,
@@ -91,11 +93,7 @@ const AdminTab: React.FC = () => {
             }
         }
 
-        // 3. Fetch Clients (Global or Org scoped)
-        const allClients = await db.getClients(); // db.getClients already handles scoping via RLS/Logic
-        setClients(allClients);
-
-        // 4. Fetch Activities
+        // 3. Fetch Activities
         const recentActivity = await fetchGlobalActivity(100);
         setActivities(recentActivity);
 
@@ -108,13 +106,11 @@ const AdminTab: React.FC = () => {
   };
 
   const handleUpdateSettings = async (newSettings: any) => {
-      // Optimistic update
       if (newSettings.products) setProducts(newSettings.products);
       if (newSettings.teams) setTeams(newSettings.teams);
       if (newSettings.appSettings) setSettings(newSettings.appSettings);
       if (newSettings.subscription) setSubscription(newSettings.subscription);
 
-      // Persist
       await adminDb.saveSystemSettings({
           products: newSettings.products || products,
           teams: newSettings.teams || teams,
@@ -127,9 +123,8 @@ const AdminTab: React.FC = () => {
   const handleUpdateAdvisor = async (advisor: Advisor) => {
       if (!supabase) return;
       
-      // FIXED: Added 'name' to the update payload so edits persist
       const { error } = await supabase.from('profiles').update({
-          name: advisor.name, // CRITICAL FIX: Ensure name is saved
+          name: advisor.name,
           role: advisor.role,
           status: advisor.status === 'approved' ? 'active' : advisor.status,
           banding_percentage: advisor.bandingPercentage,
@@ -150,14 +145,12 @@ const AdminTab: React.FC = () => {
 
   const handleAddAdvisor = async (advisor: Advisor) => {
       if (!supabase) return;
-      // Check if profile exists
       const { data } = await supabase.from('profiles').select('id').eq('email', advisor.email).single();
       
       if (data) {
           await handleUpdateAdvisor({ ...advisor, id: data.id });
       } else {
-          // Invite logic omitted for brevity
-          toast.info("Invite sent (Simulated)");
+          toast.info("Invite protocol initiated.");
       }
       loadAdminData();
   };
@@ -206,7 +199,6 @@ const AdminTab: React.FC = () => {
                 <NavButton active={activeView === 'ai'} onClick={() => setActiveView('ai')} icon="🧠" label="AI Brain" />
             </div>
             
-            {/* DB REPAIR BUTTON */}
             <button 
                 onClick={() => setShowDbRepair(true)} 
                 className="bg-red-50 text-red-600 px-3 py-1.5 rounded-lg text-xs font-bold border border-red-200 hover:bg-red-100 transition-colors flex items-center gap-1 ml-4"

@@ -34,7 +34,6 @@ import MarketNewsTab from './features/market/MarketNewsTab';
 
 // Logic
 import { db } from './lib/db';
-import { supabase } from './lib/supabase';
 import { logTabUsage } from './lib/db/activities';
 import { Client } from './types';
 import { canAccessTab, TAB_DEFINITIONS } from './lib/config';
@@ -60,52 +59,67 @@ const AppInner: React.FC = () => {
   const [clients, setClients] = useState<Client[]>([]);
   const [saveStatus, setSaveStatus] = useState<'idle'|'saving'|'saved'|'error'>('idle');
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
-  const [showLongLoading, setShowLongLoading] = useState(false);
+  const [isRealtimeActive, setIsRealtimeActive] = useState(false);
 
-  const getInitialBaseline = () => {
-      try {
-          return sessionStorage.getItem(SESSION_BASELINE_KEY) || '';
-      } catch (e) { return ''; }
-  };
-
-  const lastSavedJson = useRef<string>(getInitialBaseline());
+  const lastSavedJson = useRef<string>("");
   const isSavingRef = useRef<boolean>(false);
   const isHydratedRef = useRef<boolean>(false); 
   
-  const pendingSaveClientRef = useRef<Client | null>(null);
-  const gridSaveDebounceRef = useRef<any>(null); 
-  
   const [transferringIds, setTransferringIds] = useState<Set<string>>(new Set());
 
-  // Monitor loading time
+  // --- 1. REAL-TIME STREAMING PROTOCOL ---
   useEffect(() => {
-    let timer: any;
-    if (isLoading) {
-      timer = setTimeout(() => setShowLongLoading(true), 1500);
-    } else {
-      setShowLongLoading(false);
-    }
-    return () => clearTimeout(timer);
-  }, [isLoading]);
+    if (!user || (user.status !== 'approved' && user.status !== 'active')) return;
 
-  // --- TAB ACCESS CONTROL ---
-  useEffect(() => {
-    if (user && (user.status === 'approved' || user.status === 'active')) {
-      if (!canAccessTab(user, activeTab)) {
-        const firstAllowed = TAB_DEFINITIONS.find(t => canAccessTab(user, t.id));
-        if (firstAllowed) setActiveTab(firstAllowed.id);
-      }
-    }
-  }, [user, activeTab]);
+    console.log('[SYSTEM] Initializing Quantum Real-time Link...');
+    
+    const subscription = db.subscribeToChanges((payload) => {
+      const { eventType, new: newRecord, old: oldRecord } = payload;
+      
+      setClients(prev => {
+        let newList = [...prev];
+        
+        if (eventType === 'INSERT' || eventType === 'UPDATE') {
+          const updatedClient: Client = {
+            ...newRecord.data,
+            id: newRecord.id,
+            _ownerId: newRecord.user_id,
+            lastUpdated: newRecord.updated_at
+          };
 
-  useEffect(() => {
-    const heartbeat = setInterval(() => {
-      if (document.visibilityState === 'visible' && user && (user.status === 'approved' || user.status === 'active')) {
-        logTabUsage(activeTab, 60);
-      }
-    }, 60000);
-    return () => clearInterval(heartbeat);
-  }, [activeTab, user]);
+          const idx = newList.findIndex(c => c.id === updatedClient.id);
+          if (idx >= 0) {
+            // Only update if the incoming data is newer than our local version
+            const localTs = new Date(newList[idx].lastUpdated).getTime();
+            const remoteTs = new Date(updatedClient.lastUpdated).getTime();
+            
+            if (remoteTs > localTs) {
+              newList[idx] = updatedClient;
+              // If this is the client we are CURRENTLY editing, hot-patch the form
+              if (clientId === updatedClient.id && !isSavingRef.current) {
+                loadClient(updatedClient);
+                toast.info(`Updated: ${updatedClient.name}`);
+              }
+            }
+          } else {
+            newList.push(updatedClient);
+          }
+        } else if (eventType === 'DELETE') {
+          newList = newList.filter(c => c.id !== oldRecord.id);
+        }
+
+        localStorage.setItem(CLIENT_CACHE_KEY, JSON.stringify(newList));
+        return newList;
+      });
+    });
+
+    if (subscription) setIsRealtimeActive(true);
+
+    return () => {
+      subscription?.unsubscribe();
+      setIsRealtimeActive(false);
+    };
+  }, [user, clientId, loadClient]);
 
   const loadClientsList = useCallback(async () => {
      try {
@@ -115,22 +129,11 @@ const AppInner: React.FC = () => {
            localStorage.setItem(CLIENT_CACHE_KEY, JSON.stringify(data));
            setLastSaved(new Date());
        }
-     } catch (e: any) {
-        // Silent error for fetch failure
-     }
+     } catch (e) {}
   }, [user?.id]);
 
   useEffect(() => {
      if (user && (user.status === 'approved' || user.status === 'active')) {
-         const cached = localStorage.getItem(CLIENT_CACHE_KEY);
-         if (cached) {
-             try { 
-                 const parsed = JSON.parse(cached);
-                 if (parsed && parsed.length > 0) {
-                     setClients(parsed); 
-                 }
-             } catch(e) {}
-         }
          loadClientsList();
      }
   }, [user, loadClientsList]);
@@ -147,48 +150,26 @@ const AppInner: React.FC = () => {
      }
      resetClient();
      lastSavedJson.current = ""; 
-     sessionStorage.removeItem(SESSION_BASELINE_KEY);
      isHydratedRef.current = true;
-     
      setActiveTab('profile');
-     toast.info("Fresh strategy initialized");
   };
 
   const handleLoadClient = (client: Client, redirect = true) => {
      const seed = JSON.stringify(client);
      lastSavedJson.current = seed; 
-     sessionStorage.setItem(SESSION_BASELINE_KEY, seed);
      isHydratedRef.current = true;
-     
      loadClient(client);
      if (redirect) setActiveTab('profile');
   };
 
-  const handleSaveClient = useCallback(async (isAutoSave = false, overrideClient?: Client, forceSave = false) => {
-     const logId = `UI-SAVE-${Date.now().toString().slice(-4)}`;
-
-     // 1. VISIBILITY CHECK
-     if (!forceSave && typeof document !== 'undefined' && document.hidden) {
-         return;
-     }
-
+  const handleSaveClient = useCallback(async (isAutoSave = false) => {
      if (!user || (user.status !== 'approved' && user.status !== 'active')) return;
-     
-     // 2. LOCK CHECK
-     if (isSavingRef.current) return;
-     if (transferringIds.size > 0) return;
+     if (isSavingRef.current || transferringIds.size > 0) return;
 
-     const clientData = overrideClient || generateClientObject();
-     
-     if (!isHydratedRef.current || !clientData.profile.name) {
-         if (!isAutoSave) {
-             setSaveStatus('saved');
-             setTimeout(() => setSaveStatus('idle'), 2000);
-         }
-         return; 
-     }
+     const clientData = generateClientObject();
+     if (!isHydratedRef.current || !clientData.profile.name) return; 
 
-     // 3. DIFF CHECK
+     // Diff Check
      const { lastUpdated: _ts, ...currentContent } = clientData;
      let lastSavedContent = {};
      try {
@@ -197,185 +178,66 @@ const AppInner: React.FC = () => {
         lastSavedContent = rest;
      } catch (e) {}
 
-     const currentHash = JSON.stringify(currentContent);
-     const lastHash = JSON.stringify(lastSavedContent);
-
-     if (currentHash === lastHash) {
-        if (!isAutoSave) {
-            setLastSaved(new Date());
-            setSaveStatus('saved');
-            setTimeout(() => setSaveStatus('idle'), 2000);
-        } else if (saveStatus === 'error') {
-            setSaveStatus('idle');
-        }
+     if (JSON.stringify(currentContent) === JSON.stringify(lastSavedContent)) {
+        if (!isAutoSave) setSaveStatus('saved');
         return; 
      }
 
-     // 4. EXECUTE SAVE (Now returns almost instantly)
      isSavingRef.current = true;
      if (!isAutoSave) setSaveStatus('saving');
 
      try {
         const isNewClient = !clientId;
-        
-        // This call is now non-blocking for cloud. It returns after local write.
+        // Non-blocking save: db.saveClient handles local immediately
         const saved = await db.saveClient(clientData, user?.id);
         
-        // 5. UPDATE STATE
-        setClients(prev => {
-            const exists = prev.find(c => c.id === saved.id);
-            const newList = exists ? prev.map(c => c.id === saved.id ? saved : c) : [...prev, saved];
-            localStorage.setItem(CLIENT_CACHE_KEY, JSON.stringify(newList));
-            return newList;
-        });
+        if (isNewClient) promoteToSaved(saved);
 
-        if (isNewClient) {
-            promoteToSaved(saved);
-        }
-
-        const newBaseline = JSON.stringify(saved);
-        lastSavedJson.current = newBaseline;
-        sessionStorage.setItem(SESSION_BASELINE_KEY, newBaseline);
+        lastSavedJson.current = JSON.stringify(saved);
         setLastSaved(new Date());
-        
         setSaveStatus('saved');
-        setTimeout(() => {
-            setSaveStatus(prev => prev === 'saved' ? 'idle' : prev);
-        }, 2000);
-
+        setTimeout(() => setSaveStatus('idle'), 2000);
      } catch (e: any) {
-        console.error(`[${logId}] FATAL:`, e.message);
-        if (!isAutoSave) {
-            toast.error(`Save Failed: ${e.message}`);
-        }
         setSaveStatus('error');
      } finally {
         isSavingRef.current = false;
      }
-  }, [user, generateClientObject, transferringIds, clientId, promoteToSaved, saveStatus]);
+  }, [user, generateClientObject, transferringIds, clientId, promoteToSaved]);
 
-  // --- WAKE UP & RESYNC LISTENERS ---
+  // Wake up sync
   useEffect(() => {
-    const handleNetworkRecovery = () => {
+    const handleSync = () => {
       if (document.visibilityState === 'visible' && navigator.onLine) {
-         console.log("[LIFECYCLE] App Woke Up / Online - Triggering Flush");
-         
-         // Priority: Sync queued items first
          db.flushCloudQueue(user?.id).catch(() => {});
-         
-         // Refresh list
          loadClientsList();
-
-         // If active client, check for sync
-         if (clientId && !isSavingRef.current) {
-             handleSaveClient(true, undefined, true); 
-         }
       }
     };
-
-    window.addEventListener('online', handleNetworkRecovery);
-    document.addEventListener('visibilitychange', handleNetworkRecovery);
-
+    window.addEventListener('online', handleSync);
+    document.addEventListener('visibilitychange', handleSync);
     return () => {
-      window.removeEventListener('online', handleNetworkRecovery);
-      document.removeEventListener('visibilitychange', handleNetworkRecovery);
+      window.removeEventListener('online', handleSync);
+      document.removeEventListener('visibilitychange', handleSync);
     };
-  }, [clientId, handleSaveClient, loadClientsList, user]);
+  }, [user, loadClientsList]);
 
-  // --- AUTO-SAVE HEARTBEAT ---
+  // Heartbeat
   useEffect(() => {
-     let intervalId: any;
-
-     const startHeartbeat = () => {
-         if (intervalId) clearInterval(intervalId);
-         intervalId = setInterval(() => {
-             handleSaveClient(true);
-         }, 2000);
-     };
-
-     const stopHeartbeat = () => {
-         if (intervalId) clearInterval(intervalId);
-         intervalId = null;
-     };
-
-     const handleVisibilityChange = () => {
-         if (document.hidden) {
-             stopHeartbeat();
-             if (gridSaveDebounceRef.current) {
-                 clearTimeout(gridSaveDebounceRef.current);
-                 gridSaveDebounceRef.current = null;
-             }
-             if (pendingSaveClientRef.current) {
-                 const clientToFlush = pendingSaveClientRef.current;
-                 pendingSaveClientRef.current = null;
-                 db.saveClient(clientToFlush, user?.id).catch(() => {});
-             }
-         } else {
-             startHeartbeat();
-         }
-     };
-
-     if (!document.hidden) startHeartbeat();
-
-     document.addEventListener('visibilitychange', handleVisibilityChange);
-     return () => {
-         stopHeartbeat();
-         document.removeEventListener('visibilitychange', handleVisibilityChange);
-     };
-  }, [handleSaveClient, user]);
+     const interval = setInterval(() => handleSaveClient(true), 3000);
+     return () => clearInterval(interval);
+  }, [handleSaveClient]);
 
   const handleUpdateGlobalClient = useCallback((updatedClient: Client) => {
-      setClients(prev => {
-          const newList = prev.map(c => c.id === updatedClient.id ? updatedClient : c);
-          localStorage.setItem(CLIENT_CACHE_KEY, JSON.stringify(newList));
-          return newList;
-      });
-      
-      if (updatedClient.id === clientId) {
-          const seed = JSON.stringify(updatedClient);
-          lastSavedJson.current = seed;
-          sessionStorage.setItem(SESSION_BASELINE_KEY, seed);
-          loadClient(updatedClient);
-      }
-
-      if (gridSaveDebounceRef.current) clearTimeout(gridSaveDebounceRef.current);
-      
-      pendingSaveClientRef.current = updatedClient;
-      setSaveStatus('saving'); 
-      
-      gridSaveDebounceRef.current = setTimeout(async () => {
-          try {
-              const clientToSave = pendingSaveClientRef.current || updatedClient;
-              await db.saveClient(clientToSave, user?.id);
-              if (pendingSaveClientRef.current?.id === clientToSave.id) {
-                  pendingSaveClientRef.current = null;
-              }
-              setSaveStatus('saved');
-              setLastSaved(new Date());
-              setTimeout(() => setSaveStatus('idle'), 2000);
-          } catch (e: any) { 
-              setSaveStatus('error'); 
-          }
-      }, 1000); 
+      setClients(prev => prev.map(c => c.id === updatedClient.id ? updatedClient : c));
+      if (updatedClient.id === clientId) loadClient(updatedClient);
+      db.saveClient(updatedClient, user?.id).catch(() => setSaveStatus('error'));
   }, [clientId, loadClient, user]);
-
-  const handleTransferStart = (id: string) => setTransferringIds(prev => new Set(prev).add(id));
-  const handleTransferEnd = (id: string) => {
-      setTransferringIds(prev => {
-          const next = new Set(prev);
-          next.delete(id);
-          return next;
-      });
-      loadClientsList();
-  };
 
   if (isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
         <div className="flex flex-col items-center gap-4">
           <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
-          <p className="text-sm font-bold text-slate-400 uppercase tracking-widest">INITIALIZING QUANTUM CORE...</p>
-          {showLongLoading && <p className="text-xs text-indigo-400 animate-pulse">Waking up database...</p>}
+          <p className="text-sm font-bold text-slate-400">INITIALIZING QUANTUM CORE...</p>
         </div>
       </div>
     );
@@ -390,32 +252,12 @@ const AppInner: React.FC = () => {
     );
   }
 
-  if (user && (user.status === 'pending' || user.status === 'rejected')) {
-    return (
-      <div className="min-h-screen bg-[#0B1120] flex flex-col items-center justify-center p-6 text-white">
-        <div className="text-center max-w-lg">
-          <h1 className="text-3xl font-black mb-4">Access Restricted</h1>
-          <p className="text-slate-400 text-sm mb-8">Your account status is: <span className="text-white font-bold uppercase">{user.status}</span></p>
-          
-          <div className="flex justify-center gap-4">
-             <button onClick={() => refreshProfile()} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-widest transition-colors">
-                Check Permission
-             </button>
-             <button onClick={() => signOut()} className="text-slate-500 hover:text-white text-xs font-bold uppercase tracking-widest px-4 py-2">
-                Sign Out
-             </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <AppShell 
       activeTab={activeTab} 
       setActiveTab={setActiveTab} 
       onLoginClick={() => setAuthModalOpen(true)}
-      onPricingClick={() => alert("Contact Sales for Upgrades")}
+      onPricingClick={() => {}}
       onSaveClick={() => handleSaveClient(false)}
       clientRef={clientId ? profile.name : undefined}
       clientName={profile.name}
@@ -424,6 +266,15 @@ const AppInner: React.FC = () => {
       clients={clients}
       onLoadClient={handleLoadClient}
     >
+      <div className="fixed top-20 right-6 z-50">
+         {isRealtimeActive && (
+            <div className="bg-emerald-500/10 backdrop-blur-md border border-emerald-500/20 px-3 py-1 rounded-full flex items-center gap-2 animate-in fade-in slide-in-from-right-4">
+               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+               <span className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">Real-time Active</span>
+            </div>
+         )}
+      </div>
+
       {activeTab === 'disclaimer' && <DisclaimerTab />}
       {activeTab === 'dashboard' && <DashboardTab user={user} clients={clients} setActiveTab={setActiveTab} onLoadClient={handleLoadClient} onNewClient={handleNewClient} />}
       {activeTab === 'profile' && <ProfileTab clients={clients} onLoadClient={handleLoadClient} onNewProfile={handleNewClient} />}
@@ -449,34 +300,20 @@ const AppInner: React.FC = () => {
             deleteClient={async (id) => {
                 await db.deleteClient(id);
                 setClients(prev => prev.filter(c => c.id !== id));
-                if (id === clientId) {
-                   resetClient();
-                   sessionStorage.removeItem(SESSION_BASELINE_KEY);
-                   isHydratedRef.current = false;
-                   lastSavedJson.current = "";
-                }
-                toast.success("Client deleted successfully.");
             }}
             onRefresh={loadClientsList}
             onUpdateGlobalClient={handleUpdateGlobalClient}
-            onTransferStart={handleTransferStart}
-            onTransferEnd={handleTransferEnd}
           />
       )}
-      {activeTab === 'portfolio' && (
-          <PortfolioTab 
-             clients={clients}
-             onUpdateClient={handleUpdateGlobalClient}
-          />
-      )}
+      {activeTab === 'portfolio' && <PortfolioTab clients={clients} onUpdateClient={handleUpdateGlobalClient} />}
       {activeTab === 'market' && <MarketNewsTab />}
       {activeTab === 'reminders' && <RemindersTab />}
       {activeTab === 'report' && <ReportTab />}
-      {activeTab === 'admin' && <AdminTab />}
+      {activeTab === 'admin' && <AdminTab clients={clients} />}
 
       <AiAssistant currentClient={clientId ? generateClientObject() : null} />
       <AuthModal isOpen={isAuthModalOpen} onClose={() => setAuthModalOpen(false)} />
-    </AppShell>
+    </AppInner>
   );
 };
 
