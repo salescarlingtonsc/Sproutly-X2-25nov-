@@ -1,3 +1,4 @@
+
 import React, { createContext, useContext, useState, useMemo, useEffect, ReactNode, useRef } from 'react';
 import { 
   Profile, Expenses, CustomExpense, Child, CpfState, CashflowState, 
@@ -11,7 +12,7 @@ import { computeCpf } from '../lib/calculators';
 export const INITIAL_PROFILE: Profile = {
   name: '', dob: '', gender: 'male', email: '', phone: '',
   employmentStatus: 'employed', grossSalary: '', monthlyIncome: '', takeHome: '',
-  retirementAge: '65', customRetirementExpense: '', monthlyInvestmentAmount: '',
+  retirementAge: '65', customRetirementExpense: '', monthlyInvestmentAmount: '', initialLumpSum: '',
   referenceYear: new Date().getFullYear(), referenceMonth: new Date().getMonth(),
   children: [], tags: []
 };

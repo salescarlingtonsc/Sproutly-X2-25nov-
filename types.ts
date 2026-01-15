@@ -1,5 +1,4 @@
 
-
 export interface CashflowState {
   currentSavings: string;
   projectToAge: string;
@@ -83,6 +82,7 @@ export interface Profile {
   retirementAge: string;
   customRetirementExpense: string;
   monthlyInvestmentAmount: string;
+  initialLumpSum?: string;
   referenceYear: number;
   referenceMonth: number;
   children: Child[];
@@ -232,6 +232,7 @@ export interface PortfolioItem {
   frequency: 'monthly' | 'quarterly' | 'half_yearly' | 'yearly' | 'lump_sum';
   currentValue: number;
   lastUpdated: string;
+  totalInvested?: number; // Manual override for total invested amount
 }
 
 export type ContactStatus = 'new' | 'contacted' | 'picked_up' | 'npu_1' | 'npu_2' | 'npu_3' | 'npu_4' | 'npu_5' | 'npu_6' | 'appt_set' | 'appt_met' | 'proposal' | 'pending_decision' | 'client' | 'case_closed' | 'not_keen' | 'closing' | 'qualified';
@@ -328,6 +329,7 @@ export interface Advisor extends UserProfile {
   avatar?: string;
   joinedAt: string;
   teamId?: string;
+  team_name?: string;
 }
 
 export interface ProductTier {
@@ -349,7 +351,6 @@ export interface Team {
   id: string;
   name: string;
   leaderId: string;
-  // members field is not strictly required if using reporting_to on users, but can be kept for caching
 }
 
 export interface AppSettings {

@@ -1,5 +1,4 @@
 
-
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { UserProfile, SubscriptionTier } from '../types';
@@ -64,7 +63,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 id: session.user.id,
                 email: session.user.email!,
                 role: 'advisor', // Temporary safe role
-                status: 'active',
+                status: 'active', // <--- This is set to 'active' initially
                 subscriptionTier: 'free', 
                 is_admin: false,
                 organizationId: 'org_default',
@@ -89,7 +88,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       } catch (err: any) {
         // Ignore abort errors which can happen in strict mode or rapid navigation
-        if (err.name === 'AbortError' || err.message?.includes('aborted')) {
+        const msg = (err.message || '').toLowerCase();
+        if (
+            err.name === 'AbortError' || 
+            msg.includes('aborted') ||
+            msg.includes('signal') ||
+            msg.includes('fetch failed')
+        ) {
             return;
         }
         console.error("Session check failed", err);
@@ -162,8 +167,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const finalIsAdmin = isHardcodedAdmin || isAdminByData;
       const finalTier = finalRole === 'admin' ? 'diamond' : ((finalProfileData?.subscription_tier as SubscriptionTier) || 'free');
       
-      let dbStatus = finalProfileData?.status || 'pending';
+      // STATUS RESOLUTION
+      // If profile is found, use its status. If missing (no row), default to 'approved' to allow access.
+      // This prevents "Access Restricted" for users whose profile creation trigger failed.
+      let dbStatus = finalProfileData?.status || 'approved'; 
       if (dbStatus === 'active') dbStatus = 'approved'; 
+      
+      // Hardcoded admin is always approved
       const finalStatus = (isHardcodedAdmin || dbStatus === 'approved') ? 'approved' : dbStatus;
 
       const newUserProfile: UserProfile = {

@@ -32,17 +32,18 @@ const CashflowTab: React.FC = () => {
   // Safe fallback if DOB is missing
   const currentAge = age || 30; 
   const currentYear = new Date().getFullYear();
+  const currentMonthIndex = new Date().getMonth(); // Default new items to start NOW
 
   // --- HANDLERS ---
   const addCareerEvent = () => setCashflowState(prev => ({...prev, careerEvents: [...(prev.careerEvents||[]), {id: Date.now(), type: 'increment', age: currentAge+1, month: 0, amount: '', durationMonths: '24', notes: ''}]}));
   const updateCareerEvent = (id: number, field: string, val: any) => setCashflowState(prev => ({...prev, careerEvents: (prev.careerEvents||[]).map(e => e.id === id ? {...e, [field]: val} : e)}));
   const removeCareerEvent = (id: number) => setCashflowState(prev => ({...prev, careerEvents: (prev.careerEvents||[]).filter(e => e.id !== id)}));
   
-  const addIncome = () => setCashflowState(prev => ({...prev, additionalIncomes: [...prev.additionalIncomes, {id: Date.now(), name: '', amount: '', type: 'recurring', frequency: 'monthly', startAge: currentAge, startMonth: 0, endAge: '', endMonth: 11, isEnabled: true}]}));
+  const addIncome = () => setCashflowState(prev => ({...prev, additionalIncomes: [...prev.additionalIncomes, {id: Date.now(), name: '', amount: '', type: 'recurring', frequency: 'monthly', startAge: currentAge, startMonth: currentMonthIndex, endAge: '', endMonth: 11, isEnabled: true}]}));
   const updateIncomeItem = (id: number, field: string, val: any) => setCashflowState(prev => ({...prev, additionalIncomes: prev.additionalIncomes.map(i => i.id === id ? {...i, [field]: val} : i)}));
   const removeIncome = (id: number) => setCashflowState(prev => ({...prev, additionalIncomes: prev.additionalIncomes.filter(i => i.id !== id)}));
 
-  const addWithdrawal = () => setCashflowState(prev => ({...prev, withdrawals: [...prev.withdrawals, {id: Date.now(), name: '', amount: '', type: 'onetime', frequency: 'monthly', startAge: currentAge, startMonth: 0, endAge: '', endMonth: 11, isEnabled: true}]}));
+  const addWithdrawal = () => setCashflowState(prev => ({...prev, withdrawals: [...prev.withdrawals, {id: Date.now(), name: '', amount: '', type: 'onetime', frequency: 'monthly', startAge: currentAge, startMonth: currentMonthIndex, endAge: '', endMonth: 11, isEnabled: true}]}));
   const updateWithdrawalItem = (id: number, field: string, val: any) => setCashflowState(prev => ({...prev, withdrawals: prev.withdrawals.map(w => w.id === id ? {...w, [field]: val} : w)}));
   const removeWithdrawal = (id: number) => setCashflowState(prev => ({...prev, withdrawals: prev.withdrawals.filter(w => w.id !== id)}));
 
@@ -73,6 +74,30 @@ const CashflowTab: React.FC = () => {
         // Return float age
         const months = (targetDate.getFullYear() - dobDate.getFullYear()) * 12 + (targetDate.getMonth() - dobDate.getMonth());
         return months / 12;
+    };
+
+    // Helper: Calculate projection month index from an (Age, Month) input
+    // This fixes the "Year Later" bug by respecting DOB
+    const getProjectionMonthIndex = (targetAge: number, targetMonthIdx: number) => {
+        if (dobDate) {
+            // Determine the calendar year where this Age occurs
+            // E.g. Born Dec 1990. "Age 30, Jan" -> Jan 2021 (because Jan 2020 was Age 29)
+            // Logic: Base Year = BirthYear + TargetAge.
+            // If targetMonth < birthMonth, it means the birthday hasn't happened in that calendar year yet,
+            // so to be "Age X", it must be the NEXT calendar year (Year+1).
+            
+            let targetYear = dobDate.getFullYear() + targetAge;
+            if (targetMonthIdx < dobDate.getMonth()) {
+               targetYear += 1;
+            }
+            
+            // Now diff against start
+            const diffYears = targetYear - startYear;
+            const diffMonths = targetMonthIdx - startMonth;
+            return diffYears * 12 + diffMonths;
+        }
+        // Fallback if no DOB: Simple offset from current age
+        return (targetAge - currentAge) * 12 + (targetMonthIdx - startMonth);
     };
 
     const targetAge = parseInt(projectToAge) || 100;
@@ -140,11 +165,20 @@ const CashflowTab: React.FC = () => {
       // Add. Income
       additionalIncomes.forEach(i => {
          if (i.isEnabled === false) return; // Skip disabled
-         const startM = (toNum(i.startAge) - currentAge)*12 + (toNum(i.startMonth)-startMonth);
-         const endM = i.endAge ? (toNum(i.endAge)-currentAge)*12 + ((i.endMonth||11)-startMonth) : 9999;
+         
+         let startM = getProjectionMonthIndex(toNum(i.startAge), toNum(i.startMonth));
+         const endM = i.endAge ? getProjectionMonthIndex(toNum(i.endAge), (i.endMonth || 11)) : 9999;
+         
+         // CRITICAL FIX: If a One-Time income is scheduled for the past (e.g. Jan when it's June), 
+         // snap it to Month 0 (Now) so it isn't lost in the projection.
+         if (i.type === 'onetime' && startM < 0 && startM > -12) {
+             startM = 0;
+         }
+
          if (m >= startM && m <= endM) {
-            if (i.type === 'onetime' && m === startM) additionalIncome += toNum(i.amount);
-            if (i.type === 'recurring') {
+            if (i.type === 'onetime') {
+                if (m === startM) additionalIncome += toNum(i.amount);
+            } else if (i.type === 'recurring') {
                const diff = m - startM;
                let add = false;
                if (i.frequency === 'monthly') add = true;
@@ -159,9 +193,14 @@ const CashflowTab: React.FC = () => {
       // Withdrawals
       withdrawals.forEach(w => {
          if (w.isEnabled === false) return; // Skip disabled
-         const startM = (toNum(w.startAge) - currentAge)*12 + (toNum(w.startMonth)-startMonth);
-         const endM = w.endAge ? (toNum(w.endAge)-currentAge)*12 + ((w.endMonth||11)-startMonth) : 9999;
+         let startM = getProjectionMonthIndex(toNum(w.startAge), toNum(w.startMonth));
+         const endM = w.endAge ? getProjectionMonthIndex(toNum(w.endAge), (w.endMonth || 11)) : 9999;
          
+         // CRITICAL FIX: Same for One-Time withdrawals
+         if (w.type === 'onetime' && startM < 0 && startM > -12) {
+             startM = 0;
+         }
+
          if (w.type === 'onetime') {
              if (m === startM) withdrawalAmount += toNum(w.amount);
          } else {

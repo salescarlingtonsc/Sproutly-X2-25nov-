@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from './contexts/AuthContext';
 import { ClientProvider, useClient } from './contexts/ClientContext';
@@ -33,6 +34,7 @@ import MarketNewsTab from './features/market/MarketNewsTab';
 
 // Logic
 import { db } from './lib/db';
+import { supabase } from './lib/supabase';
 import { logTabUsage } from './lib/db/activities';
 import { Client } from './types';
 import { canAccessTab, TAB_DEFINITIONS } from './lib/config';
@@ -45,7 +47,6 @@ const AppInner: React.FC = () => {
   const { 
     profile, loadClient, resetClient, generateClientObject, promoteToSaved,
     clientId, 
-    // Data States for Auto-Save
     expenses, customExpenses,
     cashflowState, investorState, insuranceState,
     cpfState, propertyState, wealthState, retirement,
@@ -61,7 +62,6 @@ const AppInner: React.FC = () => {
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const [showLongLoading, setShowLongLoading] = useState(false);
 
-  // --- ARCHITECTURAL FIX: PERSISTENT BASELINE ---
   const getInitialBaseline = () => {
       try {
           return sessionStorage.getItem(SESSION_BASELINE_KEY) || '';
@@ -71,8 +71,10 @@ const AppInner: React.FC = () => {
   const lastSavedJson = useRef<string>(getInitialBaseline());
   const isSavingRef = useRef<boolean>(false);
   const isHydratedRef = useRef<boolean>(false); 
-  const saveStartTimeRef = useRef<number>(0);
+  
+  const pendingSaveClientRef = useRef<Client | null>(null);
   const gridSaveDebounceRef = useRef<any>(null); 
+  
   const [transferringIds, setTransferringIds] = useState<Set<string>>(new Set());
 
   // Monitor loading time
@@ -85,42 +87,6 @@ const AppInner: React.FC = () => {
     }
     return () => clearTimeout(timer);
   }, [isLoading]);
-
-  // --- WATCHDOG: DETECT STUCK SAVES ---
-  useEffect(() => {
-    let watchdog: any;
-    if (saveStatus === 'saving') {
-      watchdog = setTimeout(() => {
-        console.warn("[Watchdog] Save lock force-cleared due to timeout.");
-        setSaveStatus('error');
-        isSavingRef.current = false;
-        saveStartTimeRef.current = 0;
-      }, 45000);
-    }
-    return () => clearTimeout(watchdog);
-  }, [saveStatus]);
-
-  // --- EXIT GUARD ---
-  useEffect(() => {
-    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (saveStatus === 'saving') {
-        e.preventDefault();
-        e.returnValue = ''; 
-        return '';
-      }
-    };
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [saveStatus]);
-
-  // --- AUTO POLL FOR APPROVAL ---
-  useEffect(() => {
-    let interval: any;
-    if (user && (user.status === 'pending' || user.status === 'rejected')) {
-        interval = setInterval(() => { refreshProfile(); }, 3000);
-    }
-    return () => clearInterval(interval);
-  }, [user, refreshProfile]);
 
   // --- TAB ACCESS CONTROL ---
   useEffect(() => {
@@ -141,26 +107,33 @@ const AppInner: React.FC = () => {
     return () => clearInterval(heartbeat);
   }, [activeTab, user]);
 
+  const loadClientsList = useCallback(async () => {
+     try {
+       const data = await db.getClients(user?.id);
+       if (data && Array.isArray(data)) {
+           setClients(data);
+           localStorage.setItem(CLIENT_CACHE_KEY, JSON.stringify(data));
+           setLastSaved(new Date());
+       }
+     } catch (e: any) {
+        // Silent error for fetch failure
+     }
+  }, [user?.id]);
+
   useEffect(() => {
      if (user && (user.status === 'approved' || user.status === 'active')) {
          const cached = localStorage.getItem(CLIENT_CACHE_KEY);
          if (cached) {
-             try { setClients(JSON.parse(cached)); } catch(e) {}
+             try { 
+                 const parsed = JSON.parse(cached);
+                 if (parsed && parsed.length > 0) {
+                     setClients(parsed); 
+                 }
+             } catch(e) {}
          }
          loadClientsList();
      }
-  }, [user]);
-
-  const loadClientsList = async () => {
-     try {
-       const data = await db.getClients(user?.id);
-       setClients(data);
-       localStorage.setItem(CLIENT_CACHE_KEY, JSON.stringify(data));
-       setLastSaved(new Date()); // Signal data is fresh
-     } catch (e) {
-       console.error("Hydration failed.");
-     }
-  };
+  }, [user, loadClientsList]);
 
   const handleNewClient = async () => {
      if (profile.name && clientId === null) {
@@ -191,28 +164,22 @@ const AppInner: React.FC = () => {
      if (redirect) setActiveTab('profile');
   };
 
-  /**
-   * CORE AUTOSAVE LOGIC
-   * Updated with forceSave to handle tab switching
-   */
   const handleSaveClient = useCallback(async (isAutoSave = false, overrideClient?: Client, forceSave = false) => {
-     // 1. VISIBILITY CHECK (Override if forceSave is true)
+     const logId = `UI-SAVE-${Date.now().toString().slice(-4)}`;
+
+     // 1. VISIBILITY CHECK
      if (!forceSave && typeof document !== 'undefined' && document.hidden) {
          return;
      }
 
-     // 2. Auth Check (Hydration check removed here to allow placebo save)
      if (!user || (user.status !== 'approved' && user.status !== 'active')) return;
      
-     // 3. Mutex & Transfer Check
-     if (isSavingRef.current || transferringIds.size > 0) return;
+     // 2. LOCK CHECK
+     if (isSavingRef.current) return;
+     if (transferringIds.size > 0) return;
 
-     // 4. Data Generation
      const clientData = overrideClient || generateClientObject();
      
-     // CRITICAL UX FIX: If in "browsing" mode (CRM tab) where global context is empty,
-     // OR if not hydrated (no client loaded),
-     // still trigger "Saved" animation on manual click to reassure user.
      if (!isHydratedRef.current || !clientData.profile.name) {
          if (!isAutoSave) {
              setSaveStatus('saved');
@@ -221,7 +188,7 @@ const AppInner: React.FC = () => {
          return; 
      }
 
-     // 5. STABLE DIFFING
+     // 3. DIFF CHECK
      const { lastUpdated: _ts, ...currentContent } = clientData;
      let lastSavedContent = {};
      try {
@@ -234,32 +201,27 @@ const AppInner: React.FC = () => {
      const lastHash = JSON.stringify(lastSavedContent);
 
      if (currentHash === lastHash) {
-        // UX FIX: Provide visual feedback for manual saves even if no changes detected
         if (!isAutoSave) {
             setLastSaved(new Date());
             setSaveStatus('saved');
             setTimeout(() => setSaveStatus('idle'), 2000);
+        } else if (saveStatus === 'error') {
+            setSaveStatus('idle');
         }
         return; 
      }
 
-     // 6. Lock & Execute
+     // 4. EXECUTE SAVE (Now returns almost instantly)
      isSavingRef.current = true;
-     saveStartTimeRef.current = Date.now();
      if (!isAutoSave) setSaveStatus('saving');
 
      try {
         const isNewClient = !clientId;
         
-        const savePromise = db.saveClient(clientData, user.id);
+        // This call is now non-blocking for cloud. It returns after local write.
+        const saved = await db.saveClient(clientData, user?.id);
         
-        const timeoutPromise = new Promise<never>((_, reject) => 
-            setTimeout(() => reject(new Error('Network timeout (45s).')), 45000)
-        );
-
-        const saved = await Promise.race([savePromise, timeoutPromise]) as Client;
-        
-        // 7. Update State & Baseline
+        // 5. UPDATE STATE
         setClients(prev => {
             const exists = prev.find(c => c.id === saved.id);
             const newList = exists ? prev.map(c => c.id === saved.id ? saved : c) : [...prev, saved];
@@ -276,68 +238,91 @@ const AppInner: React.FC = () => {
         sessionStorage.setItem(SESSION_BASELINE_KEY, newBaseline);
         setLastSaved(new Date());
         
-        if (!isAutoSave) {
-           setSaveStatus('saved');
-           setTimeout(() => setSaveStatus('idle'), 2000);
-        } else {
-           // For AutoSave, show brief feedback if idle to confirm background sync
-           if (saveStatus === 'idle') {
-               setSaveStatus('saved');
-               setTimeout(() => setSaveStatus('idle'), 2000);
-           }
-        }
-     } catch (e: any) {
-        console.error("Save Error:", e);
-        setSaveStatus('error');
+        setSaveStatus('saved');
+        setTimeout(() => {
+            setSaveStatus(prev => prev === 'saved' ? 'idle' : prev);
+        }, 2000);
 
+     } catch (e: any) {
+        console.error(`[${logId}] FATAL:`, e.message);
         if (!isAutoSave) {
-            let msg = "Unknown error";
-            if (e instanceof Error) msg = e.message;
-            else if (typeof e === 'string') msg = e;
-            else if (e && typeof e === 'object') msg = e.message || JSON.stringify(e);
-            
-            if (msg === '{}' || msg === '[object Object]') msg = 'Unknown save error (Check console)';
-            toast.error(msg.includes('timeout') ? "Connection slow. Retrying..." : "Save failed: " + msg);
+            toast.error(`Save Failed: ${e.message}`);
         }
+        setSaveStatus('error');
      } finally {
         isSavingRef.current = false;
-        saveStartTimeRef.current = 0;
      }
   }, [user, generateClientObject, transferringIds, clientId, promoteToSaved, saveStatus]);
 
-  // --- VISIBILITY WAKE-UP & EXIT PROTOCOL ---
+  // --- WAKE UP & RESYNC LISTENERS ---
   useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'hidden') {
-          // EMERGENCY SAVE ON EXIT
-          console.log("Tab hidden - forcing immediate save.");
-          handleSaveClient(true, undefined, true);
-      } else if (document.visibilityState === 'visible') {
-        const now = Date.now();
-        if (isSavingRef.current && (now - saveStartTimeRef.current > 10000)) {
-             console.log("[App] Tab Wake: Resetting stuck save lock.");
-             isSavingRef.current = false;
-             setSaveStatus('idle');
-        }
-        // Debounced re-check on wake
-        if (isHydratedRef.current) setTimeout(() => handleSaveClient(true), 1000);
+    const handleNetworkRecovery = () => {
+      if (document.visibilityState === 'visible' && navigator.onLine) {
+         console.log("[LIFECYCLE] App Woke Up / Online - Triggering Flush");
+         
+         // Priority: Sync queued items first
+         db.flushCloudQueue(user?.id).catch(() => {});
+         
+         // Refresh list
+         loadClientsList();
+
+         // If active client, check for sync
+         if (clientId && !isSavingRef.current) {
+             handleSaveClient(true, undefined, true); 
+         }
       }
     };
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [handleSaveClient]);
 
-  // --- MAIN INTERVAL ---
+    window.addEventListener('online', handleNetworkRecovery);
+    document.addEventListener('visibilitychange', handleNetworkRecovery);
+
+    return () => {
+      window.removeEventListener('online', handleNetworkRecovery);
+      document.removeEventListener('visibilitychange', handleNetworkRecovery);
+    };
+  }, [clientId, handleSaveClient, loadClientsList, user]);
+
+  // --- AUTO-SAVE HEARTBEAT ---
   useEffect(() => {
-     const timer = setInterval(() => {
-        handleSaveClient(true);
-     }, 2000);
-     return () => clearInterval(timer);
-  }, [
-    profile, expenses, customExpenses, cashflowState, investorState, 
-    insuranceState, cpfState, propertyState, wealthState, retirement, 
-    chatHistory, crmState, handleSaveClient
-  ]);
+     let intervalId: any;
+
+     const startHeartbeat = () => {
+         if (intervalId) clearInterval(intervalId);
+         intervalId = setInterval(() => {
+             handleSaveClient(true);
+         }, 2000);
+     };
+
+     const stopHeartbeat = () => {
+         if (intervalId) clearInterval(intervalId);
+         intervalId = null;
+     };
+
+     const handleVisibilityChange = () => {
+         if (document.hidden) {
+             stopHeartbeat();
+             if (gridSaveDebounceRef.current) {
+                 clearTimeout(gridSaveDebounceRef.current);
+                 gridSaveDebounceRef.current = null;
+             }
+             if (pendingSaveClientRef.current) {
+                 const clientToFlush = pendingSaveClientRef.current;
+                 pendingSaveClientRef.current = null;
+                 db.saveClient(clientToFlush, user?.id).catch(() => {});
+             }
+         } else {
+             startHeartbeat();
+         }
+     };
+
+     if (!document.hidden) startHeartbeat();
+
+     document.addEventListener('visibilitychange', handleVisibilityChange);
+     return () => {
+         stopHeartbeat();
+         document.removeEventListener('visibilitychange', handleVisibilityChange);
+     };
+  }, [handleSaveClient, user]);
 
   const handleUpdateGlobalClient = useCallback((updatedClient: Client) => {
       setClients(prev => {
@@ -345,28 +330,33 @@ const AppInner: React.FC = () => {
           localStorage.setItem(CLIENT_CACHE_KEY, JSON.stringify(newList));
           return newList;
       });
+      
       if (updatedClient.id === clientId) {
           const seed = JSON.stringify(updatedClient);
           lastSavedJson.current = seed;
           sessionStorage.setItem(SESSION_BASELINE_KEY, seed);
           loadClient(updatedClient);
       }
+
       if (gridSaveDebounceRef.current) clearTimeout(gridSaveDebounceRef.current);
       
-      // Update status to provide visual feedback for CRM edits
+      pendingSaveClientRef.current = updatedClient;
       setSaveStatus('saving'); 
       
       gridSaveDebounceRef.current = setTimeout(async () => {
           try {
-              await db.saveClient(updatedClient, user?.id);
+              const clientToSave = pendingSaveClientRef.current || updatedClient;
+              await db.saveClient(clientToSave, user?.id);
+              if (pendingSaveClientRef.current?.id === clientToSave.id) {
+                  pendingSaveClientRef.current = null;
+              }
               setSaveStatus('saved');
               setLastSaved(new Date());
               setTimeout(() => setSaveStatus('idle'), 2000);
-          } catch (e) { 
-              console.error("Background sync error", e);
+          } catch (e: any) { 
               setSaveStatus('error'); 
           }
-      }, 800);
+      }, 1000); 
   }, [clientId, loadClient, user]);
 
   const handleTransferStart = (id: string) => setTransferringIds(prev => new Set(prev).add(id));
@@ -406,7 +396,15 @@ const AppInner: React.FC = () => {
         <div className="text-center max-w-lg">
           <h1 className="text-3xl font-black mb-4">Access Restricted</h1>
           <p className="text-slate-400 text-sm mb-8">Your account status is: <span className="text-white font-bold uppercase">{user.status}</span></p>
-          <button onClick={() => signOut()} className="text-slate-500 hover:text-white text-xs font-bold uppercase tracking-widest">Sign Out</button>
+          
+          <div className="flex justify-center gap-4">
+             <button onClick={() => refreshProfile()} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-widest transition-colors">
+                Check Permission
+             </button>
+             <button onClick={() => signOut()} className="text-slate-500 hover:text-white text-xs font-bold uppercase tracking-widest px-4 py-2">
+                Sign Out
+             </button>
+          </div>
         </div>
       </div>
     );

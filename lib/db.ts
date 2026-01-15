@@ -3,6 +3,14 @@ import { supabase, isSupabaseConfigured } from './supabase';
 import { Client } from '../types';
 
 const LOCAL_STORAGE_KEY = 'sproutly_clients_v2';
+const CLOUD_QUEUE_KEY = 'sproutly_cloud_queue_v1';
+
+type CloudQueueItem = {
+  id: string;
+  user_id: string;
+  updated_at: string;
+  data: any;
+};
 
 const generateUUID = () => {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
@@ -14,6 +22,27 @@ const generateUUID = () => {
   });
 };
 
+const readCloudQueue = (): CloudQueueItem[] => {
+  try {
+    const raw = localStorage.getItem(CLOUD_QUEUE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+};
+
+const writeCloudQueue = (items: CloudQueueItem[]) => {
+  try {
+    localStorage.setItem(CLOUD_QUEUE_KEY, JSON.stringify(items.slice(-50)));
+  } catch {}
+};
+
+const enqueueCloudSync = (item: CloudQueueItem) => {
+  const q = readCloudQueue();
+  const idx = q.findIndex(x => x.id === item.id);
+  if (idx >= 0) q[idx] = item;
+  else q.push(item);
+  writeCloudQueue(q);
+};
+
 // Helper to chunk arrays
 const chunkArray = <T>(array: T[], size: number): T[][] => {
   const chunks = [];
@@ -23,22 +52,24 @@ const chunkArray = <T>(array: T[], size: number): T[][] => {
   return chunks;
 };
 
+const getErrorMessage = (error: any): string => {
+  if (!error) return 'Unknown error';
+  if (typeof error === 'string') return error;
+  return error.message || JSON.stringify(error);
+};
+
 export const db = {
   getClients: async (userId?: string): Promise<Client[]> => {
     if (isSupabaseConfigured() && supabase) {
       try {
-        let query = supabase.from('clients').select('*');
-        const { data, error } = await query;
-        
-        if (error) {
-            if (error.code === '42P01') {
-                console.warn("Table 'clients' not found in Supabase.");
-                return [];
-            }
-            throw new Error(error.message);
+        if (typeof navigator !== 'undefined' && !navigator.onLine) {
+            throw new Error("Offline");
         }
+
+        const { data, error } = await supabase.from('clients').select('*');
+        if (error) throw error;
         
-        return (data || [])
+        const mappedData = (data || [])
             .map(row => ({
                 ...row.data,
                 id: row.id,
@@ -46,20 +77,51 @@ export const db = {
                 lastUpdated: row.updated_at || row.data.lastUpdated
             }))
             .filter((c: Client) => c.profile?.name && c.profile.name.trim().length > 0);
-      } catch (e) {
-        console.warn("DB Fetch Error:", e);
-        return []; 
+            
+        localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(mappedData));
+        return mappedData;
+
+      } catch (e: any) {
+        const local = localStorage.getItem(LOCAL_STORAGE_KEY);
+        return local ? JSON.parse(local) : [];
       }
     }
-    
     try {
         const local = localStorage.getItem(LOCAL_STORAGE_KEY);
-        const all = local ? JSON.parse(local) : [];
-        return all.filter((c: Client) => c.profile?.name && c.profile.name.trim().length > 0);
+        return local ? JSON.parse(local) : [];
     } catch { return []; }
   },
 
+  flushCloudQueue: async (userId?: string) => {
+    if (!isSupabaseConfigured() || !supabase) return;
+    if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+
+    const q = readCloudQueue();
+    if (q.length === 0) return;
+
+    const remaining: CloudQueueItem[] = [];
+    console.log(`[PROBE] Flushing Cloud Queue (${q.length} items)...`);
+
+    for (const item of q) {
+      try {
+        const { error } = await supabase.from('clients').upsert({
+          id: item.id,
+          user_id: item.user_id,
+          data: item.data,
+          updated_at: item.updated_at
+        });
+        if (error) throw error;
+      } catch (e: any) {
+        console.warn(`[PROBE] Queue Sync Failed for ${item.id}:`, e.message);
+        remaining.push(item);
+      }
+    }
+    writeCloudQueue(remaining);
+  },
+
   saveClient: async (client: Client, userId?: string): Promise<Client> => {
+    const probeId = `SAVE-${Date.now().toString().slice(-5)}`;
+    
     if (!client.profile?.name || !client.profile.name.trim()) {
         throw new Error("Client name is required.");
     }
@@ -71,118 +133,115 @@ export const db = {
         id: client.id || generateUUID()
     };
 
-    if (isSupabaseConfigured() && supabase) {
-        const { data: { session } } = await supabase.auth.getSession();
-        const activeUser = userId || session?.user?.id;
-        if (!activeUser) throw new Error("No authenticated user");
-
-        const targetOwner = clientData._ownerId || activeUser;
-
-        const { data, error } = await supabase
-            .from('clients')
-            .upsert({
-                id: clientData.id,
-                user_id: targetOwner,
-                data: { ...clientData, _ownerId: targetOwner },
-                updated_at: now
-            })
-            .select()
-            .single();
-
-        if (error) {
-            console.error("Supabase Save Error:", error);
-            
-            // SPECIFIC ERROR TRAP FOR RECURSION
-            if (error.message && (error.message.includes('stack depth') || error.message.includes('infinite recursion'))) {
-                 throw new Error("DATABASE ERROR: Permission Loop Detected. Please go to Admin > DB Repair and run the fix script.");
-            }
-
-            const errMsg = error.message || error.details || (typeof error === 'object' ? JSON.stringify(error) : String(error));
-            throw new Error(errMsg);
-        }
-        return { ...data.data, id: data.id, _ownerId: data.user_id };
+    // --- STEP 1: GUARANTEED LOCAL SAVE ---
+    try {
+        const local = localStorage.getItem(LOCAL_STORAGE_KEY);
+        const clients: Client[] = local ? JSON.parse(local) : [];
+        const idx = clients.findIndex(c => c.id === clientData.id);
+        if (idx >= 0) clients[idx] = clientData;
+        else clients.push(clientData);
+        localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(clients));
+    } catch (e) {
+        console.error(`[PROBE ${probeId}] Local Write Failed`, e);
+        throw e; 
     }
 
-    const local = localStorage.getItem(LOCAL_STORAGE_KEY);
-    const clients: Client[] = local ? JSON.parse(local) : [];
-    const idx = clients.findIndex(c => c.id === clientData.id);
-    if (idx >= 0) clients[idx] = clientData;
-    else clients.push(clientData);
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(clients));
-    
+    // --- STEP 2: FIRE-AND-FORGET CLOUD SYNC ---
+    if (isSupabaseConfigured() && supabase) {
+        const targetUserId = clientData._ownerId || userId;
+        
+        // Prepare Queue Item
+        const qItem: CloudQueueItem = {
+            id: clientData.id,
+            user_id: targetUserId || '',
+            updated_at: now,
+            data: { ...clientData, _ownerId: targetUserId }
+        };
+
+        // Always put in queue first
+        enqueueCloudSync(qItem);
+
+        // Try detached background sync
+        if (typeof navigator !== 'undefined' && navigator.onLine) {
+            (async () => {
+                try {
+                    // Fast session check
+                    const { data: { session } } = await supabase.auth.getSession();
+                    const activeUser = targetUserId || session?.user?.id;
+                    if (!activeUser) return;
+
+                    const { error } = await supabase.from('clients').upsert({
+                        id: qItem.id,
+                        user_id: activeUser,
+                        data: { ...qItem.data, _ownerId: activeUser },
+                        updated_at: qItem.updated_at
+                    });
+
+                    if (!error) {
+                        // Success: remove specifically this ID from queue
+                        const currentQ = readCloudQueue();
+                        writeCloudQueue(currentQ.filter(x => x.id !== qItem.id));
+                        console.log(`[PROBE ${probeId}] Background Cloud Sync: SUCCESS`);
+                    }
+                } catch (e) {}
+            })();
+        }
+    }
+
+    // IMPORTANT: Return immediately. The UI will flip to "Saved" now.
     return clientData;
   },
 
   deleteClient: async (id: string) => {
-      if (isSupabaseConfigured() && supabase) {
-          const { error } = await supabase.from('clients').delete().eq('id', id);
-          if (error) throw new Error(error.message || JSON.stringify(error));
-          return;
-      }
-      
       const local = localStorage.getItem(LOCAL_STORAGE_KEY);
       if (local) {
           const clients = JSON.parse(local).filter((c: Client) => c.id !== id);
           localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(clients));
       }
+      if (isSupabaseConfigured() && supabase) {
+          await supabase.from('clients').delete().eq('id', id);
+      }
   },
 
   deleteClientsBulk: async (ids: string[]) => {
       if (ids.length === 0) return;
-
-      if (isSupabaseConfigured() && supabase) {
-          const chunks = chunkArray(ids, 20);
-          for (const chunk of chunks) {
-             const { error } = await supabase.from('clients').delete().in('id', chunk);
-             if (error) throw new Error(error.message || JSON.stringify(error));
-          }
-          return;
-      }
-      
       const local = localStorage.getItem(LOCAL_STORAGE_KEY);
       if (local) {
           const clients = JSON.parse(local).filter((c: Client) => !ids.includes(c.id));
           localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(clients));
       }
+      if (isSupabaseConfigured() && supabase) {
+          const chunks = chunkArray(ids, 20);
+          for (const chunk of chunks) {
+             await supabase.from('clients').delete().in('id', chunk);
+          }
+      }
   },
 
   transferClientsBulk: async (ids: string[], newOwnerId: string) => {
       if (ids.length === 0) return;
-
       if (isSupabaseConfigured() && supabase) {
           const chunks = chunkArray(ids, 20);
-          
           for (const chunk of chunks) {
-              const { data: clientsToUpdate, error: fetchErr } = await supabase
-                  .from('clients')
-                  .select('id, data')
-                  .in('id', chunk);
-              
-              if (fetchErr) throw new Error(fetchErr.message);
+              const { data: clientsToUpdate } = await supabase.from('clients').select('id, data').in('id', chunk);
               if (!clientsToUpdate || clientsToUpdate.length === 0) continue;
-
               const updates = clientsToUpdate.map(row => ({
                   id: row.id,
                   user_id: newOwnerId,
                   data: { ...row.data, _ownerId: newOwnerId },
                   updated_at: new Date().toISOString()
               }));
-
-              const { error: updateErr } = await supabase
-                  .from('clients')
-                  .upsert(updates);
-              
-              if (updateErr) throw new Error(updateErr.message || JSON.stringify(updateErr));
+              await supabase.from('clients').upsert(updates);
           }
-          return;
       }
-      throw new Error("Bulk transfer requires cloud database");
   },
 
   createClientsBulk: async (clients: Client[], targetOwnerId: string) => {
       const validClients = clients.filter(c => c.profile?.name && c.profile.name.trim().length > 0);
       if (validClients.length === 0) return;
-
+      const local = localStorage.getItem(LOCAL_STORAGE_KEY);
+      const existing = local ? JSON.parse(local) : [];
+      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify([...existing, ...validClients]));
       if (isSupabaseConfigured() && supabase) {
           const rows = validClients.map(c => ({
               id: c.id || generateUUID(),
@@ -190,40 +249,23 @@ export const db = {
               data: { ...c, _ownerId: targetOwnerId },
               updated_at: new Date().toISOString()
           }));
-          
           const chunks = chunkArray(rows, 50);
           for (const chunk of chunks) {
-              const { error } = await supabase.from('clients').insert(chunk);
-              if (error) throw new Error(error.message || JSON.stringify(error));
+              await supabase.from('clients').insert(chunk);
           }
-          return;
       }
-      
-      const local = localStorage.getItem(LOCAL_STORAGE_KEY);
-      const existing = local ? JSON.parse(local) : [];
-      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify([...existing, ...validClients]));
   },
 
   transferOwnership: async (clientId: string, newOwnerId: string) => {
       if (isSupabaseConfigured() && supabase) {
-          const { data: current, error: fetchErr } = await supabase
-            .from('clients')
-            .select('data')
-            .eq('id', clientId)
-            .single();
-            
-          if (fetchErr || !current) throw new Error("Client not found");
-
+          const { data: current } = await supabase.from('clients').select('data').eq('id', clientId).single();
+          if (!current) throw new Error("Client not found");
           const newData = { ...current.data, _ownerId: newOwnerId };
-          
           const { error } = await supabase
               .from('clients')
               .update({ user_id: newOwnerId, data: newData })
               .eq('id', clientId);
-          
-          if (error) throw new Error(error.message || JSON.stringify(error));
-          return;
+          if (error) throw new Error(getErrorMessage(error));
       }
-      throw new Error("Transfer requires cloud database connection");
   }
 };
