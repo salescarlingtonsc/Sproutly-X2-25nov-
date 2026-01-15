@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, PieChart, Pie } from 'recharts';
 import { Client, Stage } from '../../../types';
@@ -30,7 +29,14 @@ export const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({
   // The panel uses the FULL client list passed to it, but applies the advisor filter locally for the charts
   const filteredPanelClients = useMemo(() => {
       if (!advisorFilter || advisorFilter === 'All') return clients;
-      return clients.filter(c => c._ownerId === advisorFilter);
+      
+      // STRICT FILTER: Prioritize Assignment.
+      // If a lead is assigned (advisorId exists), only show if filter matches advisorId.
+      // If unassigned, fall back to _ownerId.
+      return clients.filter(c => {
+          const effectiveOwner = c.advisorId || c._ownerId;
+          return effectiveOwner === advisorFilter;
+      });
   }, [clients, advisorFilter]);
 
   // --- PRE-CALCULATIONS (Use Filtered Clients) ---

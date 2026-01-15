@@ -69,6 +69,9 @@ const CrmTab: React.FC<CrmTabProps> = ({
   const [viewMode, setViewMode] = useState<'cards' | 'list'>('list');
   const [isGrouped, setIsGrouped] = useState(false);
   
+  // Sorting State
+  const [sortConfig, setSortConfig] = useState<{ key: string; direction: 'asc' | 'desc' }>({ key: 'lastUpdated', direction: 'desc' });
+
   // Selection State
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isBulkAssignOpen, setIsBulkAssignOpen] = useState(false);
@@ -145,8 +148,8 @@ const CrmTab: React.FC<CrmTabProps> = ({
     const map = new Map<string, string>();
     
     clients.forEach(c => {
-      // Logic: Use _ownerId, fallback to advisorId
-      const ownerId = c._ownerId || c.advisorId;
+      // Logic: Use advisorId (primary), fall back to _ownerId
+      const ownerId = c.advisorId || c._ownerId;
       
       if (ownerId) {
          let label = advisorMap[ownerId];
@@ -187,8 +190,17 @@ const CrmTab: React.FC<CrmTabProps> = ({
     }
   }, [selectedClientId, clients]);
 
+  const handleSort = (key: string) => {
+    setSortConfig(current => {
+      if (current.key === key) {
+        return { key, direction: current.direction === 'asc' ? 'desc' : 'asc' };
+      }
+      return { key, direction: 'desc' }; // Default to desc for typically numeric/date fields
+    });
+  };
+
   const filteredClients = useMemo(() => {
-    return clients.filter(client => {
+    let filtered = clients.filter(client => {
       const name = client.name || client.profile?.name || '';
       const company = client.company || '';
       
@@ -199,12 +211,55 @@ const CrmTab: React.FC<CrmTabProps> = ({
       const currentStatus = client.followUp?.status || client.stage || '';
       const matchesStage = stageFilter === 'All' || currentStatus === stageFilter || client.stage === stageFilter;
       
-      // Filter logic update: Check both _ownerId and advisorId
-      const matchesAdvisor = advisorFilter === 'All' || client._ownerId === advisorFilter || client.advisorId === advisorFilter;
+      // Strict Filter logic: Use Assignment if present, otherwise Ownership.
+      const effectiveOwner = client.advisorId || client._ownerId;
+      const matchesAdvisor = advisorFilter === 'All' || effectiveOwner === advisorFilter;
 
       return matchesSearch && matchesStage && matchesAdvisor;
     });
-  }, [clients, searchTerm, stageFilter, advisorFilter]);
+
+    // Sorting
+    if (sortConfig.key) {
+        filtered.sort((a, b) => {
+            let aVal: any = '';
+            let bVal: any = '';
+
+            switch (sortConfig.key) {
+                case 'name':
+                    aVal = (a.name || a.profile?.name || '').toLowerCase();
+                    bVal = (b.name || b.profile?.name || '').toLowerCase();
+                    break;
+                case 'advisor':
+                    const aId = a.advisorId || a._ownerId || '';
+                    const bId = b.advisorId || b._ownerId || '';
+                    aVal = (advisorMap[aId] || a._ownerEmail || '').toLowerCase();
+                    bVal = (advisorMap[bId] || b._ownerEmail || '').toLowerCase();
+                    break;
+                case 'stage':
+                    aVal = (a.stage || a.followUp?.status || '').toLowerCase();
+                    bVal = (b.stage || b.followUp?.status || '').toLowerCase();
+                    break;
+                case 'pipeline':
+                    // Sort by Revenue Value
+                    aVal = a.value || 0;
+                    bVal = b.value || 0;
+                    break;
+                case 'lastUpdated':
+                    aVal = new Date(a.lastUpdated || 0).getTime();
+                    bVal = new Date(b.lastUpdated || 0).getTime();
+                    break;
+                default:
+                    return 0;
+            }
+
+            if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1;
+            if (aVal > bVal) return sortConfig.direction === 'asc' ? 1 : -1;
+            return 0;
+        });
+    }
+
+    return filtered;
+  }, [clients, searchTerm, stageFilter, advisorFilter, sortConfig, advisorMap]);
 
   // --- GROUPING LOGIC ---
   const groupedClients = useMemo(() => {
@@ -413,7 +468,7 @@ const CrmTab: React.FC<CrmTabProps> = ({
   // Helper to ensure name is displayed even if map fails
   const getAdvisorLabel = (c: Client) => {
       // Support legacy _ownerId or new advisorId field
-      const ownerId = c._ownerId || c.advisorId;
+      const ownerId = c.advisorId || c._ownerId; // Prioritize assigned advisor
       if (!ownerId) return undefined;
       
       // Handle current user explicitly for clarity
@@ -426,6 +481,25 @@ const CrmTab: React.FC<CrmTabProps> = ({
       
       // Fallback: If we have an ID but no name/email, show ID segment
       return `Advisor ${ownerId.substring(0, 4)}`; 
+  };
+
+  const SortHeader = ({ label, sortKey, alignRight = false }: { label: string, sortKey: string, alignRight?: boolean }) => {
+      const isActive = sortConfig.key === sortKey;
+      return (
+          <th 
+            className={`px-4 py-3 font-semibold text-slate-500 cursor-pointer hover:bg-slate-100 transition-colors select-none ${alignRight ? 'text-right' : 'text-left'}`}
+            onClick={() => handleSort(sortKey)}
+          >
+              <div className={`flex items-center gap-1 ${alignRight ? 'justify-end' : 'justify-start'}`}>
+                  {label}
+                  {isActive && (
+                      <span className="text-indigo-600 font-bold">
+                          {sortConfig.direction === 'asc' ? '↑' : '↓'}
+                      </span>
+                  )}
+              </div>
+          </th>
+      );
   };
 
   return (
@@ -529,12 +603,12 @@ const CrmTab: React.FC<CrmTabProps> = ({
                                    className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
                                />
                            </th>
-                           <th className="px-4 py-3 font-semibold text-slate-500">Name</th>
-                           {showAdvisorCol && <th className="px-4 py-3 font-semibold text-slate-500">Advisor</th>}
-                           <th className="px-4 py-3 font-semibold text-slate-500">Stage</th>
-                           <th className="px-4 py-3 font-semibold text-slate-500">Pipeline</th>
+                           <SortHeader label="Name" sortKey="name" />
+                           {showAdvisorCol && <SortHeader label="Advisor" sortKey="advisor" />}
+                           <SortHeader label="Stage" sortKey="stage" />
+                           <SortHeader label="Pipeline" sortKey="pipeline" />
                            <th className="px-4 py-3 font-semibold text-slate-500">Details</th>
-                           <th className="px-4 py-3 font-semibold text-slate-500">Last Edited</th> 
+                           <SortHeader label="Last Edited" sortKey="lastUpdated" />
                            <th className="px-4 py-3 font-semibold text-slate-500 text-right">Actions</th>
                        </tr>
                    </thead>

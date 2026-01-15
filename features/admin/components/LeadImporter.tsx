@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { useToast } from '../../../contexts/ToastContext';
 import Modal from '../../../components/ui/Modal';
@@ -36,9 +35,6 @@ const DESTINATION_FIELDS = [
 ];
 
 export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onClose, onImport }) => {
-  // ... (Full content logic same as before, simplified for output but preserving all features) ...
-  // Re-rendering full logic to be safe.
-  
   const { user } = useAuth();
   const toast = useToast();
   
@@ -204,11 +200,22 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onClose, o
         const savings = getMappedValue(row, 'monthlyInvestmentAmount').replace(/[^\d]/g, '');
         const isDuplicate = existingPhones.has(cleanPhone);
 
+        // --- ENHANCED DATE PARSING (DD/MM/YYYY Support) ---
         const dobRaw = getMappedValue(row, 'dob');
         let dob = '';
         if (dobRaw) {
-            const d = new Date(dobRaw);
+            let d = new Date(dobRaw);
+            // Try DD/MM/YYYY if ISO fails and slash present
+            if (isNaN(d.getTime()) && dobRaw.includes('/')) {
+                const parts = dobRaw.split('/');
+                if (parts.length === 3) {
+                    // Try DD/MM/YYYY
+                    d = new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
+                }
+            }
+            // Validate result
             if (!isNaN(d.getTime())) dob = d.toISOString().split('T')[0];
+            else dob = dobRaw; // Keep raw string if parsing fails entirely, so user sees something
         }
 
         let retireAgeStr = getMappedValue(row, 'retirementAge');
@@ -258,6 +265,8 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onClose, o
             company,
             jobTitle,
             platform,
+            // Explicitly set `source` to match DESTINATION_FIELDS['source'] for the Preview Table
+            source: platform, 
             goals,
             value,
             retirementAge: retireAge,
@@ -266,8 +275,12 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onClose, o
             stage: 'New Lead',
             profile: { ...INITIAL_PROFILE, name, phone, email, gender: gender as any, jobTitle, monthlyInvestmentAmount: savings, retirementAge: retireAge.toString(), dob, tags },
             tags: tags,
+            // Explicitly set `campaign` to match DESTINATION_FIELDS['campaign'] for the Preview Table
+            campaign: campaignCol,
             followUp: { status, dealValue: value.toString() },
             notes: notes ? [{ id: `note_${id}`, content: notes, date: now, author: 'Import' }] : [],
+            appointments: {},
+            documents: [],
             isDuplicate
         } as (Client & { isDuplicate?: boolean });
     });
@@ -293,7 +306,8 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onClose, o
          return;
       }
 
-      const cleanClients = finalClients.map(({ isDuplicate, ...rest }) => rest);
+      // Remove temp fields before saving (though extra fields are generally harmless in JSONB)
+      const cleanClients = finalClients.map(({ isDuplicate, source, campaign, ...rest }: any) => rest);
 
       onImport(cleanClients as Client[]);
       setImportCount(cleanClients.length);
@@ -448,6 +462,7 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onClose, o
                                                 {isDup && <span className="ml-2 text-[8px] bg-amber-100 text-amber-700 px-1 rounded uppercase font-bold border border-amber-200">Duplicate</span>}
                                             </td>
                                             {activeFields.map(f => {
+                                                // Check top-level (e.g. source, campaign, platform) then profile
                                                 let val = (client as any)[f.key];
                                                 if (!val && client.profile) val = (client.profile as any)[f.key];
                                                 return (

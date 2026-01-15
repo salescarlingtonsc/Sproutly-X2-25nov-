@@ -1,4 +1,3 @@
-
 import React, { useState, useMemo } from 'react';
 import { Client, Product, Benchmarks, UserProfile } from '../../types';
 import { PieChart, Pie, Legend, Cell, BarChart, Bar, XAxis, Tooltip, ResponsiveContainer } from 'recharts';
@@ -122,7 +121,8 @@ const DashboardTab: React.FC<DashboardTabProps> = ({ user, clients, onNewClient,
   // --- 2. FILTER CLIENTS (NEW) ---
   const filteredClients = useMemo(() => {
       if (selectedAdvisor === 'All') return clients;
-      return clients.filter(c => c._ownerId === selectedAdvisor);
+      // FIX: Check advisorId first (assignment), fallback to ownerId
+      return clients.filter(c => (c.advisorId || c._ownerId) === selectedAdvisor);
   }, [clients, selectedAdvisor]);
 
   // --- FY GOAL TRACKER (Uses Filtered Clients) ---
