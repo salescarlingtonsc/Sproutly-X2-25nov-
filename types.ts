@@ -1,4 +1,5 @@
 
+
 export interface CashflowState {
   currentSavings: string;
   projectToAge: string;
@@ -267,6 +268,8 @@ export interface Client {
   documents: any[];
   _ownerId?: string;
   _ownerEmail?: string;
+  // Fix: Added _isSynced to track synchronization status
+  _isSynced?: boolean;
   advisorId?: string;
   chatHistory?: ChatMessage[];
   
@@ -386,6 +389,14 @@ export interface FieldDefinition {
   type: string;
   section?: string;
   user_id?: string;
+}
+
+export interface AuditLog {
+  id: string;
+  action: string;
+  details: string;
+  created_at: string;
+  user_id: string;
 }
 
 export interface AuditLog {

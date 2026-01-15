@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from './contexts/AuthContext';
 import { ClientProvider, useClient } from './contexts/ClientContext';
@@ -34,142 +33,55 @@ import MarketNewsTab from './features/market/MarketNewsTab';
 
 // Logic
 import { db } from './lib/db';
-import { logTabUsage } from './lib/db/activities';
 import { Client } from './types';
-import { canAccessTab, TAB_DEFINITIONS } from './lib/config';
-
-const CLIENT_CACHE_KEY = 'sproutly.clients_cache.v1';
-const SESSION_BASELINE_KEY = 'sproutly.session_baseline';
 
 const AppInner: React.FC = () => {
-  const { user, signOut, refreshProfile, isLoading } = useAuth();
+  const { user, isLoading } = useAuth();
   const { 
     profile, loadClient, resetClient, generateClientObject, promoteToSaved,
-    clientId, 
-    expenses, customExpenses,
-    cashflowState, investorState, insuranceState,
-    cpfState, propertyState, wealthState, retirement,
-    chatHistory, crmState 
+    clientId 
   } = useClient();
   const toast = useToast();
-  const { confirm } = useDialog();
 
   const [activeTab, setActiveTab] = useState('disclaimer');
   const [isAuthModalOpen, setAuthModalOpen] = useState(false);
   const [clients, setClients] = useState<Client[]>([]);
-  const [saveStatus, setSaveStatus] = useState<'idle'|'saving'|'saved'|'error'>('idle');
+  const [saveStatus, setSaveStatus] = useState<'idle'|'saving'|'saved'|'pending_sync'|'error'>('idle');
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const [isRealtimeActive, setIsRealtimeActive] = useState(false);
 
   const lastSavedJson = useRef<string>("");
   const isSavingRef = useRef<boolean>(false);
-  const isHydratedRef = useRef<boolean>(false); 
+  const statusTimerRef = useRef<any>(null);
   
-  const [transferringIds, setTransferringIds] = useState<Set<string>>(new Set());
-
-  // --- 1. REAL-TIME STREAMING PROTOCOL ---
-  useEffect(() => {
-    if (!user || (user.status !== 'approved' && user.status !== 'active')) return;
-
-    console.log('[SYSTEM] Initializing Quantum Real-time Link...');
-    
-    const subscription = db.subscribeToChanges((payload) => {
-      const { eventType, new: newRecord, old: oldRecord } = payload;
-      
-      setClients(prev => {
-        let newList = [...prev];
-        
-        if (eventType === 'INSERT' || eventType === 'UPDATE') {
-          const updatedClient: Client = {
-            ...newRecord.data,
-            id: newRecord.id,
-            _ownerId: newRecord.user_id,
-            lastUpdated: newRecord.updated_at
-          };
-
-          const idx = newList.findIndex(c => c.id === updatedClient.id);
-          if (idx >= 0) {
-            // Only update if the incoming data is newer than our local version
-            const localTs = new Date(newList[idx].lastUpdated).getTime();
-            const remoteTs = new Date(updatedClient.lastUpdated).getTime();
-            
-            if (remoteTs > localTs) {
-              newList[idx] = updatedClient;
-              // If this is the client we are CURRENTLY editing, hot-patch the form
-              if (clientId === updatedClient.id && !isSavingRef.current) {
-                loadClient(updatedClient);
-                toast.info(`Updated: ${updatedClient.name}`);
-              }
-            }
-          } else {
-            newList.push(updatedClient);
-          }
-        } else if (eventType === 'DELETE') {
-          newList = newList.filter(c => c.id !== oldRecord.id);
-        }
-
-        localStorage.setItem(CLIENT_CACHE_KEY, JSON.stringify(newList));
-        return newList;
-      });
-    });
-
-    if (subscription) setIsRealtimeActive(true);
-
-    return () => {
-      subscription?.unsubscribe();
-      setIsRealtimeActive(false);
-    };
-  }, [user, clientId, loadClient]);
+  const handleLoadClient = useCallback((client: Client, redirect: boolean = true) => {
+    loadClient(client);
+    if (redirect) setActiveTab('profile');
+  }, [loadClient]);
 
   const loadClientsList = useCallback(async () => {
      try {
        const data = await db.getClients(user?.id);
-       if (data && Array.isArray(data)) {
-           setClients(data);
-           localStorage.setItem(CLIENT_CACHE_KEY, JSON.stringify(data));
-           setLastSaved(new Date());
-       }
+       if (data && data.length > 0) setClients(data);
      } catch (e) {}
   }, [user?.id]);
 
   useEffect(() => {
-     if (user && (user.status === 'approved' || user.status === 'active')) {
-         loadClientsList();
-     }
+    if (!user || (user.status !== 'approved' && user.status !== 'active')) return;
+    loadClientsList();
+    const sub = db.subscribeToChanges(() => loadClientsList());
+    setIsRealtimeActive(!!sub);
+    return () => { sub?.unsubscribe(); };
   }, [user, loadClientsList]);
-
-  const handleNewClient = async () => {
-     if (profile.name && clientId === null) {
-        const ok = await confirm({
-           title: "Discard Strategy?",
-           message: "Your current profile draft will be lost. Proceed?",
-           isDestructive: true,
-           confirmText: "Discard"
-        });
-        if (!ok) return;
-     }
-     resetClient();
-     lastSavedJson.current = ""; 
-     isHydratedRef.current = true;
-     setActiveTab('profile');
-  };
-
-  const handleLoadClient = (client: Client, redirect = true) => {
-     const seed = JSON.stringify(client);
-     lastSavedJson.current = seed; 
-     isHydratedRef.current = true;
-     loadClient(client);
-     if (redirect) setActiveTab('profile');
-  };
 
   const handleSaveClient = useCallback(async (isAutoSave = false) => {
      if (!user || (user.status !== 'approved' && user.status !== 'active')) return;
-     if (isSavingRef.current || transferringIds.size > 0) return;
+     if (isSavingRef.current) return;
 
      const clientData = generateClientObject();
-     if (!isHydratedRef.current || !clientData.profile.name) return; 
+     if (!clientData.profile.name) return; 
 
-     // Diff Check
+     // Diff check
      const { lastUpdated: _ts, ...currentContent } = clientData;
      let lastSavedContent = {};
      try {
@@ -178,84 +90,93 @@ const AppInner: React.FC = () => {
         lastSavedContent = rest;
      } catch (e) {}
 
-     if (JSON.stringify(currentContent) === JSON.stringify(lastSavedContent)) {
-        if (!isAutoSave) setSaveStatus('saved');
-        return; 
-     }
+     if (JSON.stringify(currentContent) === JSON.stringify(lastSavedContent)) return;
 
      isSavingRef.current = true;
-     if (!isAutoSave) setSaveStatus('saving');
+     setSaveStatus('saving');
+     if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
+
+     // Optimistic local state update - mark as unsynced until confirmed
+     setClients(prev => {
+        const idx = prev.findIndex(c => c.id === clientData.id);
+        const optimisticRecord = { ...clientData, _isSynced: false };
+        if (idx >= 0) {
+            const newList = [...prev];
+            newList[idx] = optimisticRecord;
+            return newList;
+        }
+        return [...prev, optimisticRecord];
+     });
 
      try {
-        const isNewClient = !clientId;
-        // Non-blocking save: db.saveClient handles local immediately
-        const saved = await db.saveClient(clientData, user?.id);
-        
-        if (isNewClient) promoteToSaved(saved);
+        const result = await db.saveClient(clientData, user?.id);
+        if (!clientId) promoteToSaved(result.client);
 
-        lastSavedJson.current = JSON.stringify(saved);
+        lastSavedJson.current = JSON.stringify(result.client);
         setLastSaved(new Date());
-        setSaveStatus('saved');
-        setTimeout(() => setSaveStatus('idle'), 2000);
+
+        if (result.isLocalOnly) {
+          setSaveStatus('pending_sync');
+        } else {
+          setSaveStatus('saved');
+          // Update the list immediately with the synced result
+          setClients(prev => prev.map(c => c.id === result.client.id ? result.client : c));
+          statusTimerRef.current = setTimeout(() => setSaveStatus('idle'), 3000);
+        }
      } catch (e: any) {
         setSaveStatus('error');
      } finally {
         isSavingRef.current = false;
      }
-  }, [user, generateClientObject, transferringIds, clientId, promoteToSaved]);
+  }, [user, generateClientObject, clientId, promoteToSaved]);
 
-  // Wake up sync
+  // Periodic Auto-Save
   useEffect(() => {
-    const handleSync = () => {
-      if (document.visibilityState === 'visible' && navigator.onLine) {
-         db.flushCloudQueue(user?.id).catch(() => {});
-         loadClientsList();
-      }
-    };
-    window.addEventListener('online', handleSync);
-    document.addEventListener('visibilitychange', handleSync);
-    return () => {
-      window.removeEventListener('online', handleSync);
-      document.removeEventListener('visibilitychange', handleSync);
-    };
-  }, [user, loadClientsList]);
-
-  // Heartbeat
-  useEffect(() => {
-     const interval = setInterval(() => handleSaveClient(true), 3000);
+     const interval = setInterval(() => handleSaveClient(true), 12000);
      return () => clearInterval(interval);
   }, [handleSaveClient]);
 
-  const handleUpdateGlobalClient = useCallback((updatedClient: Client) => {
-      setClients(prev => prev.map(c => c.id === updatedClient.id ? updatedClient : c));
-      if (updatedClient.id === clientId) loadClient(updatedClient);
-      db.saveClient(updatedClient, user?.id).catch(() => setSaveStatus('error'));
-  }, [clientId, loadClient, user]);
+  // RECOVERY & SYNC TRIGGERS
+  useEffect(() => {
+     if (!user) return;
+     
+     const triggerFlush = async () => {
+         const flushed = await db.flushCloudQueue(user.id);
+         if (flushed) {
+            await loadClientsList(); // Reload to reflect synced status in UI
+            setLastSaved(new Date());
+         }
+     };
 
-  if (isLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-50">
-        <div className="flex flex-col items-center gap-4">
-          <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
-          <p className="text-sm font-bold text-slate-400">INITIALIZING QUANTUM CORE...</p>
-        </div>
-      </div>
-    );
-  }
+     const handleVisibility = () => {
+        if (document.visibilityState === 'visible') {
+           console.log("[SYNC] App visible, checking outbox...");
+           triggerFlush();
+        }
+     };
 
-  if (!user) {
-    return (
-      <>
-        <LandingPage onLogin={() => setAuthModalOpen(true)} />
-        <AuthModal isOpen={isAuthModalOpen} onClose={() => setAuthModalOpen(false)} />
-      </>
-    );
-  }
+     const handleOnline = () => {
+        console.log("[SYNC] Back online, flushing outbox...");
+        triggerFlush();
+     };
+
+     window.addEventListener('online', handleOnline);
+     document.addEventListener('visibilitychange', handleVisibility);
+     const flushInterval = setInterval(triggerFlush, 15000); // 15s background flush
+
+     return () => {
+        window.removeEventListener('online', handleOnline);
+        document.removeEventListener('visibilitychange', handleVisibility);
+        clearInterval(flushInterval);
+     };
+  }, [user, loadClientsList]);
+
+  if (isLoading) return <div className="min-h-screen flex items-center justify-center bg-slate-50 font-bold text-slate-400 animate-pulse">BOOTING QUANTUM CORE...</div>;
+  if (!user) return <><LandingPage onLogin={() => setAuthModalOpen(true)} /><AuthModal isOpen={isAuthModalOpen} onClose={() => setAuthModalOpen(false)} /></>;
 
   return (
     <AppShell 
-      activeTab={activeTab} 
-      setActiveTab={setActiveTab} 
+      activeTab={activeTab} setActiveTab={setActiveTab} 
       onLoginClick={() => setAuthModalOpen(true)}
       onPricingClick={() => {}}
       onSaveClick={() => handleSaveClient(false)}
@@ -266,18 +187,21 @@ const AppInner: React.FC = () => {
       clients={clients}
       onLoadClient={handleLoadClient}
     >
-      <div className="fixed top-20 right-6 z-50">
-         {isRealtimeActive && (
-            <div className="bg-emerald-500/10 backdrop-blur-md border border-emerald-500/20 px-3 py-1 rounded-full flex items-center gap-2 animate-in fade-in slide-in-from-right-4">
-               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-               <span className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">Real-time Active</span>
-            </div>
-         )}
-      </div>
-
       {activeTab === 'disclaimer' && <DisclaimerTab />}
-      {activeTab === 'dashboard' && <DashboardTab user={user} clients={clients} setActiveTab={setActiveTab} onLoadClient={handleLoadClient} onNewClient={handleNewClient} />}
-      {activeTab === 'profile' && <ProfileTab clients={clients} onLoadClient={handleLoadClient} onNewProfile={handleNewClient} />}
+      {activeTab === 'dashboard' && <DashboardTab user={user} clients={clients} setActiveTab={setActiveTab} onLoadClient={handleLoadClient} onNewClient={() => { resetClient(); setActiveTab('profile'); }} />}
+      {activeTab === 'profile' && <ProfileTab clients={clients} onLoadClient={handleLoadClient} onNewProfile={() => resetClient()} />}
+      {activeTab === 'crm' && (
+          <CrmTab 
+            clients={clients} profile={profile} selectedClientId={clientId}
+            newClient={() => { resetClient(); setActiveTab('profile'); }}
+            saveClient={() => handleSaveClient(false)}
+            loadClient={handleLoadClient}
+            deleteClient={async (id) => { await db.deleteClient(id); setClients(prev => prev.filter(c => c.id !== id)); }}
+            onRefresh={loadClientsList}
+            onUpdateGlobalClient={(c) => { setClients(prev => prev.map(x => x.id === c.id ? c : x)); if (c.id === clientId) loadClient(c); db.saveClient(c); }}
+          />
+      )}
+      {activeTab === 'admin' && <AdminTab clients={clients} />}
       {activeTab === 'life_events' && <LifeEventsTab />}
       {activeTab === 'children' && <ChildrenTab />}
       {activeTab === 'cpf' && <CpfTab />}
@@ -289,46 +213,19 @@ const AppInner: React.FC = () => {
       {activeTab === 'property' && <PropertyCalculatorTab />}
       {activeTab === 'vision' && <VisionBoardTab />}
       {activeTab === 'analytics' && <AnalyticsTab clients={clients} />}
-      {activeTab === 'crm' && (
-          <CrmTab 
-            clients={clients} 
-            profile={profile} 
-            selectedClientId={clientId}
-            newClient={handleNewClient}
-            saveClient={() => handleSaveClient(false)}
-            loadClient={handleLoadClient}
-            deleteClient={async (id) => {
-                await db.deleteClient(id);
-                setClients(prev => prev.filter(c => c.id !== id));
-            }}
-            onRefresh={loadClientsList}
-            onUpdateGlobalClient={handleUpdateGlobalClient}
-          />
-      )}
-      {activeTab === 'portfolio' && <PortfolioTab clients={clients} onUpdateClient={handleUpdateGlobalClient} />}
+      {activeTab === 'portfolio' && <PortfolioTab clients={clients} onUpdateClient={(c) => { setClients(prev => prev.map(x => x.id === c.id ? c : x)); db.saveClient(c); }} />}
       {activeTab === 'market' && <MarketNewsTab />}
       {activeTab === 'reminders' && <RemindersTab />}
       {activeTab === 'report' && <ReportTab />}
-      {activeTab === 'admin' && <AdminTab clients={clients} />}
 
       <AiAssistant currentClient={clientId ? generateClientObject() : null} />
       <AuthModal isOpen={isAuthModalOpen} onClose={() => setAuthModalOpen(false)} />
-    </AppInner>
+    </AppShell>
   );
 };
 
-const App: React.FC = () => {
-  return (
-    <ToastProvider>
-      <DialogProvider>
-        <ClientProvider>
-          <AiProvider>
-            <AppInner />
-          </AiProvider>
-        </ClientProvider>
-      </DialogProvider>
-    </ToastProvider>
-  );
-};
+const App: React.FC = () => (
+  <ToastProvider><DialogProvider><ClientProvider><AiProvider><AppInner /></AiProvider></ClientProvider></DialogProvider></ToastProvider>
+);
 
 export default App;
