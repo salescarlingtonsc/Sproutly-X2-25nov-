@@ -297,6 +297,112 @@ export const db = {
     }
   },
 
+  /* ---------- bulk create ---------- */
+  createClientsBulk: async (clients: Client[], userId: string) => {
+    const now = new Date().toISOString();
+    
+    // 1. Prepare data
+    const newClients = clients.map(c => ({
+      ...c,
+      id: c.id || generateUUID(),
+      lastUpdated: now,
+      _ownerId: userId,
+      _isSynced: false
+    }));
+
+    // 2. Local Write
+    try {
+      const local: Client[] = safeJsonParse<Client[]>(localStorage.getItem(LOCAL_STORAGE_KEY), []);
+      const existingIds = new Set(local.map(c => c.id));
+      const toAdd = newClients.filter(c => !existingIds.has(c.id));
+      const updatedLocal = [...local, ...toAdd];
+      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(updatedLocal));
+    } catch {}
+
+    // 3. Queue Write
+    const q = readQueue();
+    newClients.forEach(c => {
+      q.push({
+        id: c.id,
+        user_id: userId,
+        updated_at: now,
+        data: c
+      });
+    });
+    writeQueue(q);
+
+    // 4. Cloud Attempt (Bulk)
+    if (isSupabaseConfigured() && supabase && navigator.onLine) {
+      try {
+        const CHUNK_SIZE = 50;
+        for (let i = 0; i < newClients.length; i += CHUNK_SIZE) {
+            const chunk = newClients.slice(i, i + CHUNK_SIZE);
+            const rows = chunk.map(c => ({
+                id: c.id,
+                user_id: userId,
+                data: c,
+                created_at: now,
+                updated_at: now
+            }));
+
+            const { error } = await supabase.from('clients').upsert(rows);
+            
+            if (!error) {
+                // If successful, dequeue these IDs and mark local as synced
+                const insertedIds = new Set(chunk.map(c => c.id));
+                
+                // Update Queue
+                const currentQ = readQueue();
+                const nextQ = currentQ.filter(item => !insertedIds.has(item.id));
+                writeQueue(nextQ);
+
+                // Update Local _isSynced
+                try {
+                    const local: Client[] = safeJsonParse<Client[]>(localStorage.getItem(LOCAL_STORAGE_KEY), []);
+                    const updatedLocal = local.map(c => insertedIds.has(c.id) ? { ...c, _isSynced: true } : c);
+                    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(updatedLocal));
+                } catch {}
+            } else {
+                debugLog(`[BULK] cloud failed chunk ${i} - ${error.message}`);
+            }
+        }
+      } catch (e: any) {
+        debugLog(`[BULK] error ${e.message}`);
+      }
+    }
+  },
+
+  /* ---------- transfer ownership ---------- */
+  transferOwnership: async (clientId: string, newOwnerId: string) => {
+    // 1. Get client current state
+    const local: Client[] = safeJsonParse<Client[]>(localStorage.getItem(LOCAL_STORAGE_KEY), []);
+    const client = local.find(c => c.id === clientId);
+    
+    if (client) {
+        const updatedClient = {
+            ...client,
+            _ownerId: newOwnerId,
+            advisorId: newOwnerId, // Sync both
+            lastUpdated: new Date().toISOString(),
+            _isSynced: false
+        };
+        // Use saveClient to propagate changes (Queue + Cloud)
+        await db.saveClient(updatedClient, newOwnerId);
+    } else {
+        // If not local, try direct cloud update
+        if (isSupabaseConfigured() && supabase && navigator.onLine) {
+             const { error } = await supabase
+                .from('clients')
+                .update({ user_id: newOwnerId })
+                .eq('id', clientId);
+             
+             if (error) throw error;
+        } else {
+            throw new Error("Client data not found locally and offline.");
+        }
+    }
+  },
+
   /* ---------- flush queue ---------- */
   flushCloudQueue: async (userId: string) => {
     if (!isSupabaseConfigured() || !supabase) {

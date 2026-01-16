@@ -1,41 +1,3 @@
-window.onerror = function (msg, src, line, col, err) {
-  alert(
-    'JS ERROR:\n' +
-    msg +
-    '\n' +
-    src +
-    ':' +
-    line +
-    ':' +
-    col
-  );
-};
-// Catch async / Promise errors (Supabase, fetch, etc.)
-window.onunhandledrejection = function (event: any) {
-  const r = event?.reason;
-
-  let msg = '';
-  try {
-    if (!r) msg = '(no reason)';
-    else if (typeof r === 'string') msg = r;
-    else if (r instanceof Error) msg = r.message + '\n' + (r.stack || '');
-    else msg = r.message || JSON.stringify(r, Object.getOwnPropertyNames(r));
-  } catch {
-    msg = String(r);
-  }
-
-  alert('UNHANDLED PROMISE REJECTION:\n' + msg);
-};
-alert('Debug hook loaded ✅');
-
-// Make console errors visible on iPad too
-const _consoleError = console.error;
-console.error = (...args: any[]) => {
-  try {
-    alert('console.error:\n' + args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' '));
-  } catch {}
-  _consoleError(...args);
-};
 import * as React from 'react';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from './contexts/AuthContext';
@@ -84,6 +46,7 @@ const SproutlyApp = () => {
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error' | 'pending_sync'>('idle');
   const [lastSavedTime, setLastSavedTime] = useState<Date | null>(null);
   const [pendingSyncCount, setPendingSyncCount] = useState(0);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
   // ✅ stop saving on every keystroke
   const debounceTimerRef = useRef<any>(null);
@@ -95,6 +58,7 @@ const SproutlyApp = () => {
         watchdogTimer = setTimeout(() => {
             console.warn("[App] Sync Watchdog Triggered: Resetting stuck state.");
             setSaveStatus('pending_sync');
+            setSyncError("Operation timed out (Watchdog)");
         }, 20000);
     }
     return () => clearTimeout(watchdogTimer);
@@ -139,6 +103,9 @@ const SproutlyApp = () => {
       setPendingSyncCount(db.getQueueCount());
       if (ok) {
         setLastSavedTime(new Date());
+        setSaveStatus('saved');
+        setTimeout(() => setSaveStatus('idle'), 2000);
+        setSyncError(null);
         refreshLocal();
       }
     };
@@ -163,6 +130,7 @@ const SproutlyApp = () => {
   const handleSave = useCallback(async () => {
     if (!user?.id) return;
     setSaveStatus('saving');
+    setSyncError(null);
 
     try {
       const clientObj = generateClientObject();
@@ -173,14 +141,21 @@ const SproutlyApp = () => {
 
       if (result.success) {
         setSaveStatus(result.isLocalOnly ? 'pending_sync' : 'saved');
+        if (result.isLocalOnly) {
+            setSyncError(result.error || "Unknown sync error");
+        } else {
+            setSyncError(null);
+            setTimeout(() => setSaveStatus('idle'), 1500);
+        }
         await refreshLocal();
-        if (!result.isLocalOnly) setTimeout(() => setSaveStatus('idle'), 1500);
       } else {
         setSaveStatus('error');
+        setSyncError(result.error || "Save failed");
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error('Save error', e);
       setSaveStatus('error');
+      setSyncError(e.message || "Critical save error");
     }
   }, [user?.id, generateClientObject, refreshLocal]);
 
@@ -210,6 +185,7 @@ const SproutlyApp = () => {
     if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
 
     setSaveStatus('saving');
+    setSyncError(null);
 
     debounceTimerRef.current = setTimeout(async () => {
       try {
@@ -219,13 +195,19 @@ const SproutlyApp = () => {
         setLastSavedTime(new Date());
         setPendingSyncCount(db.getQueueCount());
         setSaveStatus(result.isLocalOnly ? 'pending_sync' : 'saved');
+        
+        if (result.isLocalOnly) {
+            setSyncError(result.error || "Sync deferred");
+        } else {
+            setSyncError(null);
+            setTimeout(() => setSaveStatus('idle'), 1500);
+        }
 
         await refreshLocal();
-
-        if (!result.isLocalOnly) setTimeout(() => setSaveStatus('idle'), 1500);
-      } catch (e) {
+      } catch (e: any) {
         console.error('Debounced save failed', e);
         setSaveStatus('error');
+        setSyncError(e.message);
       }
     }, 900);
   };
@@ -339,6 +321,7 @@ const SproutlyApp = () => {
         clients={clients}
         onLoadClient={handleLoadClient}
         pendingSyncCount={pendingSyncCount}
+        syncError={syncError}
       >
         {renderContent()}
       </AppShell>

@@ -1,15 +1,23 @@
 import { createClient } from '@supabase/supabase-js';
 
-// --- robust env getter (AI Studio / Vite / others) ---
+/**
+ * supabase.ts (SAFE)
+ * - Supports Vite env (import.meta.env)
+ * - Also supports fallback hardcoded keys (prevents supabase=null in preview)
+ * - Adds fetch timeout to prevent iOS Safari hangs
+ */
+
 const getEnv = (key: string) => {
   let val = '';
 
+  // Vite / AI Studio style
   try {
     if (typeof import.meta !== 'undefined' && (import.meta as any).env) {
       val = (import.meta as any).env[key] || '';
     }
   } catch {}
 
+  // Optional Node/CRA style (won't exist in browser usually)
   if (!val) {
     try {
       if (typeof process !== 'undefined' && (process as any).env) {
@@ -21,7 +29,7 @@ const getEnv = (key: string) => {
   return val;
 };
 
-// --- url/key with fallback (prevents "supabase = null" in preview) ---
+// Prefer env, otherwise fallback to known working values (so preview won’t break)
 const rawUrl =
   getEnv('VITE_SUPABASE_URL') ||
   getEnv('REACT_APP_SUPABASE_URL') ||
@@ -42,7 +50,7 @@ const isConfigured =
   !!SUPABASE_ANON_KEY &&
   SUPABASE_ANON_KEY.length > 20;
 
-// --- hard timeout fetch (prevents iOS "hang forever") ---
+// iOS Safari can hang forever -> force abort
 const fetchWithTimeout: typeof fetch = async (input, init: any = {}) => {
   const timeoutMs = 12000;
   const controller = new AbortController();
@@ -58,6 +66,8 @@ const fetchWithTimeout: typeof fetch = async (input, init: any = {}) => {
   }
 };
 
+export const isSupabaseConfigured = () => !!isConfigured;
+
 export const supabase = isConfigured
   ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
       global: { fetch: fetchWithTimeout },
@@ -71,4 +81,9 @@ export const supabase = isConfigured
     })
   : null;
 
-export const isSupabaseConfigured = () => !!(isConfigured && supabase);
+// Optional: one-time log
+if (!isConfigured) {
+  console.warn('[SUPABASE] NOT CONFIGURED. URL/KEY missing.');
+} else {
+  console.log('[SUPABASE] Configured:', SUPABASE_URL);
+}
