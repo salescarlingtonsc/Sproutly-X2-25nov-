@@ -1,3 +1,41 @@
+window.onerror = function (msg, src, line, col, err) {
+  alert(
+    'JS ERROR:\n' +
+    msg +
+    '\n' +
+    src +
+    ':' +
+    line +
+    ':' +
+    col
+  );
+};
+// Catch async / Promise errors (Supabase, fetch, etc.)
+window.onunhandledrejection = function (event: any) {
+  const r = event?.reason;
+
+  let msg = '';
+  try {
+    if (!r) msg = '(no reason)';
+    else if (typeof r === 'string') msg = r;
+    else if (r instanceof Error) msg = r.message + '\n' + (r.stack || '');
+    else msg = r.message || JSON.stringify(r, Object.getOwnPropertyNames(r));
+  } catch {
+    msg = String(r);
+  }
+
+  alert('UNHANDLED PROMISE REJECTION:\n' + msg);
+};
+alert('Debug hook loaded ✅');
+
+// Make console errors visible on iPad too
+const _consoleError = console.error;
+console.error = (...args: any[]) => {
+  try {
+    alert('console.error:\n' + args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' '));
+  } catch {}
+  _consoleError(...args);
+};
 import * as React from 'react';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from './contexts/AuthContext';
@@ -49,6 +87,18 @@ const SproutlyApp = () => {
 
   // ✅ stop saving on every keystroke
   const debounceTimerRef = useRef<any>(null);
+
+  // WATCHDOG: Force reset "Syncing" loop if it hangs for >20s
+  useEffect(() => {
+    let watchdogTimer: any;
+    if (saveStatus === 'saving') {
+        watchdogTimer = setTimeout(() => {
+            console.warn("[App] Sync Watchdog Triggered: Resetting stuck state.");
+            setSaveStatus('pending_sync');
+        }, 20000);
+    }
+    return () => clearTimeout(watchdogTimer);
+  }, [saveStatus]);
 
   const refreshLocal = useCallback(async () => {
     const localData = await db.getClients(user?.id);
@@ -163,6 +213,7 @@ const SproutlyApp = () => {
 
     debounceTimerRef.current = setTimeout(async () => {
       try {
+        // Enforce a hard stop if this async call somehow hangs
         const result = await db.saveClient(updatedClient, user.id);
 
         setLastSavedTime(new Date());

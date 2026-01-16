@@ -4,7 +4,7 @@ import { Client } from '../types';
 /* =======================
    CONSTANTS
 ======================= */
-const DB_VERSION = 'db.ts v12 (global-timeout + clean flush write-once)';
+const DB_VERSION = 'db.ts v14 (Bulk & Transfer)';
 
 const LOCAL_STORAGE_KEY = 'sproutly_clients_v2';
 const CLOUD_QUEUE_KEY = 'sproutly_cloud_queue_v1';
@@ -244,12 +244,18 @@ export const db = {
     try {
       debugLog(`[UPSERT] start ${id}`);
 
-      await upsertClientRow({
-        id,
-        user_id: owner,
-        data: { ...clientData, _ownerId: owner },
-        updated_at: now
-      });
+      // Hard Timeout Race: Force reject if network hangs > 15s
+      await Promise.race([
+        upsertClientRow({
+          id,
+          user_id: owner,
+          data: { ...clientData, _ownerId: owner },
+          updated_at: now
+        }),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Network operation timed out')), 15000)
+        )
+      ]);
 
       // ✅ remove from queue (write-once approach)
       const q = readQueue().filter((x) => x.id !== id);
@@ -261,6 +267,7 @@ export const db = {
     } catch (e: any) {
       const msg = e?.name || e?.message || 'UPSERT_FAILED';
       debugLog(`[UPSERT] failed ${id} ${msg}`);
+      // Returns local only so app can continue
       return { success: true, isLocalOnly: true, client: clientData, error: msg };
     }
   },
@@ -288,12 +295,15 @@ export const db = {
         try {
           debugLog(`[FLUSH] upsert ${item.id}`);
 
-          await upsertClientRow({
-            id: item.id,
-            user_id: item.user_id || userId,
-            data: item.data,
-            updated_at: item.updated_at
-          });
+          await Promise.race([
+            upsertClientRow({
+              id: item.id,
+              user_id: item.user_id || userId,
+              data: item.data,
+              updated_at: item.updated_at
+            }),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 10000))
+          ]);
 
           markLocalSynced(item.id);
           debugLog(`[FLUSH] ok ${item.id}`);
@@ -333,5 +343,66 @@ export const db = {
         await supabase.from('clients').delete().eq('id', id);
       } catch {}
     }
+  },
+
+  /* ---------- bulk create ---------- */
+  createClientsBulk: async (clients: Client[], userId: string) => {
+    const now = new Date().toISOString();
+    const itemsToSave = clients.map(c => ({
+      ...c,
+      lastUpdated: now,
+      _ownerId: userId,
+      _isSynced: false
+    }));
+
+    // Local Save
+    try {
+      const local: Client[] = JSON.parse(localStorage.getItem(LOCAL_STORAGE_KEY) || '[]');
+      const newIds = new Set(itemsToSave.map(c => c.id));
+      const filteredLocal = local.filter(c => !newIds.has(c.id));
+      const newLocal = [...filteredLocal, ...itemsToSave];
+      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(newLocal));
+    } catch (e) {
+      console.error("Local bulk save failed", e);
+    }
+
+    // Queue
+    itemsToSave.forEach(c => {
+      upsertQueueItem({
+        id: c.id,
+        user_id: userId,
+        updated_at: now,
+        data: c
+      });
+    });
+
+    debugLog(`[BULK] Queued ${itemsToSave.length} items`);
+
+    // Trigger Flush
+    if (navigator.onLine) {
+      setTimeout(() => db.flushCloudQueue(userId), 50);
+    }
+  },
+
+  /* ---------- transfer ownership ---------- */
+  transferOwnership: async (clientId: string, newOwnerId: string) => {
+    // 1. Fetch current (using getClients to leverage full map logic)
+    const clients = await db.getClients();
+    const client = clients.find(c => c.id === clientId);
+    
+    if (!client) throw new Error("Client not found locally or in queue");
+
+    // 2. Update with new owner
+    const updatedClient = {
+      ...client,
+      _ownerId: newOwnerId,
+      advisorId: newOwnerId, // Sync both for consistency
+      lastUpdated: new Date().toISOString(),
+      _isSynced: false
+    };
+
+    // 3. Save via standard pipeline
+    // This handles local update + queue push + flush attempt
+    return db.saveClient(updatedClient, newOwnerId);
   }
 };
