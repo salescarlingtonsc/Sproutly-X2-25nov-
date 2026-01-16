@@ -1,17 +1,14 @@
 import { supabase, isSupabaseConfigured } from './supabase';
 import { Client } from '../types';
 
-/* =======================
-   CONFIG
-======================= */
 const LOCAL_STORAGE_KEY = 'sproutly_clients_v3';
-const CLOUD_QUEUE_KEY = 'sproutly_cloud_queue_v2';
+const CLOUD_QUEUE_KEY = 'sproutly_cloud_queue_v3';
+
 const SYNC_TIMEOUT_MS = 12000;
 const MAX_QUEUE = 100;
 
-/* =======================
-   TYPES
-======================= */
+let IS_FLUSHING = false;
+
 export type SyncResult = {
   success: boolean;
   isLocalOnly: boolean;
@@ -26,48 +23,43 @@ type CloudQueueItem = {
   data: any;
 };
 
-/* =======================
-   INTERNAL STATE
-======================= */
-let IS_FLUSHING = false;
-
-/* =======================
-   HELPERS
-======================= */
 const emitQueueChanged = () => {
   try {
     window.dispatchEvent(new CustomEvent('sproutly:queue_changed'));
   } catch {}
 };
 
-const generateUUID = () =>
-  crypto?.randomUUID?.() ??
-  'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+const generateUUID = () => {
+  if (typeof crypto !== 'undefined' && (crypto as any).randomUUID) {
+    try {
+      return (crypto as any).randomUUID();
+    } catch {}
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
     const r = (Math.random() * 16) | 0;
-    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
   });
+};
 
 const readQueue = (): CloudQueueItem[] => {
   try {
-    return JSON.parse(localStorage.getItem(CLOUD_QUEUE_KEY) || '[]');
+    const raw = localStorage.getItem(CLOUD_QUEUE_KEY);
+    return raw ? JSON.parse(raw) : [];
   } catch {
     return [];
   }
 };
 
 const writeQueue = (items: CloudQueueItem[]) => {
-  localStorage.setItem(
-    CLOUD_QUEUE_KEY,
-    JSON.stringify(items.slice(-MAX_QUEUE))
-  );
-  emitQueueChanged();
+  try {
+    localStorage.setItem(CLOUD_QUEUE_KEY, JSON.stringify(items.slice(-MAX_QUEUE)));
+    emitQueueChanged();
+  } catch {}
 };
 
-/* =======================
-   ABORTABLE UPSERT
-======================= */
-async function upsertWithAbort(row: any) {
-  if (!supabase) throw new Error('Supabase not ready');
+const upsertWithAbort = async (row: any) => {
+  if (!supabase) throw new Error('Supabase not initialized');
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), SYNC_TIMEOUT_MS);
@@ -82,102 +74,170 @@ async function upsertWithAbort(row: any) {
       .abortSignal(controller.signal);
 
     if (error) throw error;
+    return true;
   } finally {
     clearTimeout(timer);
   }
-}
+};
 
-/* =======================
-   DB API
-======================= */
+const markLocalSynced = (id: string) => {
+  try {
+    const local = localStorage.getItem(LOCAL_STORAGE_KEY);
+    if (!local) return;
+    const clients: Client[] = JSON.parse(local);
+    const idx = clients.findIndex((c) => c.id === id);
+    if (idx >= 0) {
+      (clients[idx] as any)._isSynced = true;
+      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(clients));
+    }
+  } catch {}
+};
+
 export const db = {
-  /* ---------- Diagnostics ---------- */
   getQueueCount: () => readQueue().length,
 
-  subscribeToChanges: (cb: (p: any) => void) => {
-    if (!supabase || !isSupabaseConfigured()) return null;
+  subscribeToChanges: (onEvent: (payload: any) => void) => {
+    if (!isSupabaseConfigured() || !supabase) return null;
     return supabase
-      .channel('clients_realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'clients' }, cb)
+      .channel('realtime_clients')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'clients' }, onEvent)
       .subscribe();
   },
 
-  /* ---------- Read ---------- */
-  getClients: async (): Promise<Client[]> => {
-    const local = JSON.parse(localStorage.getItem(LOCAL_STORAGE_KEY) || '[]');
+  getClients: async (userId?: string): Promise<Client[]> => {
+    const localRaw = localStorage.getItem(LOCAL_STORAGE_KEY);
+    const localClients: Client[] = localRaw ? JSON.parse(localRaw) : [];
+
     const queue = readQueue();
-    const queuedIds = new Set(queue.map(q => q.id));
+    const outboxIds = new Set(queue.map((q) => q.id));
 
     const merged = new Map<string, Client>();
-    local.forEach(c => merged.set(c.id, c));
-    queue.forEach(q => merged.set(q.id, { ...q.data, _isSynced: false }));
+    localClients.forEach((c) => merged.set(c.id, c));
 
-    if (supabase && isSupabaseConfigured()) {
+    // Overlay queued edits (so latest shows even if cloud stuck)
+    queue.forEach((qItem) => merged.set(qItem.id, { ...qItem.data, _isSynced: false }));
+
+    // Best effort cloud pull
+    if (isSupabaseConfigured() && supabase && userId) {
       try {
         const { data } = await supabase.from('clients').select('*');
-        data?.forEach(row => {
-          if (!queuedIds.has(row.id)) {
-            merged.set(row.id, {
-              ...row.data,
-              id: row.id,
-              _isSynced: true,
-              lastUpdated: row.updated_at
-            });
-          }
+        data?.forEach((row: any) => {
+          // If we have queued edit, don’t overwrite it
+          if (outboxIds.has(row.id)) return;
+
+          merged.set(row.id, {
+            ...row.data,
+            id: row.id,
+            _ownerId: row.user_id,
+            lastUpdated: row.updated_at,
+            _isSynced: true
+          });
         });
       } catch {}
     }
 
-    const result = Array.from(merged.values());
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(result));
+    const result = Array.from(merged.values()).map((c) => ({
+      ...c,
+      _isSynced: !outboxIds.has(c.id)
+    }));
+
+    try {
+      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(result));
+    } catch {}
+
     return result;
   },
 
-  /* ---------- Save ---------- */
   saveClient: async (client: Client, userId: string): Promise<SyncResult> => {
+    if (!userId) return { success: true, isLocalOnly: true, client };
+
     const now = new Date().toISOString();
-    const data: Client = {
+
+    const clientData: Client = {
       ...client,
       id: client.id || generateUUID(),
       lastUpdated: now,
       _isSynced: false
     };
 
-    // 1. Save locally
-    const local = JSON.parse(localStorage.getItem(LOCAL_STORAGE_KEY) || '[]');
-    const idx = local.findIndex((c: Client) => c.id === data.id);
-    if (idx >= 0) local[idx] = data;
-    else local.push(data);
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(local));
+    // 1) Save local immediately
+    try {
+      const local = localStorage.getItem(LOCAL_STORAGE_KEY);
+      const clients: Client[] = local ? JSON.parse(local) : [];
+      const idx = clients.findIndex((c) => c.id === clientData.id);
+      if (idx >= 0) clients[idx] = clientData;
+      else clients.push(clientData);
+      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(clients));
+    } catch {}
 
-    // 2. Enqueue (ONLY ONCE)
-    const queue = readQueue();
-    if (!queue.find(q => q.id === data.id)) {
-      queue.push({
-        id: data.id,
-        user_id: (client as any)._ownerId || userId,
-        updated_at: now,
-        data
-      });
-      writeQueue(queue);
+    // 2) Enqueue (overwrite existing)
+    const activeUid = (client as any)._ownerId || userId;
+    const qItem: CloudQueueItem = {
+      id: clientData.id,
+      user_id: activeUid,
+      updated_at: now,
+      data: { ...clientData, _ownerId: activeUid }
+    };
+
+    const q = readQueue();
+    const qIdx = q.findIndex((x) => x.id === qItem.id);
+    if (qIdx >= 0) q[qIdx] = qItem;
+    else q.push(qItem);
+    writeQueue(q);
+
+    // 3) Best-effort immediate upsert
+    if (!isSupabaseConfigured() || !supabase) {
+      return { success: true, isLocalOnly: true, client: clientData, error: 'Supabase not configured' };
+    }
+    if (!navigator.onLine) {
+      return { success: true, isLocalOnly: true, client: clientData, error: 'Offline' };
     }
 
-    return { success: true, isLocalOnly: true, client: data };
+    try {
+      console.log(`[SYNC] Attempting Upsert: ${clientData.id}`);
+      await upsertWithAbort({
+        id: qItem.id,
+        user_id: qItem.user_id,
+        data: qItem.data,
+        updated_at: qItem.updated_at
+      });
+
+      console.log(`[SYNC] Write Confirmed: ${clientData.id}`);
+
+      // ✅ CRITICAL FIX:
+      // If write confirmed, remove from queue NOW.
+      const after = readQueue().filter((x) => x.id !== qItem.id);
+      writeQueue(after);
+
+      // mark local synced
+      markLocalSynced(qItem.id);
+
+      return { success: true, isLocalOnly: false, client: { ...clientData, _isSynced: true } };
+    } catch (e: any) {
+      const msg = e?.name === 'AbortError' ? 'TIMEOUT_ABORTED' : e?.message || 'Cloud write failed';
+      console.warn(`[SYNC] Upsert failed (kept in outbox): ${msg}`);
+      return { success: true, isLocalOnly: true, client: clientData, error: msg };
+    }
   },
 
-  /* ---------- Flush ---------- */
   flushCloudQueue: async (userId: string) => {
-    if (IS_FLUSHING || !navigator.onLine || !supabase) return false;
-    IS_FLUSHING = true;
+    if (!userId || !isSupabaseConfigured() || !supabase) return false;
+    if (!navigator.onLine) return false;
+    if (IS_FLUSHING) return false;
 
+    IS_FLUSHING = true;
     try {
-      const queue = readQueue();
-      if (queue.length === 0) return true;
+      const q = readQueue();
+      if (q.length === 0) return true;
+
+      console.log(`[SYNC] Flushing outbox: ${q.length} items...`);
 
       const remaining: CloudQueueItem[] = [];
 
-      for (const item of queue) {
+      for (const item of q) {
         try {
+          console.log(`[SYNC] flush upsert: ${item.id}`);
+
           await upsertWithAbort({
             id: item.id,
             user_id: item.user_id || userId,
@@ -185,37 +245,42 @@ export const db = {
             updated_at: item.updated_at
           });
 
-          // Mark local synced
-          const local = JSON.parse(localStorage.getItem(LOCAL_STORAGE_KEY) || '[]');
-          const idx = local.findIndex((c: Client) => c.id === item.id);
-          if (idx >= 0) {
-            local[idx]._isSynced = true;
-            localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(local));
-          }
-        } catch {
+          // success => mark local synced
+          markLocalSynced(item.id);
+        } catch (e: any) {
+          const msg = e?.name === 'AbortError' ? 'TIMEOUT_ABORTED' : e?.message || 'FAILED';
+          console.warn(`[SYNC] Flush failed for ${item.id}: ${msg}`);
           remaining.push(item);
-          break; // stop hammering network
+          break; // stop hammering
         }
       }
 
       writeQueue(remaining);
+
+      console.log(`[SYNC] Flush complete. Remaining: ${remaining.length}`);
       return remaining.length === 0;
     } finally {
       IS_FLUSHING = false;
     }
   },
 
-  /* ---------- Delete ---------- */
   deleteClient: async (id: string) => {
-    const local = JSON.parse(localStorage.getItem(LOCAL_STORAGE_KEY) || '[]');
-    localStorage.setItem(
-      LOCAL_STORAGE_KEY,
-      JSON.stringify(local.filter((c: Client) => c.id !== id))
-    );
+    // local delete
+    try {
+      const local = localStorage.getItem(LOCAL_STORAGE_KEY);
+      if (local) {
+        const clients = JSON.parse(local).filter((c: Client) => c.id !== id);
+        localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(clients));
+      }
+    } catch {}
 
-    writeQueue(readQueue().filter(q => q.id !== id));
+    // remove from queue
+    try {
+      writeQueue(readQueue().filter((x) => x.id !== id));
+    } catch {}
 
-    if (supabase && navigator.onLine) {
+    // cloud delete best effort
+    if (isSupabaseConfigured() && supabase && navigator.onLine) {
       try {
         await supabase.from('clients').delete().eq('id', id);
       } catch {}
