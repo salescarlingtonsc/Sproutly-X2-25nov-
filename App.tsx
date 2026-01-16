@@ -46,9 +46,23 @@ const SproutlyApp = () => {
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error' | 'pending_sync'>('idle');
   const [lastSavedTime, setLastSavedTime] = useState<Date | null>(null);
   const [pendingSyncCount, setPendingSyncCount] = useState(0);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
   // ✅ stop saving on every keystroke
   const debounceTimerRef = useRef<any>(null);
+
+  // WATCHDOG: Force reset "Syncing" loop if it hangs for >20s
+  useEffect(() => {
+    let watchdogTimer: any;
+    if (saveStatus === 'saving') {
+        watchdogTimer = setTimeout(() => {
+            console.warn("[App] Sync Watchdog Triggered: Resetting stuck state.");
+            setSaveStatus('pending_sync');
+            setSyncError("Operation timed out (Watchdog)");
+        }, 20000);
+    }
+    return () => clearTimeout(watchdogTimer);
+  }, [saveStatus]);
 
   const refreshLocal = useCallback(async () => {
     const localData = await db.getClients(user?.id);
@@ -89,6 +103,9 @@ const SproutlyApp = () => {
       setPendingSyncCount(db.getQueueCount());
       if (ok) {
         setLastSavedTime(new Date());
+        setSaveStatus('saved');
+        setTimeout(() => setSaveStatus('idle'), 2000);
+        setSyncError(null);
         refreshLocal();
       }
     };
@@ -113,6 +130,7 @@ const SproutlyApp = () => {
   const handleSave = useCallback(async () => {
     if (!user?.id) return;
     setSaveStatus('saving');
+    setSyncError(null);
 
     try {
       const clientObj = generateClientObject();
@@ -123,14 +141,21 @@ const SproutlyApp = () => {
 
       if (result.success) {
         setSaveStatus(result.isLocalOnly ? 'pending_sync' : 'saved');
+        if (result.isLocalOnly) {
+            setSyncError(result.error || "Unknown sync error");
+        } else {
+            setSyncError(null);
+            setTimeout(() => setSaveStatus('idle'), 1500);
+        }
         await refreshLocal();
-        if (!result.isLocalOnly) setTimeout(() => setSaveStatus('idle'), 1500);
       } else {
         setSaveStatus('error');
+        setSyncError(result.error || "Save failed");
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error('Save error', e);
       setSaveStatus('error');
+      setSyncError(e.message || "Critical save error");
     }
   }, [user?.id, generateClientObject, refreshLocal]);
 
@@ -160,21 +185,29 @@ const SproutlyApp = () => {
     if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
 
     setSaveStatus('saving');
+    setSyncError(null);
 
     debounceTimerRef.current = setTimeout(async () => {
       try {
+        // Enforce a hard stop if this async call somehow hangs
         const result = await db.saveClient(updatedClient, user.id);
 
         setLastSavedTime(new Date());
         setPendingSyncCount(db.getQueueCount());
         setSaveStatus(result.isLocalOnly ? 'pending_sync' : 'saved');
+        
+        if (result.isLocalOnly) {
+            setSyncError(result.error || "Sync deferred");
+        } else {
+            setSyncError(null);
+            setTimeout(() => setSaveStatus('idle'), 1500);
+        }
 
         await refreshLocal();
-
-        if (!result.isLocalOnly) setTimeout(() => setSaveStatus('idle'), 1500);
-      } catch (e) {
+      } catch (e: any) {
         console.error('Debounced save failed', e);
         setSaveStatus('error');
+        setSyncError(e.message);
       }
     }, 900);
   };
@@ -288,6 +321,7 @@ const SproutlyApp = () => {
         clients={clients}
         onLoadClient={handleLoadClient}
         pendingSyncCount={pendingSyncCount}
+        syncError={syncError}
       >
         {renderContent()}
       </AppShell>

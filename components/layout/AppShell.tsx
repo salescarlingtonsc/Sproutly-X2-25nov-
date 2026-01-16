@@ -8,7 +8,7 @@ import { fmtTime } from '../../lib/helpers';
 import Modal from '../ui/Modal';
 import Button from '../ui/Button';
 import { supabase } from '../../lib/supabase';
-import { db } from '../../lib/db'; // ✅ ADD: so AppShell can trigger retry sync
+import { db } from '../../lib/db'; 
 
 interface AppShellProps {
   activeTab: string;
@@ -24,6 +24,7 @@ interface AppShellProps {
   clients?: Client[];
   onLoadClient?: (client: Client) => void;
   pendingSyncCount?: number;
+  syncError?: string | null;
 }
 
 const AppShell: React.FC<AppShellProps> = ({
@@ -38,7 +39,8 @@ const AppShell: React.FC<AppShellProps> = ({
   lastSavedTime,
   clients = [],
   onLoadClient,
-  pendingSyncCount = 0
+  pendingSyncCount = 0,
+  syncError
 }) => {
   const { user, refreshProfile, signOut } = useAuth();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -47,7 +49,7 @@ const AppShell: React.FC<AppShellProps> = ({
   const [editName, setEditName] = useState('');
   const [isSavingProfile, setIsSavingProfile] = useState(false);
 
-  // ✅ NEW: UI state for retry button
+  // UI state for retry button
   const [isRetryingSync, setIsRetryingSync] = useState(false);
 
   const profileRef = useRef<HTMLDivElement>(null);
@@ -82,7 +84,7 @@ const AppShell: React.FC<AppShellProps> = ({
     }
   };
 
-  // ✅ NEW: Retry cloud sync (flush local outbox)
+  // Retry cloud sync (flush local outbox)
   const handleRetryCloudSync = async () => {
     if (!user?.id) return;
 
@@ -170,25 +172,35 @@ const AppShell: React.FC<AppShellProps> = ({
                 </span>
               )}
 
-              {/* ✅ Improved wording for pending */}
+              {/* Improved wording for pending with error info */}
               {saveStatus === 'pending_sync' && (
-                <span className="text-[10px] text-amber-700 font-black flex items-center gap-1 bg-amber-50 px-2.5 py-1 rounded-full border border-amber-200 shadow-sm">
-                  💾 SAVED ON DEVICE · ☁️ CLOUD PENDING
-                </span>
+                <button 
+                    onClick={() => syncError && alert(`Cloud Sync Error:\n\n${syncError}\n\nTip: Check if you ran the Database Repair script in Admin.`)}
+                    className="text-[10px] text-amber-700 font-black flex items-center gap-1 bg-amber-50 px-2.5 py-1 rounded-full border border-amber-200 shadow-sm hover:bg-amber-100 transition-colors cursor-pointer text-left"
+                    title={syncError ? `Sync Error: ${syncError}` : "Waiting for network..."}
+                >
+                  <span>💾 SAVED LOCAL {syncError ? '⚠️' : '· ☁️ PENDING'}</span>
+                </button>
               )}
 
               {saveStatus === 'error' && (
-                <span className="text-[10px] text-red-600 font-black flex items-center gap-1 bg-red-50 px-2.5 py-1 rounded-full border border-red-200">
-                  ⚠️ SYNC ERROR
-                </span>
+                <button
+                  onClick={() => syncError && alert(`Error: ${syncError}`)}
+                  className="text-[10px] text-red-600 font-black flex items-center gap-1 bg-red-50 px-2.5 py-1 rounded-full border border-red-200 hover:bg-red-100"
+                >
+                  ⚠️ SAVE FAILED
+                </button>
               )}
 
               {saveStatus === 'idle' && (
                 <>
                   {pendingSyncCount > 0 ? (
-                    <span className="text-[10px] text-amber-700 font-black flex items-center gap-1 bg-amber-50 px-2.5 py-1 rounded-full border border-amber-200 shadow-sm animate-pulse">
-                      💾 SAVED ON DEVICE · ☁️ {pendingSyncCount} PENDING
-                    </span>
+                    <button
+                        onClick={handleRetryCloudSync}
+                        className="text-[10px] text-amber-700 font-black flex items-center gap-1 bg-amber-50 px-2.5 py-1 rounded-full border border-amber-200 shadow-sm hover:bg-amber-100"
+                    >
+                      💾 SAVED LOCAL · ☁️ {pendingSyncCount} PENDING
+                    </button>
                   ) : lastSavedTime ? (
                     <span className="text-[10px] text-slate-400 font-black uppercase tracking-widest">
                       LAST SYNC: {fmtTime(lastSavedTime)}
@@ -198,7 +210,7 @@ const AppShell: React.FC<AppShellProps> = ({
               )}
             </div>
 
-            {/* ✅ NEW: Retry Cloud Sync button (only shows when pending exists) */}
+            {/* Retry Cloud Sync button (only shows when pending exists) */}
             {pendingSyncCount > 0 && (
               <button
                 onClick={handleRetryCloudSync}
