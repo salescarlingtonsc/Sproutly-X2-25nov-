@@ -4,12 +4,11 @@ import { Client } from '../types';
 const LOCAL_STORAGE_KEY = 'sproutly_clients_v2';
 const CLOUD_QUEUE_KEY = 'sproutly_cloud_queue_v1';
 
-// IMPORTANT:
-// iOS Safari + embedded previews can “hang” fetch. We MUST abort the request properly.
+// iOS Safari + embedded previews can “hang” fetch → must abort properly
 const SYNC_TIMEOUT_MS = 12000; // 12s per request
 const MAX_QUEUE = 100;
 
-// ---- simple module locks to prevent infinite spam ----
+// Simple module locks to prevent infinite spam
 let IS_FLUSHING = false;
 let LAST_FLUSH_AT = 0;
 
@@ -34,13 +33,11 @@ const emitQueueChanged = () => {
 };
 
 const generateUUID = () => {
-  // Prefer crypto.randomUUID when available
   if (typeof crypto !== 'undefined' && (crypto as any).randomUUID) {
     try {
       return (crypto as any).randomUUID();
     } catch {}
   }
-  // Fallback
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
     const r = (Math.random() * 16) | 0;
     const v = c === 'x' ? r : (r & 0x3) | 0x8;
@@ -48,13 +45,17 @@ const generateUUID = () => {
   });
 };
 
-const readCloudQueue = (): CloudQueueItem[] => {
+const safeJsonParse = <T,>(raw: string | null, fallback: T): T => {
+  if (!raw) return fallback;
   try {
-    const raw = localStorage.getItem(CLOUD_QUEUE_KEY);
-    return raw ? JSON.parse(raw) : [];
+    return JSON.parse(raw) as T;
   } catch {
-    return [];
+    return fallback;
   }
+};
+
+const readCloudQueue = (): CloudQueueItem[] => {
+  return safeJsonParse<CloudQueueItem[]>(localStorage.getItem(CLOUD_QUEUE_KEY), []);
 };
 
 const writeCloudQueue = (items: CloudQueueItem[]) => {
@@ -70,7 +71,6 @@ const enqueueCloudSync = (item: CloudQueueItem) => {
 
   const q = readCloudQueue();
   const idx = q.findIndex((x) => x.id === item.id);
-
   if (idx >= 0) q[idx] = item;
   else q.push(item);
 
@@ -82,6 +82,17 @@ const dequeueCloudSync = (id: string) => {
   writeCloudQueue(q.filter((x) => x.id !== id));
 };
 
+const markLocalSynced = (id: string, synced: boolean) => {
+  try {
+    const locals = safeJsonParse<Client[]>(localStorage.getItem(LOCAL_STORAGE_KEY), []);
+    const idx = locals.findIndex((c) => c.id === id);
+    if (idx >= 0) {
+      (locals[idx] as any)._isSynced = synced;
+      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(locals));
+    }
+  } catch {}
+};
+
 // ✅ Real timeout that cancels the HTTP call (IMPORTANT on iOS)
 async function upsertClientRowWithAbort(row: any, timeoutMs: number) {
   if (!supabase) throw new Error('Supabase not initialized');
@@ -90,13 +101,12 @@ async function upsertClientRowWithAbort(row: any, timeoutMs: number) {
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    // Supabase PostgREST builder supports abortSignal()
     const { data, error } = await supabase
       .from('clients')
       .upsert(row)
       .select('id, updated_at')
       .single()
-      // @ts-ignore (supabase-js has abortSignal; typings sometimes lag)
+      // @ts-ignore (supabase-js supports abortSignal; typings sometimes lag)
       .abortSignal(controller.signal);
 
     if (error) throw error;
@@ -122,23 +132,19 @@ export const db = {
     if (!isSupabaseConfigured() || !supabase) return null;
     return supabase
       .channel('realtime_clients')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'clients' }, (payload) =>
-        onEvent(payload)
-      )
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'clients' }, (payload) => onEvent(payload))
       .subscribe();
   },
 
   getClients: async (userId?: string): Promise<Client[]> => {
-    const localRaw = localStorage.getItem(LOCAL_STORAGE_KEY);
-    let localClients: Client[] = localRaw ? JSON.parse(localRaw) : [];
-
+    const localClients = safeJsonParse<Client[]>(localStorage.getItem(LOCAL_STORAGE_KEY), []);
     const queue = readCloudQueue();
     const outboxIds = new Set(queue.map((q) => q.id));
 
     const mergedMap = new Map<string, Client>();
     localClients.forEach((c) => mergedMap.set(c.id, c));
 
-    // Overlay unsynced queue items so latest edits show even if cloud is down
+    // Overlay queued edits so latest is visible even if cloud is down
     queue.forEach((qItem) => {
       mergedMap.set(qItem.id, { ...qItem.data, _isSynced: false });
     });
@@ -147,7 +153,7 @@ export const db = {
     if (isSupabaseConfigured() && supabase && userId) {
       try {
         const { data, error } = await supabase.from('clients').select('*');
-        if (!error && data && data.length > 0) {
+        if (!error && Array.isArray(data) && data.length > 0) {
           const cloudClients = data.map((row: any) => ({
             ...row.data,
             id: row.id,
@@ -158,8 +164,10 @@ export const db = {
 
           cloudClients.forEach((cloudC) => {
             const localC = mergedMap.get(cloudC.id);
+
+            // If local has unsynced changes, do NOT overwrite with cloud
             const isLocalUnsynced =
-              !!localC && ((localC as any)._isSynced === false || outboxIds.has(localC.id));
+              !!localC && (((localC as any)._isSynced === false) || outboxIds.has(localC.id));
             if (isLocalUnsynced) return;
 
             const localTs = localC?.lastUpdated ? new Date(localC.lastUpdated).getTime() : 0;
@@ -186,9 +194,7 @@ export const db = {
   },
 
   saveClient: async (client: Client, userId: string): Promise<SyncResult> => {
-    if (!userId) {
-      return { success: true, isLocalOnly: true, client };
-    }
+    if (!userId) return { success: true, isLocalOnly: true, client };
 
     const now = new Date().toISOString();
 
@@ -201,15 +207,14 @@ export const db = {
 
     // 1) Always write local immediately
     try {
-      const local = localStorage.getItem(LOCAL_STORAGE_KEY);
-      const clients: Client[] = local ? JSON.parse(local) : [];
-      const idx = clients.findIndex((c) => c.id === clientData.id);
-      if (idx >= 0) clients[idx] = clientData;
-      else clients.push(clientData);
-      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(clients));
+      const locals = safeJsonParse<Client[]>(localStorage.getItem(LOCAL_STORAGE_KEY), []);
+      const idx = locals.findIndex((c) => c.id === clientData.id);
+      if (idx >= 0) locals[idx] = clientData;
+      else locals.push(clientData);
+      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(locals));
     } catch {}
 
-    // 2) Queue item (always)
+    // 2) Always enqueue
     const activeUid = (client as any)._ownerId || userId;
     const qItem: CloudQueueItem = {
       id: clientData.id,
@@ -219,7 +224,7 @@ export const db = {
     };
     enqueueCloudSync(qItem);
 
-    // 3) Try immediate cloud write (best effort)
+    // 3) Best-effort immediate cloud write
     if (!isSupabaseConfigured() || !supabase) {
       return { success: true, isLocalOnly: true, client: clientData, error: 'Supabase not configured' };
     }
@@ -240,26 +245,14 @@ export const db = {
         SYNC_TIMEOUT_MS
       );
 
-      // confirmed success => remove from queue
+      // ✅ Confirmed success => remove from queue + mark synced
       dequeueCloudSync(qItem.id);
-
-      // mark local as synced
-      try {
-        const local = localStorage.getItem(LOCAL_STORAGE_KEY);
-        if (local) {
-          const clients: Client[] = JSON.parse(local);
-          const idx = clients.findIndex((c) => c.id === clientData.id);
-          if (idx >= 0) {
-            (clients[idx] as any)._isSynced = true;
-            localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(clients));
-          }
-        }
-      } catch {}
+      markLocalSynced(qItem.id, true);
 
       console.log(`[SYNC] Write Confirmed: ${clientData.id}`);
+
       return { success: true, isLocalOnly: false, client: { ...clientData, _isSynced: true } };
     } catch (e: any) {
-      // AbortError / timeouts are common on iOS background/preview
       const msg = e?.name === 'AbortError' ? 'TIMEOUT_ABORTED' : e?.message || 'Cloud write failed';
       console.warn(`[SYNC] Upsert failed (kept in outbox): ${msg}`);
       return { success: true, isLocalOnly: true, client: clientData, error: msg };
@@ -273,10 +266,10 @@ export const db = {
     const q = readCloudQueue();
     if (q.length === 0) return true;
 
-    // lock to prevent infinite loops
+    // lock + backoff
     const now = Date.now();
     if (IS_FLUSHING) return false;
-    if (now - LAST_FLUSH_AT < 4000) return false; // simple backoff
+    if (now - LAST_FLUSH_AT < 4000) return false;
     IS_FLUSHING = true;
     LAST_FLUSH_AT = now;
 
@@ -286,45 +279,35 @@ export const db = {
       const remaining: CloudQueueItem[] = [];
       let flushedCount = 0;
 
-      // IMPORTANT: Do sequential writes. iOS + bad network hates parallel.
+      // sequential flush only (mobile-safe)
       for (const item of q) {
         try {
           await upsertClientRowWithAbort(
             {
               id: item.id,
               user_id: item.user_id || userId,
-              data: { ...item.data, _ownerId: item.user_id || userId },
+              data: item.data,
               updated_at: item.updated_at
             },
             SYNC_TIMEOUT_MS
           );
 
           flushedCount++;
-
-          // mark local as synced
-          try {
-            const local = localStorage.getItem(LOCAL_STORAGE_KEY);
-            if (local) {
-              const clients: Client[] = JSON.parse(local);
-              const idx = clients.findIndex((c) => c.id === item.id);
-              if (idx >= 0) {
-                (clients[idx] as any)._isSynced = true;
-                localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(clients));
-              }
-            }
-          } catch {}
+          markLocalSynced(item.id, true);
+          // ✅ do NOT push to remaining (so it gets removed)
         } catch (e: any) {
           const msg = e?.name === 'AbortError' ? 'TIMEOUT_ABORTED' : e?.message || 'FAILED';
           console.warn(`[SYNC] Flush failed for ${item.id}: ${msg}`);
           remaining.push(item);
 
-          // If we’re timing out, stop hammering. Keep remaining for later.
+          // If we time out, stop hammering. Keep remaining for later.
           if (msg.includes('TIMEOUT') || msg.includes('Abort')) break;
         }
       }
 
       writeCloudQueue(remaining);
       console.log(`[SYNC] Flush complete. Flushed: ${flushedCount}, Remaining: ${remaining.length}`);
+
       return flushedCount > 0;
     } finally {
       IS_FLUSHING = false;
@@ -334,11 +317,11 @@ export const db = {
   deleteClient: async (id: string) => {
     // local delete
     try {
-      const local = localStorage.getItem(LOCAL_STORAGE_KEY);
-      if (local) {
-        const clients = JSON.parse(local).filter((c: Client) => c.id !== id);
-        localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(clients));
-      }
+      const locals = safeJsonParse<Client[]>(localStorage.getItem(LOCAL_STORAGE_KEY), []);
+      localStorage.setItem(
+        LOCAL_STORAGE_KEY,
+        JSON.stringify(locals.filter((c) => c.id !== id))
+      );
     } catch {}
 
     // remove from queue too
