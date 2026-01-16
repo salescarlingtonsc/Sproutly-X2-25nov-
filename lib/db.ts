@@ -1,31 +1,15 @@
 import { supabase, isSupabaseConfigured } from './supabase';
 import { Client } from '../types';
 
-/* ============================================================
-   CONFIG
-============================================================ */
 const LOCAL_STORAGE_KEY = 'sproutly_clients_v2';
 const CLOUD_QUEUE_KEY = 'sproutly_cloud_queue_v1';
 
 const SYNC_TIMEOUT_MS = 12000;
 const MAX_QUEUE = 100;
 
-/* ============================================================
-   MEMORY SAFETY (iPad / Preview SAFE)
-   - localStorage can fail in embedded previews
-   - memory queue is the source of truth
-============================================================ */
-let MEMORY_QUEUE: CloudQueueItem[] = [];
 let IS_FLUSHING = false;
 let LAST_FLUSH_AT = 0;
 
-// Prevent re-enqueue after confirmed write
-const IGNORE_IDS = new Map<string, number>();
-const IGNORE_MS = 60_000;
-
-/* ============================================================
-   TYPES
-============================================================ */
 export type SyncResult = {
   success: boolean;
   isLocalOnly: boolean;
@@ -40,108 +24,96 @@ type CloudQueueItem = {
   data: any;
 };
 
-/* ============================================================
-   HELPERS
-============================================================ */
 const emitQueueChanged = () => {
   try {
     window.dispatchEvent(new CustomEvent('sproutly:queue_changed'));
   } catch {}
 };
 
-const canUseLocalStorage = () => {
+const safeJsonParse = <T = any>(raw: string | null, fallback: T): T => {
   try {
-    const k = '__ls_test__';
-    localStorage.setItem(k, '1');
-    localStorage.removeItem(k);
-    return true;
+    return raw ? (JSON.parse(raw) as T) : fallback;
   } catch {
-    return false;
+    return fallback;
   }
 };
 
 const generateUUID = () => {
-  if (crypto?.randomUUID) {
+  if (typeof crypto !== 'undefined' && (crypto as any).randomUUID) {
     try {
-      return crypto.randomUUID();
+      return (crypto as any).randomUUID();
     } catch {}
   }
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
     const r = (Math.random() * 16) | 0;
     const v = c === 'x' ? r : (r & 0x3) | 0x8;
     return v.toString(16);
   });
 };
 
-/* ============================================================
-   QUEUE (MEMORY IS SOURCE OF TRUTH)
-============================================================ */
-const readCloudQueue = (): CloudQueueItem[] => {
-  const now = Date.now();
-  for (const [id, exp] of IGNORE_IDS.entries()) {
-    if (now > exp) IGNORE_IDS.delete(id);
-  }
-
-  let q = MEMORY_QUEUE;
-
-  if (canUseLocalStorage()) {
-    try {
-      const raw = localStorage.getItem(CLOUD_QUEUE_KEY);
-      if (raw) q = JSON.parse(raw);
-    } catch {}
-  }
-
-  return q.filter(i => !IGNORE_IDS.has(i.id));
-};
+const readCloudQueue = (): CloudQueueItem[] =>
+  safeJsonParse<CloudQueueItem[]>(localStorage.getItem(CLOUD_QUEUE_KEY), []);
 
 const writeCloudQueue = (items: CloudQueueItem[]) => {
-  const trimmed = items.slice(-MAX_QUEUE);
-  MEMORY_QUEUE = trimmed;
-
   try {
-    if (canUseLocalStorage()) {
-      localStorage.setItem(CLOUD_QUEUE_KEY, JSON.stringify(trimmed));
-    }
+    localStorage.setItem(CLOUD_QUEUE_KEY, JSON.stringify(items.slice(-MAX_QUEUE)));
+    emitQueueChanged();
   } catch {}
-
-  emitQueueChanged();
 };
 
 const enqueueCloudSync = (item: CloudQueueItem) => {
-  if (!item.user_id) return;
-  if (IGNORE_IDS.has(item.id)) return;
-
+  if (!item?.id || !item.user_id) return;
   const q = readCloudQueue();
-  const idx = q.findIndex(x => x.id === item.id);
+  const idx = q.findIndex((x) => x.id === item.id);
   if (idx >= 0) q[idx] = item;
   else q.push(item);
-
   writeCloudQueue(q);
 };
 
 const dequeueCloudSync = (id: string) => {
-  // important: ignore re-enqueue for a while after success
-  IGNORE_IDS.set(id, Date.now() + IGNORE_MS);
-  const q = readCloudQueue().filter(x => x.id !== id);
-  writeCloudQueue(q);
+  const q = readCloudQueue();
+  writeCloudQueue(q.filter((x) => x.id !== id));
 };
 
-/* ============================================================
-   SUPABASE UPSERT WITH REAL ABORT
-============================================================ */
-async function upsertWithAbort(row: any) {
+const readLocalClients = (): Client[] =>
+  safeJsonParse<Client[]>(localStorage.getItem(LOCAL_STORAGE_KEY), []);
+
+const writeLocalClients = (clients: Client[]) => {
+  try {
+    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(clients));
+  } catch {}
+};
+
+const upsertLocalClient = (client: Client) => {
+  const local = readLocalClients();
+  const idx = local.findIndex((c) => c.id === client.id);
+  if (idx >= 0) local[idx] = client;
+  else local.push(client);
+  writeLocalClients(local);
+};
+
+const markLocalSynced = (id: string, isSynced: boolean) => {
+  const local = readLocalClients();
+  const idx = local.findIndex((c) => c.id === id);
+  if (idx >= 0) {
+    (local[idx] as any)._isSynced = isSynced;
+    writeLocalClients(local);
+  }
+};
+
+// Real timeout that cancels the HTTP call (iOS Safari can hang requests)
+async function upsertClientRowWithAbort(row: any, timeoutMs: number) {
   if (!supabase) throw new Error('Supabase not initialized');
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), SYNC_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const { error, data } = await supabase
+    const { data, error } = await (supabase as any)
       .from('clients')
       .upsert(row)
       .select('id, updated_at')
       .single()
-      // @ts-ignore
       .abortSignal(controller.signal);
 
     if (error) throw error;
@@ -151,148 +123,112 @@ async function upsertWithAbort(row: any) {
   }
 }
 
-/* ============================================================
-   LOCAL CACHE HELPERS
-============================================================ */
-const readLocalClients = (): Client[] => {
-  try {
-    const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-};
-
-const writeLocalClients = (list: Client[]) => {
-  try {
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(list));
-  } catch {}
-};
-
-const writeLocalClient = (client: Client) => {
-  const list = readLocalClients();
-  const idx = list.findIndex(c => c.id === client.id);
-  if (idx >= 0) list[idx] = client;
-  else list.push(client);
-  writeLocalClients(list);
-};
-
-const markLocalSynced = (id: string) => {
-  const list = readLocalClients();
-  const idx = list.findIndex(c => c.id === id);
-  if (idx >= 0) {
-    (list[idx] as any)._isSynced = true;
-    writeLocalClients(list);
-  }
-};
-
-/* ============================================================
-   DB API
-============================================================ */
 export const db = {
-  /* ---------- QUEUE ---------- */
   getQueueCount: () => readCloudQueue().length,
 
   getQueueDetails: () => {
     const q = readCloudQueue();
-    return q.map(item => ({
+    return q.map((item) => ({
       id: item.id,
       name: item.data?.profile?.name || 'Unnamed Client',
       updated: item.updated_at
     }));
   },
 
-  /* ---------- REALTIME SUBSCRIBE ---------- */
+  // ✅ REQUIRED: App.tsx expects this to exist
   subscribeToChanges: (onEvent: (payload: any) => void) => {
     if (!isSupabaseConfigured() || !supabase) return null;
-
-    return supabase
-      .channel('realtime_clients')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'clients' }, payload => {
-        try {
-          onEvent(payload);
-        } catch {}
-      })
-      .subscribe();
+    try {
+      return supabase
+        .channel('realtime_clients')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'clients' }, (payload: any) =>
+          onEvent(payload)
+        )
+        .subscribe();
+    } catch {
+      return null;
+    }
   },
 
-  /* ---------- READ ---------- */
   getClients: async (userId?: string): Promise<Client[]> => {
-    // local first
     const localClients = readLocalClients();
 
-    // overlay queue items (latest edits)
     const queue = readCloudQueue();
-    const outboxIds = new Set(queue.map(q => q.id));
+    const outboxIds = new Set(queue.map((q) => q.id));
 
-    const merged = new Map<string, Client>();
-    localClients.forEach(c => merged.set(c.id, c));
+    const mergedMap = new Map<string, Client>();
+    localClients.forEach((c) => mergedMap.set(c.id, c));
 
-    queue.forEach(q => {
-      merged.set(q.id, { ...q.data, _isSynced: false });
+    // overlay unsynced edits
+    queue.forEach((qItem) => {
+      mergedMap.set(qItem.id, { ...qItem.data, _isSynced: false });
     });
 
-    // cloud pull best-effort
+    // best-effort cloud pull
     if (isSupabaseConfigured() && supabase && userId) {
       try {
         const { data, error } = await supabase.from('clients').select('*');
-        if (!error && data?.length) {
-          for (const row of data as any[]) {
+        if (!error && Array.isArray(data)) {
+          data.forEach((row: any) => {
             const cloudC: Client = {
-              ...(row.data || {}),
+              ...row.data,
               id: row.id,
               _ownerId: row.user_id,
               lastUpdated: row.updated_at || row.data?.lastUpdated,
               _isSynced: true
             };
 
-            const localC = merged.get(cloudC.id);
-            const isLocalUnsynced =
-              !!localC && (((localC as any)._isSynced === false) || outboxIds.has(cloudC.id));
+            // don’t overwrite outbox edits
+            if (outboxIds.has(cloudC.id)) return;
 
-            if (isLocalUnsynced) continue;
+            const existing = mergedMap.get(cloudC.id);
+            if (existing && (existing as any)._isSynced === false) return;
 
-            merged.set(cloudC.id, cloudC);
-          }
+            const localTs = existing?.lastUpdated ? new Date(existing.lastUpdated).getTime() : 0;
+            const cloudTs = cloudC.lastUpdated ? new Date(cloudC.lastUpdated).getTime() : 0;
+
+            if (!existing || cloudTs >= localTs) mergedMap.set(cloudC.id, cloudC);
+          });
         }
       } catch {}
     }
 
-    const final = Array.from(merged.values()).map(c => ({
+    const finalClients = Array.from(mergedMap.values()).map((c) => ({
       ...c,
       _isSynced: !outboxIds.has(c.id)
     }));
 
-    writeLocalClients(final);
-    return final;
+    writeLocalClients(finalClients);
+    return finalClients;
   },
 
-  /* ---------- SAVE ---------- */
   saveClient: async (client: Client, userId: string): Promise<SyncResult> => {
     if (!userId) return { success: true, isLocalOnly: true, client };
 
     const now = new Date().toISOString();
+    const activeUid = (client as any)._ownerId || userId;
+
     const clientData: Client = {
       ...client,
       id: client.id || generateUUID(),
       lastUpdated: now,
-      _isSynced: false
+      _isSynced: false,
+      _ownerId: activeUid
     };
 
-    // 1) local always
-    writeLocalClient(clientData);
+    // local first
+    upsertLocalClient(clientData);
 
-    // 2) queue always
-    const owner = (client as any)._ownerId || userId;
+    // queue always
     const qItem: CloudQueueItem = {
       id: clientData.id,
-      user_id: owner,
+      user_id: activeUid,
       updated_at: now,
-      data: { ...clientData, _ownerId: owner }
+      data: clientData
     };
     enqueueCloudSync(qItem);
 
-    // 3) cloud best effort
+    // cloud best-effort
     if (!isSupabaseConfigured() || !supabase) {
       return { success: true, isLocalOnly: true, client: clientData, error: 'Supabase not configured' };
     }
@@ -301,100 +237,100 @@ export const db = {
     }
 
     try {
-      console.log('[SYNC] Attempting Upsert:', clientData.id);
+      console.log(`[SYNC] Attempting Upsert: ${clientData.id}`);
 
-      await upsertWithAbort({
-        id: qItem.id,
-        user_id: qItem.user_id,
-        data: qItem.data,
-        updated_at: qItem.updated_at
-      });
+      await upsertClientRowWithAbort(
+        { id: qItem.id, user_id: qItem.user_id, data: qItem.data, updated_at: qItem.updated_at },
+        SYNC_TIMEOUT_MS
+      );
 
-      console.log('[SYNC] Write Confirmed:', clientData.id);
+      console.log(`[SYNC] Write Confirmed: ${clientData.id}`);
 
-      // IMPORTANT: remove from queue EVEN IF localStorage fails
-      dequeueCloudSync(clientData.id);
-      markLocalSynced(clientData.id);
+      dequeueCloudSync(qItem.id);
+      markLocalSynced(clientData.id, true);
 
       return { success: true, isLocalOnly: false, client: { ...clientData, _isSynced: true } };
     } catch (e: any) {
-      console.warn('[SYNC] Cloud failed, kept in outbox:', e?.message);
-      return { success: true, isLocalOnly: true, client: clientData, error: e?.message };
+      const msg = e?.name === 'AbortError' ? 'TIMEOUT_ABORTED' : e?.message || 'Cloud write failed';
+      console.warn(`[SYNC] Upsert failed (kept in outbox): ${msg}`);
+      return { success: true, isLocalOnly: true, client: clientData, error: msg };
     }
   },
 
-  /* ---------- FLUSH QUEUE ---------- */
   flushCloudQueue: async (userId: string) => {
     if (!userId || !isSupabaseConfigured() || !supabase) return false;
     if (!navigator.onLine) return false;
 
+    const q = readCloudQueue();
+    if (q.length === 0) return true;
+
+    const now = Date.now();
     if (IS_FLUSHING) return false;
-    if (Date.now() - LAST_FLUSH_AT < 4000) return false;
+    if (now - LAST_FLUSH_AT < 4000) return false;
 
     IS_FLUSHING = true;
-    LAST_FLUSH_AT = Date.now();
+    LAST_FLUSH_AT = now;
 
     try {
-      const q = readCloudQueue();
-      if (q.length === 0) return true;
-
-      console.log('[SYNC] Flushing outbox:', q.length);
+      console.log(`[SYNC] Flushing outbox: ${q.length} items...`);
 
       const remaining: CloudQueueItem[] = [];
       let flushed = 0;
 
       for (const item of q) {
         try {
-          await upsertWithAbort({
-            id: item.id,
-            user_id: item.user_id || userId,
-            data: item.data,
-            updated_at: item.updated_at
-          });
+          await upsertClientRowWithAbort(
+            {
+              id: item.id,
+              user_id: item.user_id || userId,
+              data: item.data,
+              updated_at: item.updated_at
+            },
+            SYNC_TIMEOUT_MS
+          );
 
-          dequeueCloudSync(item.id);
-          markLocalSynced(item.id);
           flushed++;
+          dequeueCloudSync(item.id);
+          markLocalSynced(item.id, true);
         } catch (e: any) {
-          console.warn('[SYNC] Flush failed:', item.id, e?.message);
+          const msg = e?.name === 'AbortError' ? 'TIMEOUT_ABORTED' : e?.message || 'FAILED';
+          console.warn(`[SYNC] Flush failed for ${item.id}: ${msg}`);
           remaining.push(item);
-          break; // stop hammering
+
+          // stop hammering if timeout/abort
+          if (msg.includes('TIMEOUT') || msg.includes('Abort')) break;
         }
       }
 
       writeCloudQueue(remaining);
-      console.log('[SYNC] Flush complete. Flushed:', flushed, 'Remaining:', remaining.length);
+      console.log(`[SYNC] Flush complete. Flushed: ${flushed}, Remaining: ${remaining.length}`);
       return flushed > 0;
     } finally {
       IS_FLUSHING = false;
     }
   },
 
-  /* ---------- DELETE ---------- */
   deleteClient: async (id: string) => {
-    // local remove
-    const list = readLocalClients().filter(c => c.id !== id);
-    writeLocalClients(list);
+    // local
+    try {
+      const local = readLocalClients().filter((c) => c.id !== id);
+      writeLocalClients(local);
+    } catch {}
 
-    // remove from queue
+    // queue
     dequeueCloudSync(id);
 
-    // cloud delete best effort
+    // cloud best-effort
     if (isSupabaseConfigured() && supabase && navigator.onLine) {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), SYNC_TIMEOUT_MS);
-
       try {
-        await supabase
-          .from('clients')
-          .delete()
-          .eq('id', id)
-          // @ts-ignore
-          .abortSignal(controller.signal);
-      } catch {
-      } finally {
-        clearTimeout(timer);
-      }
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), SYNC_TIMEOUT_MS);
+        try {
+          await (supabase as any).from('clients').delete().eq('id', id).abortSignal(controller.signal);
+        } finally {
+          clearTimeout(timer);
+        }
+      } catch {}
     }
   }
 };
