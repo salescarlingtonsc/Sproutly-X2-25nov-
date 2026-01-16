@@ -53,7 +53,6 @@ const AppInner: React.FC = () => {
   const [clients, setClients] = useState<Client[]>([]);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'pending_sync' | 'error'>('idle');
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
-  const [isRealtimeActive, setIsRealtimeActive] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
 
   const lastSavedJson = useRef<string>('');
@@ -69,7 +68,7 @@ const AppInner: React.FC = () => {
       loadClient(client);
       if (redirect) setActiveTab('profile');
 
-      // ✅ seed diff baseline so autosave doesn't spam
+      // Seed diff baseline so autosave doesn't spam
       lastSavedJson.current = JSON.stringify(client || {});
     },
     [loadClient]
@@ -92,38 +91,56 @@ const AppInner: React.FC = () => {
 
     loadClientsList();
     const sub = db.subscribeToChanges(() => loadClientsList());
-    setIsRealtimeActive(!!sub);
 
     return () => {
       sub?.unsubscribe();
-      setIsRealtimeActive(false);
     };
   }, [user, loadClientsList]);
 
-  // ✅ CRITICAL (iOS Safari): Restore session after app-switch / background
-  // ✅ FIX: Ignore AbortError (Safari background abort) — not a real auth failure
+  // ✅ iOS Safari fix: session restore retry (handles AbortError when returning from background)
   const restoreSupabaseSession = useCallback(async () => {
     if (!supabase) return false;
 
-    try {
+    const tryOnce = async () => {
       const { data, error } = await supabase.auth.getSession();
-
       if (error) {
-        if ((error as any)?.name === 'AbortError') return false;
-        console.warn('[AUTH] Session restore failed:', error.message);
-        return false;
+        if ((error as any)?.name === 'AbortError') return { ok: false, abort: true };
+        return { ok: false, abort: false };
+      }
+      return { ok: !!data.session, abort: false };
+    };
+
+    try {
+      // Try immediately
+      let r = await tryOnce();
+      if (r.ok) return true;
+
+      // If aborted, wait and retry a couple times
+      if (r.abort) {
+        await new Promise(res => setTimeout(res, 800));
+        r = await tryOnce();
+        if (r.ok) return true;
+
+        await new Promise(res => setTimeout(res, 2000));
+        r = await tryOnce();
+        if (r.ok) return true;
       }
 
-      if (!data.session) return false;
-      return true;
+      return false;
     } catch (e: any) {
-      if (e?.name === 'AbortError') return false;
-      console.warn('[AUTH] Restore crashed:', e);
+      if (e?.name === 'AbortError') {
+        await new Promise(res => setTimeout(res, 800));
+        try {
+          const { data } = await supabase.auth.getSession();
+          return !!data.session;
+        } catch {
+          return false;
+        }
+      }
       return false;
     }
   }, []);
 
-  // Save
   const handleSaveClient = useCallback(
     async (isAutoSave = false) => {
       if (!user || (user.status !== 'approved' && user.status !== 'active')) return;
@@ -200,7 +217,7 @@ const AppInner: React.FC = () => {
     return () => clearInterval(interval);
   }, [handleSaveClient]);
 
-  // ✅ Resume flush logic (iOS friendly) — RESTORE SESSION FIRST
+  // ✅ Resume flush logic (iOS friendly) — restore session first
   useEffect(() => {
     if (!user?.id) return;
 
@@ -208,10 +225,7 @@ const AppInner: React.FC = () => {
       console.log('[SYNC] App visible, checking outbox...');
 
       const ok = await restoreSupabaseSession();
-      if (!ok) {
-        // AbortError returns false too (expected after app switch)
-        return;
-      }
+      if (!ok) return;
 
       const flushed = await db.flushCloudQueue(user.id);
       updateQueueStatus();
@@ -221,7 +235,6 @@ const AppInner: React.FC = () => {
         setLastSaved(new Date());
       }
 
-      // UI status based on queue
       if (db.getQueueCount() === 0) setSaveStatus('idle');
       else setSaveStatus('pending_sync');
     };
