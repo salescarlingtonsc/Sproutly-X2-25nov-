@@ -33,7 +33,7 @@ import MarketNewsTab from './features/market/MarketNewsTab';
 
 // Logic
 import { db } from './lib/db';
-import { supabase } from './lib/supabase'; // session check for iOS resume
+import { supabase } from './lib/supabase'; // iOS resume session restore
 import { Client } from './types';
 
 const AppInner: React.FC = () => {
@@ -69,7 +69,7 @@ const AppInner: React.FC = () => {
       loadClient(client);
       if (redirect) setActiveTab('profile');
 
-      // ✅ IMPORTANT: seed baseline so diff-check doesn't spam saves
+      // ✅ seed diff baseline so autosave doesn't spam
       lastSavedJson.current = JSON.stringify(client || {});
     },
     [loadClient]
@@ -79,7 +79,7 @@ const AppInner: React.FC = () => {
     try {
       const data = await db.getClients(user?.id);
       setClients(Array.isArray(data) ? data : []);
-    } catch (e) {
+    } catch {
       setClients([]);
     } finally {
       updateQueueStatus();
@@ -99,6 +99,29 @@ const AppInner: React.FC = () => {
       setIsRealtimeActive(false);
     };
   }, [user, loadClientsList]);
+
+  // ✅ CRITICAL (iOS Safari): Restore session after app-switch / background
+  // ✅ FIX: Ignore AbortError (Safari background abort) — not a real auth failure
+  const restoreSupabaseSession = useCallback(async () => {
+    if (!supabase) return false;
+
+    try {
+      const { data, error } = await supabase.auth.getSession();
+
+      if (error) {
+        if ((error as any)?.name === 'AbortError') return false;
+        console.warn('[AUTH] Session restore failed:', error.message);
+        return false;
+      }
+
+      if (!data.session) return false;
+      return true;
+    } catch (e: any) {
+      if (e?.name === 'AbortError') return false;
+      console.warn('[AUTH] Restore crashed:', e);
+      return false;
+    }
+  }, []);
 
   // Save
   const handleSaveClient = useCallback(
@@ -144,8 +167,7 @@ const AppInner: React.FC = () => {
         setLastSaved(new Date());
         updateQueueStatus();
 
-        // ✅ CRITICAL FIX: update baseline EVEN IF local-only
-        // If you don't do this, autosave repeats forever and keeps queue "pending"
+        // ✅ CRITICAL: update baseline EVEN IF local-only
         lastSavedJson.current = JSON.stringify(result.client || clientData);
 
         if (result.isLocalOnly) {
@@ -172,33 +194,22 @@ const AppInner: React.FC = () => {
     [user, generateClientObject, clientId, promoteToSaved, updateQueueStatus, toast]
   );
 
-  // Auto-save (a bit slower helps mobile)
+  // Auto-save (slower helps mobile stability)
   useEffect(() => {
     const interval = setInterval(() => handleSaveClient(true), 15000);
     return () => clearInterval(interval);
   }, [handleSaveClient]);
 
-  // Resume flush logic (iOS friendly)
+  // ✅ Resume flush logic (iOS friendly) — RESTORE SESSION FIRST
   useEffect(() => {
-    if (!user) return;
-
-    const ensureSupabaseSession = async () => {
-      if (!supabase) return false;
-      try {
-        const { data, error } = await supabase.auth.getSession();
-        if (error) return false;
-        return !!data.session;
-      } catch {
-        return false;
-      }
-    };
+    if (!user?.id) return;
 
     const triggerFlushSafe = async () => {
       console.log('[SYNC] App visible, checking outbox...');
 
-      const ok = await ensureSupabaseSession();
+      const ok = await restoreSupabaseSession();
       if (!ok) {
-        console.warn('[SYNC] No session; cannot flush (user may need re-login).');
+        // AbortError returns false too (expected after app switch)
         return;
       }
 
@@ -210,12 +221,9 @@ const AppInner: React.FC = () => {
         setLastSaved(new Date());
       }
 
-      // ✅ If queue is empty, don't show pending forever
-      if (db.getQueueCount() === 0) {
-        setSaveStatus('idle');
-      } else {
-        setSaveStatus('pending_sync');
-      }
+      // UI status based on queue
+      if (db.getQueueCount() === 0) setSaveStatus('idle');
+      else setSaveStatus('pending_sync');
     };
 
     const onFocus = () => triggerFlushSafe();
@@ -241,7 +249,7 @@ const AppInner: React.FC = () => {
       document.removeEventListener('visibilitychange', onVisibility);
       clearInterval(flushInterval);
     };
-  }, [user, loadClientsList, updateQueueStatus]);
+  }, [user?.id, loadClientsList, updateQueueStatus, restoreSupabaseSession]);
 
   if (isLoading) {
     return (
