@@ -1,9 +1,10 @@
+
 import { supabase, isSupabaseConfigured } from './supabase';
 import { Client } from '../types';
 
 const LOCAL_STORAGE_KEY = 'sproutly_clients_v2';
 const CLOUD_QUEUE_KEY = 'sproutly_cloud_queue_v1';
-const SYNC_TIMEOUT = 8000; // 8 seconds hard limit
+const SYNC_TIMEOUT = 10000; // 10 seconds hard limit for mobile networks
 
 export type SyncResult = {
   success: boolean;
@@ -61,6 +62,16 @@ async function withTimeout<T = any>(promise: Promise<T> | any, timeoutMs: number
 
 export const db = {
   getQueueCount: () => readCloudQueue().length,
+  
+  // NEW: Expose details for diagnostics
+  getQueueDetails: () => {
+    const q = readCloudQueue();
+    return q.map(item => ({
+      id: item.id,
+      name: item.data?.profile?.name || 'Unnamed Client',
+      updated: item.updated_at
+    }));
+  },
 
   subscribeToChanges: (onEvent: (payload: any) => void) => {
     if (!isSupabaseConfigured() || !supabase) return null;
@@ -80,13 +91,17 @@ export const db = {
     const mergedMap = new Map<string, Client>();
     localClients.forEach(c => mergedMap.set(c.id, c));
     
+    // Overlay unsynced queue items on top of local cache to ensure latest edit is visible
     queue.forEach(qItem => {
         mergedMap.set(qItem.id, { ...qItem.data, _isSynced: false });
     });
 
-    if (isSupabaseConfigured() && supabase) {
+    if (isSupabaseConfigured() && supabase && userId) {
       try {
+        // VISIBILITY FIX: Removed .eq('user_id', userId)
+        // We rely on RLS policies to filter rows. This allows Admins/Directors to see team leads.
         const { data, error } = await supabase.from('clients').select('*');
+        
         if (!error && data && data.length > 0) {
           const cloudClients = data.map(row => ({
             ...row.data,
@@ -98,12 +113,17 @@ export const db = {
 
           cloudClients.forEach(cloudC => {
             const localC = mergedMap.get(cloudC.id);
-            // PRIORITY RULE: Local unsynced edits always win
+            // PRIORITY RULE: If we have a local unsynced edit, IGNORE the cloud version
+            // until our edit is pushed. This prevents "reverting" to old state.
             const isLocalUnsynced = localC && (localC._isSynced === false || outboxIds.has(localC.id));
             
             if (isLocalUnsynced) return; 
 
-            if (!localC || new Date(cloudC.lastUpdated) > new Date(localC.lastUpdated)) {
+            // Safe Timestamp Comparison
+            const localTs = localC?.lastUpdated ? new Date(localC.lastUpdated).getTime() : 0;
+            const cloudTs = cloudC.lastUpdated ? new Date(cloudC.lastUpdated).getTime() : 0;
+
+            if (!localC || cloudTs > localTs) {
               mergedMap.set(cloudC.id, cloudC);
             }
           });
@@ -115,6 +135,7 @@ export const db = {
 
     const finalClients = Array.from(mergedMap.values()).map(c => ({
       ...c,
+      // If it's in the outbox, it's NOT synced
       _isSynced: !outboxIds.has(c.id)
     }));
 
@@ -122,7 +143,12 @@ export const db = {
     return finalClients;
   },
 
-  saveClient: async (client: Client, userId?: string): Promise<SyncResult> => {
+  saveClient: async (client: Client, userId: string): Promise<SyncResult> => {
+    if (!userId) {
+      console.error('[DB] saveClient called without userId');
+      return { success: true, isLocalOnly: true, client };
+    }
+
     const now = new Date().toISOString();
     const clientData = { 
       ...client, 
@@ -143,28 +169,25 @@ export const db = {
     // 2. Cloud Strategy
     if (isSupabaseConfigured() && supabase) {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
-        const activeUid = clientData._ownerId || userId || session?.user?.id;
-
-        if (!activeUid) {
-          return { success: true, isLocalOnly: true, client: clientData };
-        }
+        // OWNERSHIP FIX: Respect existing owner (e.g. if Admin is editing Advisor's lead)
+        // Only default to current user if no owner exists.
+        const activeUid = client._ownerId || userId;
 
         const qItem: CloudQueueItem = {
           id: clientData.id,
           user_id: activeUid,
           updated_at: now,
-          data: { ...clientData, _ownerId: activeUid }
+          data: { ...clientData, _ownerId: activeUid } // Ensure data matches db owner column
         };
 
-        // Enqueue IMMEDIATELY to protect the unsynced state in case of crash/close
+        // Enqueue IMMEDIATELY to protect the unsynced state in case of app switch/crash
         enqueueCloudSync(qItem);
 
         if (navigator.onLine) {
           try {
-            console.log(`[SYNC] Upsert start: ${clientData.id}`);
+            console.log(`[SYNC] Attempting Upsert: ${clientData.id}`);
             
-            // Use .select().single() to force a confirmed return from the DB
+            // STRICT VERIFICATION: We use .select() to force the DB to confirm the write.
             const { data: upserted, error } = await withTimeout<any>(
               supabase.from('clients').upsert({
                 id: qItem.id,
@@ -176,19 +199,19 @@ export const db = {
             );
 
             if (error) {
-              console.error(`[SYNC] Upsert error [Code: ${error.code}]:`, error.message);
-              // Do not remove from queue if RLS or DB error occurred
+              console.error(`[SYNC] Upsert failed:`, error.message);
+              // Do NOT remove from queue. Do NOT mark synced.
               return { success: true, isLocalOnly: true, client: clientData, error: error.message };
             }
 
             // --- CONFIRMED SUCCESS ---
-            console.log(`[SYNC] Upsert confirmed: ${upserted?.id}`);
+            console.log(`[SYNC] Write Confirmed: ${upserted?.id}`);
             
             // 1. Remove from Queue
             const q = readCloudQueue();
             writeCloudQueue(q.filter(x => x.id !== qItem.id));
             
-            // 2. Update Local Cache Flag
+            // 2. Update Local Cache Flag (So UI shows Green Check)
             const local = localStorage.getItem(LOCAL_STORAGE_KEY);
             if (local) {
                 const clients: Client[] = JSON.parse(local);
@@ -202,7 +225,7 @@ export const db = {
             return { success: true, isLocalOnly: false, client: { ...clientData, _isSynced: true } };
 
           } catch (netErr: any) {
-            console.warn(`[SYNC] Network/Timeout error: ${netErr.message}`);
+            console.warn(`[SYNC] Network/Timeout: ${netErr.message}`);
             // Keep in queue, return localOnly
           }
         }
@@ -216,8 +239,8 @@ export const db = {
     return { success: true, isLocalOnly: true, client: clientData };
   },
 
-  flushCloudQueue: async (userId?: string) => {
-    if (!isSupabaseConfigured() || !supabase || !navigator.onLine) return;
+  flushCloudQueue: async (userId: string) => {
+    if (!userId || !isSupabaseConfigured() || !supabase || !navigator.onLine) return;
     const q = readCloudQueue();
     if (q.length === 0) return;
     
@@ -230,16 +253,17 @@ export const db = {
         const { error } = await withTimeout<any>(
           supabase.from('clients').upsert({
             id: item.id,
-            user_id: item.user_id,
-            data: item.data,
+            // OWNERSHIP FIX: Use the ownership defined in the queue item, fallback to current user only if missing
+            user_id: item.user_id || userId, 
+            data: { ...item.data, _ownerId: item.user_id || userId }, 
             updated_at: item.updated_at
-          }).select('id').single(), // Confirm write
+          }).select('id').single(), // Require confirmation
           SYNC_TIMEOUT
         );
         
         if (!error) {
           flushedCount++;
-          // Update local cache flag for this client immediately
+          // Update local cache flag
           const local = localStorage.getItem(LOCAL_STORAGE_KEY);
           if (local) {
               const clients: Client[] = JSON.parse(local);
@@ -250,7 +274,7 @@ export const db = {
               }
           }
         } else {
-          console.error(`[SYNC] Flush failed item ${item.id}:`, error.message);
+          console.error(`[SYNC] Flush failed for ${item.id}:`, error.message);
           remaining.push(item);
         }
       } catch (e) { 

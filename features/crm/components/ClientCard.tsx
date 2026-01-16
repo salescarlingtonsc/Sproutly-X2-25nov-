@@ -300,7 +300,7 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
           const updatedClient = { ...client, notes: currentNotes, lastUpdated: new Date().toISOString() };
           onUpdate(updatedClient);
           try {
-              await db.saveClient(updatedClient, currentUser?.id);
+              await db.saveClient(updatedClient, currentUser?.id || '');
               toast.success("Log removed.");
           } catch (err: any) {
               console.error("Save after delete failed:", err);
@@ -336,7 +336,7 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
       const sales = (client.sales || []).filter(s => s.id !== saleId);
       const updatedClient = { ...client, sales, lastUpdated: new Date().toISOString() };
       onUpdate(updatedClient);
-      await db.saveClient(updatedClient, currentUser?.id);
+      await db.saveClient(updatedClient, currentUser?.id || '');
       toast.success("Sale deleted.");
   };
 

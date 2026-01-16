@@ -60,7 +60,17 @@ if (!isConfigured) {
 }
 
 export const supabase = isConfigured 
-  ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) 
+  ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: true,
+        // IMPORTANT: make auth storage deterministic
+        storageKey: 'sproutly_auth_v1',
+        // IMPORTANT: ensure we use browser localStorage when available
+        storage: typeof window !== 'undefined' ? window.localStorage : undefined,
+      }
+    }) 
   : null;
 
-export const isSupabaseConfigured = () => !!isConfigured;
+export const isSupabaseConfigured = () => !!(isConfigured && supabase);

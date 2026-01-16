@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
@@ -12,6 +11,7 @@ import { AdminSettings } from './components/AdminSettings';
 import { SubscriptionManager } from './components/SubscriptionManager';
 import { AiKnowledgeManager } from './components/AiKnowledgeManager';
 import DbRepairModal from './components/DbRepairModal';
+import DataHealthModal from './components/DataHealthModal';
 import { Client, Advisor, Team, Product, AppSettings, Subscription } from '../../types';
 import { DEFAULT_SETTINGS } from '../../lib/config';
 
@@ -25,6 +25,7 @@ const AdminTab: React.FC<AdminTabProps> = ({ clients }) => {
   const [activeView, setActiveView] = useState<'dashboard' | 'users' | 'settings' | 'billing' | 'ai'>('dashboard');
   const [loading, setLoading] = useState(true);
   const [showDbRepair, setShowDbRepair] = useState(false);
+  const [showHealth, setShowHealth] = useState(false);
 
   // System Data
   const [advisors, setAdvisors] = useState<Advisor[]>([]);
@@ -199,12 +200,20 @@ const AdminTab: React.FC<AdminTabProps> = ({ clients }) => {
                 <NavButton active={activeView === 'ai'} onClick={() => setActiveView('ai')} icon="🧠" label="AI Brain" />
             </div>
             
-            <button 
-                onClick={() => setShowDbRepair(true)} 
-                className="bg-red-50 text-red-600 px-3 py-1.5 rounded-lg text-xs font-bold border border-red-200 hover:bg-red-100 transition-colors flex items-center gap-1 ml-4"
-            >
-                <span>🛠️</span> DB Repair
-            </button>
+            <div className="flex items-center gap-3">
+               <button 
+                  onClick={() => setShowHealth(true)} 
+                  className="bg-emerald-50 text-emerald-600 px-3 py-1.5 rounded-lg text-xs font-bold border border-emerald-200 hover:bg-emerald-100 transition-colors flex items-center gap-1"
+               >
+                  <span>☁️</span> Data Health
+               </button>
+               <button 
+                  onClick={() => setShowDbRepair(true)} 
+                  className="bg-red-50 text-red-600 px-3 py-1.5 rounded-lg text-xs font-bold border border-red-200 hover:bg-red-100 transition-colors flex items-center gap-1"
+               >
+                  <span>🛠️</span> DB Repair
+               </button>
+            </div>
         </div>
 
         <div className="flex-1 overflow-y-auto">
@@ -216,7 +225,7 @@ const AdminTab: React.FC<AdminTabProps> = ({ clients }) => {
                     currentUser={currentAdvisor}
                     activities={activities}
                     products={products}
-                    onUpdateClient={async (c) => { await db.saveClient(c); loadAdminData(); }}
+                    onUpdateClient={async (c) => { await db.saveClient(c, user.id); loadAdminData(); }}
                     onImport={handleClientImport}
                     onUpdateAdvisor={handleUpdateAdvisor}
                 />
@@ -258,6 +267,7 @@ const AdminTab: React.FC<AdminTabProps> = ({ clients }) => {
         </div>
 
         <DbRepairModal isOpen={showDbRepair} onClose={() => setShowDbRepair(false)} />
+        <DataHealthModal isOpen={showHealth} onClose={() => setShowHealth(false)} />
     </div>
   );
 };

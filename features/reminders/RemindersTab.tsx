@@ -115,7 +115,7 @@ const RemindersTab: React.FC = () => {
       setClients(prev => prev.map(c => c.id === updatedClient.id ? updatedClient : c)); 
       
       try {
-          await db.saveClient(updatedClient);
+          await db.saveClient(updatedClient, user?.id || '');
       } catch (e) {
           toast.error("Failed to save changes");
           refreshData(); // Revert on error
@@ -155,7 +155,7 @@ const RemindersTab: React.FC = () => {
       if (selectedClient?.id === updatedClient.id) setSelectedClient(updatedClient);
       
       try {
-          await db.saveClient(updatedClient);
+          await db.saveClient(updatedClient, user?.id || '');
           logActivity(updatedClient.id, 'sale_recorded', `Sale recorded via Reminders: ${sale.productName}`);
           toast.success("Sale recorded!");
       } catch (e) {
@@ -212,7 +212,7 @@ const RemindersTab: React.FC = () => {
         setClients(prev => prev.map(c => c.id === client.id ? updatedClient : c));
         if (selectedClient?.id === client.id) setSelectedClient(updatedClient);
 
-        await db.saveClient(updatedClient);
+        await db.saveClient(updatedClient, user?.id || '');
         toast.success("Marked as wished!");
     }
   };

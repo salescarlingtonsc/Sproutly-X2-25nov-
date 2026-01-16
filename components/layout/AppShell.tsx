@@ -23,12 +23,13 @@ interface AppShellProps {
   lastSavedTime?: Date | null;
   clients?: Client[];
   onLoadClient?: (client: Client) => void;
+  pendingSyncCount?: number;
 }
 
 const AppShell: React.FC<AppShellProps> = ({ 
   activeTab, setActiveTab, children, onPricingClick, onSaveClick,
   clientRef, clientName, saveStatus = 'idle', lastSavedTime,
-  clients = [], onLoadClient
+  clients = [], onLoadClient, pendingSyncCount = 0
 }) => {
   const { user, refreshProfile, signOut } = useAuth();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -99,7 +100,7 @@ const AppShell: React.FC<AppShellProps> = ({
                   )}
                   {saveStatus === 'pending_sync' && (
                     <span className="text-[10px] text-amber-600 font-black flex items-center gap-1 bg-amber-50 px-2.5 py-1 rounded-full border border-amber-200 shadow-sm">
-                      ⌛ OUTBOX PENDING
+                      ⌛ PENDING
                     </span>
                   )}
                   {saveStatus === 'error' && (
@@ -107,10 +108,18 @@ const AppShell: React.FC<AppShellProps> = ({
                       ⚠️ SYNC ERROR
                     </span>
                   )}
-                  {saveStatus === 'idle' && lastSavedTime && (
-                    <span className="text-[10px] text-slate-400 font-black uppercase tracking-widest">
-                      LAST SYNC: {fmtTime(lastSavedTime)}
-                    </span>
+                  {saveStatus === 'idle' && (
+                    <>
+                        {pendingSyncCount > 0 ? (
+                            <span className="text-[10px] text-amber-600 font-black flex items-center gap-1 bg-amber-50 px-2.5 py-1 rounded-full border border-amber-200 shadow-sm animate-pulse">
+                                ☁️ {pendingSyncCount} PENDING
+                            </span>
+                        ) : lastSavedTime ? (
+                            <span className="text-[10px] text-slate-400 font-black uppercase tracking-widest">
+                                LAST SYNC: {fmtTime(lastSavedTime)}
+                            </span>
+                        ) : null}
+                    </>
                   )}
                </div>
 
