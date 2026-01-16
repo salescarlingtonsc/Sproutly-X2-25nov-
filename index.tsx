@@ -1,8 +1,10 @@
-import React from 'react';
+import * as React from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
 import ErrorBoundary from './components/common/ErrorBoundary';
 import { AuthProvider } from './contexts/AuthContext';
+import { ToastProvider } from './contexts/ToastContext';
+import { DialogProvider } from './contexts/DialogContext';
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {
@@ -13,9 +15,13 @@ const root = createRoot(rootElement);
 root.render(
   <React.StrictMode>
     <ErrorBoundary>
-      <AuthProvider>
-        <App />
-      </AuthProvider>
+      <ToastProvider>
+        <DialogProvider>
+          <AuthProvider>
+            <App />
+          </AuthProvider>
+        </DialogProvider>
+      </ToastProvider>
     </ErrorBoundary>
   </React.StrictMode>
 );

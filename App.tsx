@@ -1,19 +1,25 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import * as React from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from './contexts/AuthContext';
 import { ClientProvider, useClient } from './contexts/ClientContext';
-import { ToastProvider, useToast } from './contexts/ToastContext';
-import { DialogProvider } from './contexts/DialogContext';
 import { AiProvider } from './contexts/AiContext';
+import { db } from './lib/db';
+import { Client } from './types';
+
+// Layout & Auth
 import AppShell from './components/layout/AppShell';
 import LandingPage from './features/auth/LandingPage';
 import AuthModal from './features/auth/AuthModal';
+import PricingModal from './features/subscription/PricingModal';
 import AiAssistant from './features/ai-chat/AiAssistant';
 
-// Feature Tabs
-import DisclaimerTab from './features/disclaimer/DisclaimerTab';
+// Tabs
 import DashboardTab from './features/dashboard/DashboardTab';
+import CrmTab from './features/crm/CrmTab';
+import RemindersTab from './features/reminders/RemindersTab';
+import MarketNewsTab from './features/market/MarketNewsTab';
+import PortfolioTab from './features/portfolio/PortfolioTab';
 import ProfileTab from './features/profile/ProfileTab';
-import LifeEventsTab from './features/life-events/LifeEventsTab';
 import ChildrenTab from './features/children/ChildrenTab';
 import CpfTab from './features/cpf/CpfTab';
 import CashflowTab from './features/planning/CashflowTab';
@@ -24,376 +30,217 @@ import WealthToolTab from './features/wealth/WealthToolTab';
 import PropertyCalculatorTab from './features/property/PropertyCalculatorTab';
 import VisionBoardTab from './features/vision/VisionBoardTab';
 import AnalyticsTab from './features/analytics/AnalyticsTab';
-import CrmTab from './features/crm/CrmTab';
-import AdminTab from './features/admin/AdminTab';
 import ReportTab from './features/report/ReportTab';
-import RemindersTab from './features/reminders/RemindersTab';
-import PortfolioTab from './features/portfolio/PortfolioTab';
-import MarketNewsTab from './features/market/MarketNewsTab';
+import AdminTab from './features/admin/AdminTab';
+import DisclaimerTab from './features/disclaimer/DisclaimerTab';
+import LifeEventsTab from './features/life-events/LifeEventsTab';
 
-// Logic
-import { db } from './lib/db';
-import { supabase } from './lib/supabase'; // iOS resume session restore
-import { Client } from './types';
-
-const AppInner: React.FC = () => {
-  const { user, isLoading } = useAuth();
-  const {
-    profile,
-    loadClient,
-    resetClient,
-    generateClientObject,
-    promoteToSaved,
-    clientId
+// --- Inner App Component (Inside Providers) ---
+const SproutlyApp = () => {
+  const { user, isLoading: authLoading } = useAuth();
+  
+  // Client Context Access
+  const { 
+    loadClient, 
+    generateClientObject, 
+    resetClient, 
+    lastUpdated, 
+    clientRef, 
+    profile, 
+    clientId 
   } = useClient();
-  const toast = useToast();
 
-  const [activeTab, setActiveTab] = useState('disclaimer');
-  const [isAuthModalOpen, setAuthModalOpen] = useState(false);
+  // App State
+  const [activeTab, setActiveTab] = useState('dashboard');
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [isPricingOpen, setIsPricingOpen] = useState(false);
+  
+  // Data State
   const [clients, setClients] = useState<Client[]>([]);
-  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'pending_sync' | 'error'>('idle');
-  const [lastSaved, setLastSaved] = useState<Date | null>(null);
-  const [pendingCount, setPendingCount] = useState(0);
+  const [loadingClients, setLoadingClients] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error' | 'pending_sync'>('idle');
+  const [lastSavedTime, setLastSavedTime] = useState<Date | null>(null);
+  const [pendingSyncCount, setPendingSyncCount] = useState(0);
 
-  const lastSavedJson = useRef<string>('');
-  const isSavingRef = useRef<boolean>(false);
-  const statusTimerRef = useRef<any>(null);
+  // --- 1. Load Clients on Auth ---
+  const fetchClients = useCallback(async () => {
+    // Always fetch from local first for speed
+    const localData = await db.getClients(user?.id);
+    setClients(localData);
+    setPendingSyncCount(db.getQueueCount());
+  }, [user]);
 
-  const updateQueueStatus = useCallback(() => {
-    setPendingCount(db.getQueueCount());
-  }, []);
-
-  const handleLoadClient = useCallback(
-    (client: Client, redirect: boolean = true) => {
-      loadClient(client);
-      if (redirect) setActiveTab('profile');
-
-      // Seed diff baseline so autosave doesn't spam
-      lastSavedJson.current = JSON.stringify(client || {});
-    },
-    [loadClient]
-  );
-
-  const loadClientsList = useCallback(async () => {
-    try {
-      const data = await db.getClients(user?.id);
-      setClients(Array.isArray(data) ? data : []);
-    } catch {
-      setClients([]);
-    } finally {
-      updateQueueStatus();
-    }
-  }, [user?.id, updateQueueStatus]);
-
-  // Initial load + realtime
   useEffect(() => {
-    if (!user || (user.status !== 'approved' && user.status !== 'active')) return;
+    fetchClients();
+    
+    // Subscribe to DB changes for real-time updates
+    const sub = db.subscribeToChanges(() => {
+      fetchClients();
+    });
 
-    loadClientsList();
-    const sub = db.subscribeToChanges(() => loadClientsList());
-
-    return () => {
-      sub?.unsubscribe();
+    // Also listen for local queue changes
+    const handleQueueChange = () => {
+       setPendingSyncCount(db.getQueueCount());
+       // Refresh client list to show sync status icons
+       db.getClients(user?.id).then(setClients);
     };
-  }, [user, loadClientsList]);
+    
+    window.addEventListener('sproutly:queue_changed', handleQueueChange);
+    // Poll queue every 5s just in case
+    const interval = setInterval(handleQueueChange, 5000);
 
-  // ✅ iOS Safari fix: session restore retry (handles AbortError when returning from background)
-  const restoreSupabaseSession = useCallback(async () => {
-    if (!supabase) return false;
-
-    const tryOnce = async () => {
-      const { data, error } = await supabase.auth.getSession();
-      if (error) {
-        if ((error as any)?.name === 'AbortError') return { ok: false, abort: true };
-        return { ok: false, abort: false };
-      }
-      return { ok: !!data.session, abort: false };
-    };
-
-    try {
-      // Try immediately
-      let r = await tryOnce();
-      if (r.ok) return true;
-
-      // If aborted, wait and retry a couple times
-      if (r.abort) {
-        await new Promise(res => setTimeout(res, 800));
-        r = await tryOnce();
-        if (r.ok) return true;
-
-        await new Promise(res => setTimeout(res, 2000));
-        r = await tryOnce();
-        if (r.ok) return true;
-      }
-
-      return false;
-    } catch (e: any) {
-      if (e?.name === 'AbortError') {
-        await new Promise(res => setTimeout(res, 800));
-        try {
-          const { data } = await supabase.auth.getSession();
-          return !!data.session;
-        } catch {
-          return false;
-        }
-      }
-      return false;
+    return () => { 
+      if(sub) sub.unsubscribe(); 
+      window.removeEventListener('sproutly:queue_changed', handleQueueChange);
+      clearInterval(interval);
     }
-  }, []);
+  }, [user, fetchClients]);
 
-  const handleSaveClient = useCallback(
-    async (isAutoSave = false) => {
-      if (!user || (user.status !== 'approved' && user.status !== 'active')) return;
-      if (isSavingRef.current) return;
-
-      const clientData = generateClientObject();
-      if (!clientData?.profile?.name) return;
-
-      // Diff check
-      const { lastUpdated: _ts, ...currentContent } = clientData;
-      let lastSavedContent: any = {};
-      try {
-        const parsed = JSON.parse(lastSavedJson.current || '{}');
-        const { lastUpdated: _oldTs, ...rest } = parsed || {};
-        lastSavedContent = rest;
-      } catch {}
-
-      if (JSON.stringify(currentContent) === JSON.stringify(lastSavedContent)) return;
-
-      isSavingRef.current = true;
-      setSaveStatus('saving');
-      if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
-
-      // Optimistic UI update
-      setClients(prev => {
-        const idx = prev.findIndex(c => c.id === clientData.id);
-        const optimisticRecord = { ...clientData, _isSynced: false };
-        if (idx >= 0) {
-          const copy = [...prev];
-          copy[idx] = optimisticRecord;
-          return copy;
-        }
-        return [...prev, optimisticRecord];
-      });
-
-      try {
-        const result = await db.saveClient(clientData, user.id);
-
-        if (!clientId) promoteToSaved(result.client);
-
-        setLastSaved(new Date());
-        updateQueueStatus();
-
-        // ✅ CRITICAL: update baseline EVEN IF local-only
-        lastSavedJson.current = JSON.stringify(result.client || clientData);
-
-        if (result.isLocalOnly) {
-          setSaveStatus('pending_sync');
-
-          if (result.error) {
-            console.warn('Save local-only due to error:', result.error);
-            if (!isAutoSave) toast.info(`Saved to device. Cloud pending: ${result.error}`);
-          } else {
-            if (!isAutoSave) toast.info('Saved to device. Cloud pending sync.');
+  // --- 2. Save Logic ---
+  const handleSave = async () => {
+    if (!user) return;
+    setSaveStatus('saving');
+    try {
+      const clientObj = generateClientObject();
+      const result = await db.saveClient(clientObj, user.id);
+      
+      setLastSavedTime(new Date());
+      
+      if (result.success) {
+        setSaveStatus(result.isLocalOnly ? 'pending_sync' : 'saved');
+        setPendingSyncCount(db.getQueueCount());
+        
+        // Update local list immediately to reflect changes
+        setClients(prev => {
+          const idx = prev.findIndex(c => c.id === clientObj.id);
+          if (idx >= 0) {
+            const next = [...prev];
+            next[idx] = result.client; 
+            return next;
           }
-        } else {
-          setSaveStatus('saved');
-          setClients(prev => prev.map(c => (c.id === result.client.id ? result.client : c)));
-          statusTimerRef.current = setTimeout(() => setSaveStatus('idle'), 2500);
+          return [...prev, result.client];
+        });
+        
+        if (!result.isLocalOnly) {
+            setTimeout(() => setSaveStatus('idle'), 2000);
         }
-      } catch (e: any) {
+      } else {
         setSaveStatus('error');
-        if (!isAutoSave) toast.error('Save failed: ' + (e?.message || 'Unknown error'));
-      } finally {
-        isSavingRef.current = false;
       }
-    },
-    [user, generateClientObject, clientId, promoteToSaved, updateQueueStatus, toast]
-  );
+    } catch (e) {
+      console.error("Save error", e);
+      setSaveStatus('error');
+    }
+  };
 
-  // Auto-save (slower helps mobile stability)
-  useEffect(() => {
-    const interval = setInterval(() => handleSaveClient(true), 15000);
-    return () => clearInterval(interval);
-  }, [handleSaveClient]);
+  // --- 3. Client Management ---
+  const handleLoadClient = (client: Client, redirect: boolean = false) => {
+    loadClient(client);
+    if (redirect) setActiveTab('profile');
+  };
 
-  // ✅ Resume flush logic (iOS friendly) — restore session first
-  useEffect(() => {
-    if (!user?.id) return;
+  const handleNewClient = () => {
+    resetClient();
+    setActiveTab('profile');
+  };
 
-    const triggerFlushSafe = async () => {
-      console.log('[SYNC] App visible, checking outbox...');
+  const handleDeleteClient = async (id: string) => {
+    await db.deleteClient(id);
+    setClients(prev => prev.filter(c => c.id !== id));
+    if (clientId === id) resetClient();
+  };
 
-      const ok = await restoreSupabaseSession();
-      if (!ok) return;
-
-      const flushed = await db.flushCloudQueue(user.id);
-      updateQueueStatus();
-
-      if (flushed) {
-        await loadClientsList();
-        setLastSaved(new Date());
+  const handleUpdateGlobalClient = async (updatedClient: Client) => {
+      // Optimistic update for lists
+      setClients(prev => prev.map(c => c.id === updatedClient.id ? updatedClient : c));
+      // Save to DB
+      if (user) {
+          const result = await db.saveClient(updatedClient, user.id);
+          setPendingSyncCount(db.getQueueCount());
+          if (result.isLocalOnly) setSaveStatus('pending_sync');
       }
+  };
 
-      if (db.getQueueCount() === 0) setSaveStatus('idle');
-      else setSaveStatus('pending_sync');
-    };
-
-    const onFocus = () => triggerFlushSafe();
-    const onPageShow = () => triggerFlushSafe();
-    const onOnline = () => triggerFlushSafe();
-    const onVisibility = () => {
-      if (document.visibilityState === 'visible') triggerFlushSafe();
-    };
-
-    window.addEventListener('focus', onFocus);
-    window.addEventListener('pageshow', onPageShow);
-    window.addEventListener('online', onOnline);
-    document.addEventListener('visibilitychange', onVisibility);
-
-    const flushInterval = setInterval(triggerFlushSafe, 20000);
-
-    updateQueueStatus();
-
-    return () => {
-      window.removeEventListener('focus', onFocus);
-      window.removeEventListener('pageshow', onPageShow);
-      window.removeEventListener('online', onOnline);
-      document.removeEventListener('visibilitychange', onVisibility);
-      clearInterval(flushInterval);
-    };
-  }, [user?.id, loadClientsList, updateQueueStatus, restoreSupabaseSession]);
-
-  if (isLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-50 font-bold text-slate-400 animate-pulse">
-        BOOTING QUANTUM CORE...
-      </div>
-    );
-  }
+  // --- 4. Render Logic ---
+  if (authLoading) return <div className="min-h-screen flex items-center justify-center bg-slate-50"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div></div>;
 
   if (!user) {
     return (
       <>
-        <LandingPage onLogin={() => setAuthModalOpen(true)} />
-        <AuthModal isOpen={isAuthModalOpen} onClose={() => setAuthModalOpen(false)} />
+        <LandingPage onLogin={() => setIsAuthModalOpen(true)} />
+        <AuthModal isOpen={isAuthModalOpen} onClose={() => setIsAuthModalOpen(false)} />
       </>
     );
   }
 
+  const renderContent = () => {
+    switch (activeTab) {
+      case 'dashboard': return <DashboardTab user={user} clients={clients} setActiveTab={setActiveTab} onLoadClient={handleLoadClient} onNewClient={handleNewClient} />;
+      case 'reminders': return <RemindersTab />;
+      case 'crm': return <CrmTab clients={clients} profile={profile} selectedClientId={clientId} newClient={handleNewClient} saveClient={handleSave} loadClient={handleLoadClient} deleteClient={handleDeleteClient} onRefresh={fetchClients} onUpdateGlobalClient={handleUpdateGlobalClient} />;
+      case 'market': return <MarketNewsTab />;
+      case 'portfolio': return <PortfolioTab clients={clients} onUpdateClient={handleUpdateGlobalClient} />;
+      case 'profile': return <ProfileTab clients={clients} onLoadClient={handleLoadClient} onNewProfile={handleNewClient} />;
+      case 'children': return <ChildrenTab />;
+      case 'cpf': return <CpfTab />;
+      case 'cashflow': return <CashflowTab />;
+      case 'insurance': return <InsuranceTab />;
+      case 'retirement': return <RetirementTab />;
+      case 'investor': return <InvestorTab />;
+      case 'wealth': return <WealthToolTab />;
+      case 'property': return <PropertyCalculatorTab />;
+      case 'vision': return <VisionBoardTab />;
+      case 'analytics': return <AnalyticsTab clients={clients} />;
+      case 'report': return <ReportTab />;
+      case 'admin': return <AdminTab clients={clients} />;
+      case 'disclaimer': return <DisclaimerTab />;
+      case 'life_events': return <LifeEventsTab />;
+      default: return <DashboardTab user={user} clients={clients} setActiveTab={setActiveTab} onLoadClient={handleLoadClient} onNewClient={handleNewClient} />;
+    }
+  };
+
+  const currentClientData = clientId ? {
+      ...generateClientObject(),
+      // Ensure latest context state is used
+      profile, 
+      id: clientId
+  } : null;
+
   return (
-    <AppShell
-      activeTab={activeTab}
-      setActiveTab={setActiveTab}
-      onLoginClick={() => setAuthModalOpen(true)}
-      onPricingClick={() => {}}
-      onSaveClick={() => handleSaveClient(false)}
-      clientRef={clientId ? profile.name : undefined}
-      clientName={profile.name}
-      saveStatus={saveStatus}
-      lastSavedTime={lastSaved}
-      clients={clients}
-      onLoadClient={handleLoadClient}
-      pendingSyncCount={pendingCount}
-    >
-      {activeTab === 'disclaimer' && <DisclaimerTab />}
+    <>
+      <AppShell
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+        onLoginClick={() => setIsAuthModalOpen(true)}
+        onPricingClick={() => setIsPricingOpen(true)}
+        onSaveClick={handleSave}
+        clientRef={clientRef || undefined}
+        clientName={profile.name || undefined}
+        saveStatus={saveStatus}
+        lastSavedTime={lastSavedTime}
+        clients={clients}
+        onLoadClient={handleLoadClient}
+        pendingSyncCount={pendingSyncCount}
+      >
+        {renderContent()}
+      </AppShell>
 
-      {activeTab === 'dashboard' && (
-        <DashboardTab
-          user={user}
-          clients={clients}
-          setActiveTab={setActiveTab}
-          onLoadClient={handleLoadClient}
-          onNewClient={() => {
-            resetClient();
-            lastSavedJson.current = '';
-            setActiveTab('profile');
-          }}
-        />
-      )}
-
-      {activeTab === 'profile' && (
-        <ProfileTab
-          clients={clients}
-          onLoadClient={handleLoadClient}
-          onNewProfile={() => {
-            resetClient();
-            lastSavedJson.current = '';
-          }}
-        />
-      )}
-
-      {activeTab === 'crm' && (
-        <CrmTab
-          clients={clients}
-          profile={profile}
-          selectedClientId={clientId}
-          newClient={() => {
-            resetClient();
-            lastSavedJson.current = '';
-            setActiveTab('profile');
-          }}
-          saveClient={() => handleSaveClient(false)}
-          loadClient={handleLoadClient}
-          deleteClient={async (id) => {
-            await db.deleteClient(id);
-            setClients(prev => prev.filter(c => c.id !== id));
-            updateQueueStatus();
-          }}
-          onRefresh={loadClientsList}
-          onUpdateGlobalClient={(c) => {
-            setClients(prev => prev.map(x => (x.id === c.id ? c : x)));
-            if (c.id === clientId) loadClient(c);
-            if (user?.id) db.saveClient(c, user.id);
-            updateQueueStatus();
-          }}
-        />
-      )}
-
-      {activeTab === 'admin' && <AdminTab clients={clients} />}
-      {activeTab === 'life_events' && <LifeEventsTab />}
-      {activeTab === 'children' && <ChildrenTab />}
-      {activeTab === 'cpf' && <CpfTab />}
-      {activeTab === 'cashflow' && <CashflowTab />}
-      {activeTab === 'insurance' && <InsuranceTab />}
-      {activeTab === 'retirement' && <RetirementTab />}
-      {activeTab === 'investor' && <InvestorTab />}
-      {activeTab === 'wealth' && <WealthToolTab />}
-      {activeTab === 'property' && <PropertyCalculatorTab />}
-      {activeTab === 'vision' && <VisionBoardTab />}
-      {activeTab === 'analytics' && <AnalyticsTab clients={clients} />}
-
-      {activeTab === 'portfolio' && (
-        <PortfolioTab
-          clients={clients}
-          onUpdateClient={(c) => {
-            setClients(prev => prev.map(x => (x.id === c.id ? c : x)));
-            if (user?.id) db.saveClient(c, user.id);
-            updateQueueStatus();
-          }}
-        />
-      )}
-
-      {activeTab === 'market' && <MarketNewsTab />}
-      {activeTab === 'reminders' && <RemindersTab />}
-      {activeTab === 'report' && <ReportTab />}
-
-      <AiAssistant currentClient={clientId ? generateClientObject() : null} />
-      <AuthModal isOpen={isAuthModalOpen} onClose={() => setAuthModalOpen(false)} />
-    </AppShell>
+      <AiAssistant currentClient={currentClientData} />
+      
+      <PricingModal isOpen={isPricingOpen} onClose={() => setIsPricingOpen(false)} />
+    </>
   );
 };
 
-const App: React.FC = () => (
-  <ToastProvider>
-    <DialogProvider>
-      <ClientProvider>
-        <AiProvider>
-          <AppInner />
-        </AiProvider>
-      </ClientProvider>
-    </DialogProvider>
-  </ToastProvider>
-);
+// --- Main Root Component ---
+const App = () => {
+  return (
+    <ClientProvider>
+      <AiProvider>
+        <SproutlyApp />
+      </AiProvider>
+    </ClientProvider>
+  );
+};
 
 export default App;
