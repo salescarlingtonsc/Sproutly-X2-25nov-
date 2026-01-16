@@ -5,6 +5,7 @@ const getEnv = (key: string) => {
   let val = '';
 
   try {
+    // Vite-like
     if (typeof import.meta !== 'undefined' && (import.meta as any).env) {
       val = (import.meta as any).env[key] || '';
     }
@@ -12,6 +13,7 @@ const getEnv = (key: string) => {
 
   if (!val) {
     try {
+      // Next/CRA-like
       if (typeof process !== 'undefined' && (process as any).env) {
         val = (process as any).env[key] || '';
       }
@@ -21,7 +23,7 @@ const getEnv = (key: string) => {
   return val;
 };
 
-// --- url/key with fallback (prevents "supabase = null" in preview) ---
+// --- URL/KEY with fallback (prevents "supabase=null" in preview) ---
 const rawUrl =
   getEnv('VITE_SUPABASE_URL') ||
   getEnv('REACT_APP_SUPABASE_URL') ||
@@ -58,6 +60,12 @@ const fetchWithTimeout: typeof fetch = async (input, init: any = {}) => {
   }
 };
 
+// ✅ helpful logs (won’t crash anything)
+try {
+  console.log('[SUPABASE] url:', SUPABASE_URL);
+  console.log('[SUPABASE] configured:', isConfigured);
+} catch {}
+
 export const supabase = isConfigured
   ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
       global: { fetch: fetchWithTimeout },
@@ -65,8 +73,6 @@ export const supabase = isConfigured
         persistSession: true,
         autoRefreshToken: true,
         detectSessionInUrl: true,
-
-        // IMPORTANT: stable auth storage for iOS app-switch
         storageKey: 'sproutly_auth_v1',
         storage: typeof window !== 'undefined' ? window.localStorage : undefined
       }

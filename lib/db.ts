@@ -4,13 +4,12 @@ import { Client } from '../types';
 /* =======================
    CONSTANTS
 ======================= */
-const DB_VERSION = 'db.ts v10 (abort+dequeue+no-single)';
+const DB_VERSION = 'db.ts v12 (global-timeout + clean flush write-once)';
 
 const LOCAL_STORAGE_KEY = 'sproutly_clients_v2';
 const CLOUD_QUEUE_KEY = 'sproutly_cloud_queue_v1';
 const DEBUG_KEY = 'sproutly_debug_logs_v1';
 
-const SYNC_TIMEOUT_MS = 12000;
 const MAX_QUEUE = 100;
 
 let IS_FLUSHING = false;
@@ -74,7 +73,7 @@ const emitQueueChanged = () => {
 
 const generateUUID = () =>
   (crypto as any)?.randomUUID?.() ??
-  'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+  'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c: string) => {
     const r = (Math.random() * 16) | 0;
     const v = c === 'x' ? r : (r & 0x3) | 0x8;
     return v.toString(16);
@@ -95,17 +94,15 @@ const writeQueue = (items: CloudQueueItem[]) => {
   } catch {}
 };
 
-const enqueue = (item: CloudQueueItem) => {
+const upsertQueueItem = (item: CloudQueueItem) => {
   if (!item.user_id) return;
+
   const q = readQueue();
   const idx = q.findIndex((x) => x.id === item.id);
   if (idx >= 0) q[idx] = item;
   else q.push(item);
-  writeQueue(q);
-};
 
-const dequeue = (id: string) => {
-  writeQueue(readQueue().filter((x) => x.id !== id));
+  writeQueue(q);
 };
 
 const markLocalSynced = (id: string) => {
@@ -122,30 +119,21 @@ const markLocalSynced = (id: string) => {
 };
 
 /* =======================
-   SAFE UPSERT (ABORTABLE)
+   SAFE UPSERT
+   - NO abortSignal here
+   - Timeout is enforced globally by supabase.ts fetchWithTimeout
 ======================= */
-async function upsertWithAbort(row: any) {
+async function upsertClientRow(row: any) {
   if (!supabase) throw new Error('Supabase not initialized');
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), SYNC_TIMEOUT_MS);
+  const { data, error } = await supabase
+    .from('clients')
+    .upsert(row)
+    // keep returning tiny to reduce payload
+    .select('id');
 
-  try {
-    // IMPORTANT:
-    // - avoid .single() to prevent weird returning behavior
-    // - just select minimal id
-    const { data, error } = await supabase
-      .from('clients')
-      .upsert(row)
-      .select('id')
-      // @ts-ignore
-      .abortSignal(controller.signal);
-
-    if (error) throw error;
-    return data;
-  } finally {
-    clearTimeout(timer);
-  }
+  if (error) throw error;
+  return data;
 }
 
 /* =======================
@@ -154,6 +142,7 @@ async function upsertWithAbort(row: any) {
 export const db = {
   /* ---------- diagnostics ---------- */
   getQueueCount: () => readQueue().length,
+
   getQueueDetails: () =>
     readQueue().map((q) => ({
       id: q.id,
@@ -223,7 +212,7 @@ export const db = {
       _isSynced: false
     };
 
-    // local write (always)
+    // local write first
     try {
       const local: Client[] = JSON.parse(localStorage.getItem(LOCAL_STORAGE_KEY) || '[]');
       const idx = local.findIndex((c) => c.id === id);
@@ -234,8 +223,8 @@ export const db = {
 
     const owner = (client as any)._ownerId || userId;
 
-    // enqueue (always)
-    enqueue({
+    // enqueue always
+    upsertQueueItem({
       id,
       user_id: owner,
       updated_at: now,
@@ -244,29 +233,33 @@ export const db = {
 
     debugLog(`[SAVE] queued ${id}`);
 
-    // cloud attempt
-    if (!isSupabaseConfigured() || !supabase || !navigator.onLine) {
-      return { success: true, isLocalOnly: true, client: clientData };
+    // if cannot cloud now, exit
+    if (!isSupabaseConfigured() || !supabase) {
+      return { success: true, isLocalOnly: true, client: clientData, error: 'Supabase not configured' };
+    }
+    if (!navigator.onLine) {
+      return { success: true, isLocalOnly: true, client: clientData, error: 'Offline' };
     }
 
     try {
       debugLog(`[UPSERT] start ${id}`);
 
-      await upsertWithAbort({
+      await upsertClientRow({
         id,
         user_id: owner,
         data: { ...clientData, _ownerId: owner },
         updated_at: now
       });
 
-      // ✅ drain queue immediately on success
-      dequeue(id);
+      // ✅ remove from queue (write-once approach)
+      const q = readQueue().filter((x) => x.id !== id);
+      writeQueue(q);
       markLocalSynced(id);
 
       debugLog(`[UPSERT] confirmed ${id}`);
       return { success: true, isLocalOnly: false, client: { ...clientData, _isSynced: true } };
     } catch (e: any) {
-      const msg = e?.name === 'AbortError' ? 'TIMEOUT_ABORTED' : e?.message || 'UPSERT_FAILED';
+      const msg = e?.name || e?.message || 'UPSERT_FAILED';
       debugLog(`[UPSERT] failed ${id} ${msg}`);
       return { success: true, isLocalOnly: true, client: clientData, error: msg };
     }
@@ -288,33 +281,36 @@ export const db = {
 
       debugLog(`[FLUSH] start ${q.length}`);
 
-      // sequential flush
+      const remaining: CloudQueueItem[] = [];
+
+      // ✅ sequential, and only write queue ONCE at end
       for (const item of q) {
         try {
           debugLog(`[FLUSH] upsert ${item.id}`);
 
-          await upsertWithAbort({
+          await upsertClientRow({
             id: item.id,
             user_id: item.user_id || userId,
             data: item.data,
             updated_at: item.updated_at
           });
 
-          // ✅ drain per success
-          dequeue(item.id);
           markLocalSynced(item.id);
-
           debugLog(`[FLUSH] ok ${item.id}`);
         } catch (e: any) {
-          const msg = e?.name === 'AbortError' ? 'TIMEOUT_ABORTED' : e?.message || 'FLUSH_FAILED';
+          const msg = e?.name || e?.message || 'FLUSH_FAILED';
           debugLog(`[FLUSH] fail ${item.id} ${msg}`);
-          break; // stop hammering
+
+          // keep current + rest
+          remaining.push(item, ...q.slice(q.indexOf(item) + 1));
+          break;
         }
       }
 
-      const left = readQueue().length;
-      debugLog(`[FLUSH] done remaining=${left}`);
-      return left === 0;
+      writeQueue(remaining);
+
+      debugLog(`[FLUSH] done remaining=${remaining.length}`);
+      return remaining.length === 0;
     } finally {
       IS_FLUSHING = false;
     }
@@ -323,7 +319,7 @@ export const db = {
   /* ---------- delete ---------- */
   deleteClient: async (id: string) => {
     // remove from queue
-    dequeue(id);
+    writeQueue(readQueue().filter((x) => x.id !== id));
 
     // local delete
     try {
@@ -334,18 +330,7 @@ export const db = {
     // cloud best effort
     if (isSupabaseConfigured() && supabase && navigator.onLine) {
       try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), SYNC_TIMEOUT_MS);
-        try {
-          await supabase
-            .from('clients')
-            .delete()
-            .eq('id', id)
-            // @ts-ignore
-            .abortSignal(controller.signal);
-        } finally {
-          clearTimeout(timer);
-        }
+        await supabase.from('clients').delete().eq('id', id);
       } catch {}
     }
   }
