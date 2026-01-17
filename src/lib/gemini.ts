@@ -200,7 +200,7 @@ export const generateDirectorBriefing = async (stats: any) => {
       model: 'gemini-3-pro-preview',
       contents: prompt,
       config: {
-        thinkingConfig: { thinkingBudget: 16000 },
+        thinkingConfig: { thinkingBudget: 32768 }, // Maxed out for deep reasoning
         responseMimeType: "application/json",
         responseSchema: {
             type: Type.OBJECT,

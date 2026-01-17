@@ -1,14 +1,15 @@
-
 import React, { useState, useEffect } from 'react';
 import { Client, WhatsAppTemplate } from '../../../types';
+import { interpolateTemplate } from '../../../lib/templates';
 
 interface WhatsAppModalProps {
   client: Client;
   templates: WhatsAppTemplate[]; // Receive templates as prop
   onClose: () => void;
+  onSend?: (templateLabel: string, messageBody: string) => void;
 }
 
-export const WhatsAppModal: React.FC<WhatsAppModalProps> = ({ client, templates, onClose }) => {
+export const WhatsAppModal: React.FC<WhatsAppModalProps> = ({ client, templates, onClose, onSend }) => {
   const [selectedTemplateId, setSelectedTemplateId] = useState(templates[0]?.id || 'custom');
   const [message, setMessage] = useState('');
 
@@ -21,24 +22,15 @@ export const WhatsAppModal: React.FC<WhatsAppModalProps> = ({ client, templates,
 
     const template = templates.find(t => t.id === selectedTemplateId);
     if (template) {
-      // Use existing content property
-      let text = template.content || ''; 
+      let content = template.content || '';
       
-      // Use full name as requested
-      text = text.replace('{{name}}', client.name).replace('{name}', client.name);
+      const name = client.name || client.profile?.name || '';
+      const apptDate = client.firstApptDate ? new Date(client.firstApptDate) : null;
       
-      // Handle time replacement if relevant
-      if (text.includes('{{time}}') || text.includes('{time}')) {
-          const time = client.firstApptDate 
-            ? new Date(client.firstApptDate).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})
-            : 'our scheduled time';
-          text = text.replace('{{time}}', time).replace('{time}', time);
-      }
-      
-      // Handle advisor replacement if relevant
-      if (text.includes('{{advisor}}')) {
-          text = text.replace('{{advisor}}', 'Advisor'); // Default placeholder
-      }
+      const dateStr = apptDate ? apptDate.toISOString() : '';
+      const timeStr = apptDate ? apptDate.toTimeString().split(' ')[0].substring(0, 5) : '';
+
+      const text = interpolateTemplate(content, name, dateStr, timeStr);
       
       setMessage(text);
     }
@@ -48,6 +40,12 @@ export const WhatsAppModal: React.FC<WhatsAppModalProps> = ({ client, templates,
     const phoneProp = client.phone || client.profile?.phone || '';
     const phoneNumber = phoneProp.replace(/[^0-9]/g, '');
     const url = `https://wa.me/${phoneNumber}?text=${encodeURIComponent(message)}`;
+    
+    if (onSend) {
+        const tpl = templates.find(t => t.id === selectedTemplateId);
+        onSend(tpl ? tpl.label : 'Custom Message', message);
+    }
+
     window.open(url, '_blank');
     onClose();
   };
@@ -71,7 +69,7 @@ export const WhatsAppModal: React.FC<WhatsAppModalProps> = ({ client, templates,
         <div className="p-6">
             <div className="mb-4">
                 <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Select Template</label>
-                <div className="grid grid-cols-2 gap-2 max-h-40 overflow-y-auto">
+                <div className="grid grid-cols-2 gap-2 max-h-40 overflow-y-auto custom-scrollbar">
                     {templates.map(t => (
                         <button
                             key={t.id}

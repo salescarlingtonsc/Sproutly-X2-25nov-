@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useMemo } from 'react';
 import { db } from '../../lib/db';
 import { Client, Product, Sale, ContactStatus } from '../../types';
@@ -174,6 +173,29 @@ const RemindersTab: React.FC = () => {
              contact.getFullYear() === today.getFullYear();
   };
 
+  // Just mark as wished without opening WhatsApp
+  const handleMarkWished = async (e: React.MouseEvent, client: Client) => {
+      e.stopPropagation();
+      const now = new Date().toISOString();
+      const updatedClient = {
+          ...client,
+          lastContact: now,
+          lastUpdated: now,
+          notes: [{
+              id: `wish_manual_${Date.now()}`,
+              content: 'Marked as Birthday Wished (Manual)',
+              date: now,
+              author: 'System'
+          }, ...(client.notes || [])]
+      };
+
+      setClients(prev => prev.map(c => c.id === client.id ? updatedClient : c));
+      if (selectedClient?.id === client.id) setSelectedClient(updatedClient);
+
+      await db.saveClient(updatedClient);
+      toast.success("Checked off!");
+  };
+
   const handleWhatsApp = async (e: React.MouseEvent, client: Client, isBirthday: boolean = false) => {
     e.stopPropagation();
     const phone = client.profile.phone?.replace(/\D/g, '') || '';
@@ -223,6 +245,7 @@ const RemindersTab: React.FC = () => {
   // --- FILTERS ---
 
   const birthdayReminders = filteredClients.filter(c => {
+    // Show ALL clients with a birthday this month (Removed stage filter)
     const checkBirthday = (dobStr?: string) => {
         if (!dobStr) return false;
         const d = new Date(dobStr);
@@ -370,22 +393,34 @@ const RemindersTab: React.FC = () => {
                                     )}
                                 </div>
                                 
-                                <button 
-                                    onClick={(e) => handleWhatsApp(e, c, isBirthdayCard)}
-                                    className={`w-6 h-6 flex items-center justify-center rounded transition-all shadow-sm shrink-0 self-center 
-                                        ${wished 
-                                            ? 'bg-emerald-100 text-emerald-600 cursor-default' 
-                                            : 'bg-slate-50 text-slate-400 hover:bg-[#25D366] hover:text-white opacity-0 group-hover:opacity-100'
-                                        }`}
-                                    title={wished ? "Already Wished" : "Quick WhatsApp"}
-                                    disabled={wished}
-                                >
-                                    {wished ? (
-                                        <span className="text-xs font-bold">✓</span>
-                                    ) : (
-                                        <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path d="M12.031 6.172c-3.181 0-5.767 2.586-5.768 5.766-.001 1.298.38 2.27 1.025 3.312l-.542 2.01 2.036-.53c.96.514 1.95.787 3.25.788h.003c3.181 0 5.767-2.586 5.768-5.766 0-3.18-2.587-5.766-5.768-5.766h-.004zm3.003 8.3c-.12.33-.7.63-1.01.69-.24.05-.55.08-1.53-.33-1.3-.54-2.12-1.85-2.19-1.94-.06-.09-.54-.72-.54-1.37s.34-.97.46-1.1c.12-.13.27-.16.36-.16s.18.01.26.01.21-.04.33.25c.12.29.41 1.01.45 1.09.04.08.07.17.01.28-.06.11-.09.18-.18.29-.06.11-.09.18-.18.29-.09.11-.18.23-.26.3-.09.08-.18.17-.08.34.1.17.44.73.94 1.18.64.57 1.18.75 1.35.83.17.08.27.07.37-.04.1-.11.43-.51.55-.68.12-.17.23-.15.39-.09.16.06 1.03.49 1.2.58.17.09.28.14.32.2.04.06.04.35-.08.68z"/></svg>
+                                <div className="flex flex-col gap-1 items-center justify-center shrink-0 self-center">
+                                    {isBirthdayCard && (
+                                        <button 
+                                            onClick={(e) => handleMarkWished(e, c)}
+                                            className={`w-6 h-6 flex items-center justify-center rounded transition-all shadow-sm
+                                                ${wished 
+                                                    ? 'bg-emerald-100 text-emerald-600 border border-emerald-200' 
+                                                    : 'bg-white border border-slate-200 text-slate-300 hover:border-emerald-400 hover:text-emerald-500'
+                                                }`}
+                                            title="Mark as Wished (No Message)"
+                                            disabled={wished}
+                                        >
+                                            {wished ? "✓" : "○"}
+                                        </button>
                                     )}
-                                </button>
+                                    <button 
+                                        onClick={(e) => handleWhatsApp(e, c, isBirthdayCard)}
+                                        className={`w-6 h-6 flex items-center justify-center rounded transition-all shadow-sm 
+                                            ${wished 
+                                                ? 'bg-slate-50 text-slate-300 cursor-default' 
+                                                : 'bg-slate-50 text-slate-400 hover:bg-[#25D366] hover:text-white group-hover:opacity-100'
+                                            }`}
+                                        title={wished ? "Already Wished" : "Quick WhatsApp"}
+                                        disabled={wished}
+                                    >
+                                        <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path d="M12.031 6.172c-3.181 0-5.767 2.586-5.768 5.766-.001 1.298.38 2.27 1.025 3.312l-.542 2.01 2.036-.53c.96.514 1.95.787 3.25.788h.003c3.181 0 5.767-2.586 5.768-5.766 0-3.18-2.587-5.766-5.768-5.766h-.004zm3.003 8.3c-.12.33-.7.63-1.01.69-.24.05-.55.08-1.53-.33-1.3-.54-2.12-1.85-2.19-1.94-.06-.09-.54-.72-.54-1.37s.34-.97.46-1.1c.12-.13.27-.16.36-.16s.18.01.26.01.21-.04.33.25c.12.29.41 1.01.45 1.09.04.08.07.17.01.28-.06.11-.09.18-.18.29-.06.11-.09.18-.18.29-.09.11-.18.23-.26.3-.09.08-.18.17-.08.34.1.17.44.73.94 1.18.64.57 1.18.75 1.35.83.17.08.27.07.37-.04.1-.11.43-.51.55-.68.12-.17.23-.15.39-.09.16.06 1.03.49 1.2.58.17.09.28.14.32.2.04.06.04.35-.08.68z"/></svg>
+                                    </button>
+                                </div>
                             </div>
                         );
                     })}

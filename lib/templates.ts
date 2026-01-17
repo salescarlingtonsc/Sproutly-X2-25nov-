@@ -1,4 +1,3 @@
-
 import { convert24to12 } from './helpers';
 
 // Helper to format date into "Saturday ( 10 Dec @ 12 pm )"
@@ -32,7 +31,7 @@ export const DEFAULT_TEMPLATES = [
   {
     id: 'default_zoom',
     label: 'Zoom Confirmation',
-    content: "Hey {name}, I’m reaching out from Sproutly. Confirming our zoom call on *{formatted_appt}*.\n\nLink: https://zoom.us/j/sproutly-meeting 😊👍🏻"
+    content: "Hi {name}, I’m Chuan Seng here from SingCapital. As Arranged earlier,\n\nThe zoom call will be on *{formatted_appt}* below is the link for the zoom 😊👍🏻\n\nhttps://us06web.zoom.us/j/2300107843\n\n👉🏻 This Zoom session, you acknowledge and give your consent to the discussion in accordance with PDPA guidelines."
   },
   {
     id: 'default_review',

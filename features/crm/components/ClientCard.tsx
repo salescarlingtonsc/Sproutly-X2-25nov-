@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, memo } from 'react';
 import { Client, FamilyMember, Policy, UserProfile, Sale, Product, ContactStatus } from '../../../types';
-import { analyzeClientMomentum, generateInvestmentReport } from '../../../lib/gemini';
+import { analyzeClientMomentum, generateInvestmentReport, polishContent } from '../../../lib/gemini';
 import { DEFAULT_SETTINGS } from '../../../lib/config';
 import { FinancialTools } from './FinancialTools';
 import { fmtDateTime, fmtSGD, toNum } from '../../../lib/helpers';
@@ -10,7 +10,10 @@ import { useDialog } from '../../../contexts/DialogContext';
 import { db } from '../../../lib/db';
 import { AddSaleModal } from './AddSaleModal';
 import ClosureDeckModal from './ClosureDeckModal'; 
-import { adminDb } from '../../../lib/db/admin'; 
+import { adminDb } from '../../../lib/db/admin';
+import { WhatsAppModal } from './WhatsAppModal';
+import { DEFAULT_TEMPLATES } from '../../../lib/templates';
+import { dbTemplates } from '../../../lib/db/templates';
 
 interface ClientCardProps {
   client: Client;
@@ -107,6 +110,13 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
   const [editingSale, setEditingSale] = useState<Sale | null>(null);
   const [showClosureDeck, setShowClosureDeck] = useState(false);
 
+  // WhatsApp Logic
+  const [showWhatsApp, setShowWhatsApp] = useState(false);
+  const [waTemplates, setWaTemplates] = useState(DEFAULT_TEMPLATES);
+
+  // Polishing State
+  const [isPolishing, setIsPolishing] = useState(false);
+
   // Permission Logic
   const isOwner = client._ownerId === currentUser?.id;
   const canDeleteClient = 
@@ -148,6 +158,21 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
     const result = await analyzeClientMomentum(client);
     onUpdate({ ...client, momentumScore: result.score, nextAction: result.nextAction });
     setIsAnalyzing(false);
+  };
+
+  const handlePolishGoals = async () => {
+      if (!client.goals) return;
+      setIsPolishing(true);
+      try {
+          const polished = await polishContent(client.goals, 'professional');
+          // Using handleUpdateField wrapper logic directly here for simplicity since we have access
+          onUpdate({ ...client, goals: polished });
+          toast.success("Goals polished by AI");
+      } catch (e) {
+          toast.error("Failed to polish");
+      } finally {
+          setIsPolishing(false);
+      }
   };
 
   const generateUniqueId = (prefix: string) => `${prefix}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -375,17 +400,24 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
   const handleWhatsApp = (e: React.MouseEvent) => {
     e.stopPropagation();
     const rawPhone = client.phone || client.profile?.phone || '';
-    let cleanPhone = rawPhone.replace(/\D/g, '');
-    if (cleanPhone.length === 8) cleanPhone = '65' + cleanPhone;
-    const firstName = (client.name || '').split(' ')[0] || 'there';
-    const template = `Hi ${firstName}, it's Sproutly. I found an opportunity that matches your portfolio. Do you have 5 mins?`;
-    const encodedText = encodeURIComponent(template);
-    const url = cleanPhone.length >= 8 ? `https://wa.me/${cleanPhone}?text=${encodedText}` : `https://wa.me/?text=${encodedText}`;
+    if (!rawPhone) {
+        toast.error("No phone number found");
+        return;
+    }
     
+    // Load custom templates dynamically when opening the modal
+    dbTemplates.getTemplates().then(custom => {
+        setWaTemplates([...DEFAULT_TEMPLATES, ...custom]);
+    });
+    
+    setShowWhatsApp(true);
+  };
+
+  const onWhatsAppSent = (label: string, content: string) => {
     const now = new Date().toISOString();
     const logEntry = {
         id: generateUniqueId('chat'),
-        content: `Opened WhatsApp Chat`,
+        content: `Sent WhatsApp (${label})`,
         date: now,
         author: 'Me'
     };
@@ -395,20 +427,35 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
         lastUpdated: now,
         notes: [logEntry, ...(client.notes || [])]
     });
-    logActivity(client.id, 'message', 'WhatsApp chat initiated');
-    window.open(url, '_blank');
+    logActivity(client.id, 'message', 'WhatsApp sent', { template: label });
   };
 
   const handleCalendar = (e: React.MouseEvent) => {
     e.stopPropagation();
+    
+    // Construct rich description for calendar event
+    const phone = client.phone || client.profile?.phone || '-';
+    const currentCampaign = campaignName || '-'; 
+    const context = client.goals || 'No specific goals recorded.';
+
+    const description = `Name: ${client.name}
+Phone: ${phone}
+Campaign: ${currentCampaign}
+
+--- Context ---
+${context}`.trim();
+
+    const title = `Meeting: ${client.name}`;
+
     let url = '';
     if (client.firstApptDate) {
         const startDate = new Date(client.firstApptDate);
         const endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
         const fmt = (d: Date) => d.toISOString().replace(/-|:|\.\d\d\d/g, "");
-        url = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=Meeting+with+${encodeURIComponent(client.name)}&details=Sproutly+Client+Review&dates=${fmt(startDate)}/${fmt(endDate)}`;
+        
+        url = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(title)}&details=${encodeURIComponent(description)}&dates=${fmt(startDate)}/${fmt(endDate)}`;
     } else {
-        url = `https://calendar.google.com/calendar/u/0/r/eventedit?text=Meeting+with+${encodeURIComponent(client.name)}&details=Review+portfolio+performance`;
+        url = `https://calendar.google.com/calendar/u/0/r/eventedit?text=${encodeURIComponent(title)}&details=${encodeURIComponent(description)}`;
     }
     window.open(url, '_blank');
   };
@@ -529,8 +576,17 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
                           </div>
                       </div>
 
-                      <div className="bg-white p-3 rounded-xl border border-indigo-100 shadow-sm">
-                          <label className="text-[9px] font-black text-indigo-400 uppercase tracking-widest block mb-2">"Why I want to win?" (Context)</label>
+                      <div className="bg-white p-3 rounded-xl border border-indigo-100 shadow-sm relative">
+                          <div className="flex justify-between items-center mb-2">
+                              <label className="text-[9px] font-black text-indigo-400 uppercase tracking-widest">"Why I want to win?" (Context)</label>
+                              <button 
+                                  onClick={handlePolishGoals} 
+                                  disabled={isPolishing || !client.goals}
+                                  className="text-[9px] font-bold text-indigo-500 hover:text-indigo-700 flex items-center gap-1 disabled:opacity-50 transition-colors"
+                              >
+                                  {isPolishing ? <span className="animate-spin">✨</span> : <span>✨ AI Polish</span>}
+                              </button>
+                          </div>
                           <textarea value={client.goals} onChange={(e) => handleUpdateField('goals', e.target.value)} className="w-full text-xs font-medium text-slate-700 bg-transparent outline-none resize-none placeholder-slate-300" rows={3} placeholder="Client context..." />
                       </div>
                   </div>
@@ -579,6 +635,30 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
                   <button onClick={() => window.open(`mailto:${client.email}?subject=Investment Review&body=${encodeURIComponent(reportContent)}`)} className="flex-1 py-1.5 bg-indigo-600 text-white text-xs font-bold rounded hover:bg-indigo-700">Email Client</button>
               </div>
           </div>
+      )}
+
+      {showWhatsApp && (
+          <WhatsAppModal 
+             client={client}
+             templates={waTemplates}
+             onClose={() => setShowWhatsApp(false)}
+             onSend={(label, content) => {
+                const now = new Date().toISOString();
+                const logEntry = {
+                    id: generateUniqueId('chat'),
+                    content: `Sent WhatsApp (${label})`,
+                    date: now,
+                    author: 'Me'
+                };
+                onUpdate({ 
+                    ...client, 
+                    lastContact: now,
+                    lastUpdated: now,
+                    notes: [logEntry, ...(client.notes || [])]
+                });
+                logActivity(client.id, 'message', 'WhatsApp sent', { template: label });
+             }}
+          />
       )}
 
       {editingSale && (
