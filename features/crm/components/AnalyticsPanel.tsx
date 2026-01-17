@@ -1,8 +1,7 @@
-
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, PieChart, Pie } from 'recharts';
 import { Client, Stage } from '../../../types';
-import { fmtSGD } from '../../../lib/helpers';
+import { fmtSGD, toNum } from '../../../lib/helpers';
 import { db } from '../../../lib/db';
 
 interface AnalyticsPanelProps {
@@ -41,8 +40,13 @@ export const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({
       });
   }, [clients, advisorFilter]);
 
-  const totalPipeline = useMemo(() => filteredPanelClients.reduce((acc, c) => acc + (c.value || 0), 0), [filteredPanelClients]);
-  const activeLeads = useMemo(() => filteredPanelClients.filter(c => !['client', 'case_closed', 'not_keen'].includes(c.followUp.status || '')), [filteredPanelClients]);
+  const totalPipeline = useMemo(() => filteredPanelClients.reduce((acc, c) => acc + toNum(c.value), 0), [filteredPanelClients]);
+  
+  const activeLeads = useMemo(() => filteredPanelClients.filter(c => {
+      const status = c.followUp?.status || 'new'; // Default to new if missing
+      return !['client', 'case_closed', 'not_keen'].includes(status);
+  }), [filteredPanelClients]);
+  
   const activeLeadsCount = activeLeads.length;
   const avgDeal = activeLeadsCount > 0 ? totalPipeline / activeLeadsCount : 0;
 
@@ -55,7 +59,7 @@ export const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({
   const pipelineData = useMemo(() => Object.values(Stage).map((stage) => {
     const stageStr = stage as string;
     const subset = filteredPanelClients.filter(c => c.stage === stageStr);
-    const val = viewMetric === 'value' ? subset.reduce((sum, c) => sum + (c.value || 0), 0) : subset.length;
+    const val = viewMetric === 'value' ? subset.reduce((sum, c) => sum + toNum(c.value), 0) : subset.length;
     return { name: stageStr.split(' ')[0], fullName: stageStr, value: val };
   }), [filteredPanelClients, viewMetric]);
 

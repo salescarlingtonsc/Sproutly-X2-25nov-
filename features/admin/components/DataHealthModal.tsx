@@ -107,6 +107,34 @@ const DataHealthModal: React.FC<DataHealthModalProps> = ({ isOpen, onClose }) =>
     }
   };
 
+  const handleResyncAll = async () => {
+      if (!user) return;
+      if (!window.confirm(`This will force-upload all ${localCount} clients to the server to ensure consistency. Continue?`)) return;
+      
+      setFlushing(true);
+      try {
+          // 1. Get all local
+          const all = await db.getClients(user.id);
+          
+          // 2. Mark as dirty
+          const dirty = all.map(c => ({
+              ...c,
+              _isSynced: false,
+              lastUpdated: new Date().toISOString()
+          }));
+          
+          // 3. Bulk Queue
+          await db.createClientsBulk(dirty, user.id);
+          
+          toast.success(`Started upload for ${dirty.length} clients...`);
+          await runHealthScan();
+      } catch (e: any) {
+          toast.error("Resync failed: " + e.message);
+      } finally {
+          setFlushing(false);
+      }
+  };
+
   const handleRunProbe = async () => {
       if (isProbing) return;
       setIsProbing(true);
@@ -131,7 +159,7 @@ const DataHealthModal: React.FC<DataHealthModalProps> = ({ isOpen, onClose }) =>
       }
   };
 
-  const handleSessionReset = (e?: React.MouseEvent) => {
+  const handleSessionReset = (e?: React.MouseEvent | React.TouchEvent) => {
       if (e) {
           e.preventDefault();
           e.stopPropagation();
@@ -139,34 +167,37 @@ const DataHealthModal: React.FC<DataHealthModalProps> = ({ isOpen, onClose }) =>
       
       console.log("Manual Session Reset Triggered");
 
-      if (!window.confirm("This will clear your local login session and reload the page. You will need to log in again. Proceed?")) return;
-      
-      try {
-          // Collect keys first to avoid index shifting bugs during removal
-          const keysToRemove: string[] = [];
-          for (let i = 0; i < localStorage.length; i++) {
-              const key = localStorage.key(i);
-              // Target Supabase keys (sb-*), App Auth keys (sproutly_auth), and User Cache
-              if (key && (
-                  key.startsWith('sb-') || 
-                  key.includes('sproutly_auth') || 
-                  key.includes('supabase') ||
-                  key.includes('sproutly.user_cache')
-              )) {
-                  keysToRemove.push(key);
+      // Detach from event loop to ensure UI renders first
+      setTimeout(() => {
+          if (!window.confirm("This will clear your local login session and reload the page. You will need to log in again. Proceed?")) return;
+          
+          try {
+              // Collect keys first to avoid index shifting bugs during removal
+              const keysToRemove: string[] = [];
+              for (let i = 0; i < localStorage.length; i++) {
+                  const key = localStorage.key(i);
+                  // Target Supabase keys (sb-*), App Auth keys (sproutly_auth), and User Cache
+                  if (key && (
+                      key.startsWith('sb-') || 
+                      key.includes('sproutly_auth') || 
+                      key.includes('supabase') ||
+                      key.includes('sproutly.user_cache')
+                  )) {
+                      keysToRemove.push(key);
+                  }
               }
+              
+              keysToRemove.forEach(k => localStorage.removeItem(k));
+              // Clear session storage as well for good measure
+              sessionStorage.clear();
+              
+              // Force reload
+              window.location.reload();
+          } catch (err) {
+              console.error("Session reset error", err);
+              alert("Automatic reset failed. Please clear browser cookies/data manually.");
           }
-          
-          keysToRemove.forEach(k => localStorage.removeItem(k));
-          // Clear session storage as well for good measure
-          sessionStorage.clear();
-          
-          // Force reload
-          window.location.reload();
-      } catch (err) {
-          console.error("Session reset error", err);
-          alert("Automatic reset failed. Please clear browser cookies/data manually.");
-      }
+      }, 50);
   };
 
   const handleBackup = async () => {
@@ -188,10 +219,9 @@ const DataHealthModal: React.FC<DataHealthModalProps> = ({ isOpen, onClose }) =>
 
   // Status Logic
   const pendingCount = queueItems.length;
-  // Healthy if: Queue is empty AND (Local Count - Unsynced) roughly equals Cloud Count
-  // We allow a small drift due to network lag or caching, but generally they should match.
   const syncedLocalCount = localCount - unsyncedLocal;
   const isHealthy = pendingCount === 0 && (cloudCount !== null && Math.abs(syncedLocalCount - cloudCount) < 2);
+  const isDesync = !isHealthy && queueItems.length === 0 && cloudCount !== null;
 
   return (
     <Modal
@@ -248,15 +278,27 @@ const DataHealthModal: React.FC<DataHealthModalProps> = ({ isOpen, onClose }) =>
               <h4 className="font-bold text-slate-700 text-xs uppercase tracking-wide">
                   Outbox Queue ({queueItems.length})
               </h4>
-              {queueItems.length > 0 && (
-                 <Button size="sm" variant="accent" onClick={handleForceFlush} isLoading={flushing}>Force Push Now</Button>
-              )}
+              <div className="flex gap-2">
+                  {isDesync && queueItems.length === 0 && (
+                     <Button size="sm" variant="danger" onClick={handleResyncAll} isLoading={flushing} leftIcon="☁️">Resync All</Button>
+                  )}
+                  {queueItems.length > 0 && (
+                     <Button size="sm" variant="accent" onClick={handleForceFlush} isLoading={flushing}>Force Push Now</Button>
+                  )}
+              </div>
            </div>
            
            <div className="bg-slate-50 rounded-xl border border-slate-200 overflow-hidden max-h-40 overflow-y-auto">
               {queueItems.length === 0 ? (
                  <div className="p-6 text-center text-slate-400 text-xs italic">
-                    Queue empty. All changes sent.
+                    {isDesync ? (
+                        <div className="text-amber-600 font-bold">
+                            ⚠️ Discrepancy detected. Local ({localCount}) ≠ Cloud ({cloudCount}).
+                            <br/>Click "Resync All" to upload local data.
+                        </div>
+                    ) : (
+                        "Queue empty. All changes sent."
+                    )}
                  </div>
               ) : (
                  <table className="w-full text-left text-xs">
@@ -282,20 +324,20 @@ const DataHealthModal: React.FC<DataHealthModalProps> = ({ isOpen, onClose }) =>
         </div>
 
         {/* CONNECTIVITY PROBE */}
-        <div className="border-t border-slate-100 pt-4 relative z-10">
+        <div className="border-t border-slate-100 pt-4 relative z-10 isolate">
             <div className="flex justify-between items-center mb-3">
                 <h4 className="font-bold text-slate-700 text-xs uppercase tracking-wide">Connectivity Probe</h4>
-                <div className="flex gap-2 items-center relative z-20 pointer-events-auto">
+                <div className="flex gap-2 items-center relative z-[100] pointer-events-auto">
                     {showSessionFix && (
-                        <Button 
-                            variant="danger"
-                            size="sm"
+                        <button 
+                            type="button"
                             onClick={handleSessionReset}
-                            className="shadow-lg ring-2 ring-red-200 animate-none z-50 relative"
-                            leftIcon="🔧"
+                            onTouchEnd={handleSessionReset}
+                            className="bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded-lg text-xs font-bold shadow-md ring-2 ring-red-100 transition-all active:scale-95 relative cursor-pointer flex items-center gap-1 z-[9999]"
+                            style={{ isolation: 'isolate', pointerEvents: 'auto' }}
                         >
-                            Fix Stuck Session
-                        </Button>
+                            <span>🔧</span> Fix Stuck Session
+                        </button>
                     )}
                     <Button size="sm" variant="secondary" onClick={handleRunProbe} isLoading={isProbing}>Run Write Test</Button>
                 </div>

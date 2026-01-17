@@ -1,4 +1,3 @@
-
 import React, { useState, useMemo, useEffect } from 'react';
 import { Client, Product, WhatsAppTemplate, ContactStatus, Sale } from '../../types';
 import { AnalyticsPanel } from './components/AnalyticsPanel';
@@ -70,6 +69,11 @@ const CrmTab: React.FC<CrmTabProps> = ({
 
   const activeDetailClient = useMemo(() => clients.find(c => c.id === activeDetailClientId) || null, [clients, activeDetailClientId]);
 
+  // AUTO-REFRESH ON MOUNT
+  useEffect(() => {
+      onRefresh();
+  }, []);
+
   useEffect(() => {
     if (!supabase) return;
     supabase.from('profiles').select('id, name, email').then(({ data }) => {
@@ -136,8 +140,16 @@ const CrmTab: React.FC<CrmTabProps> = ({
          </div>
       </div>
 
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-          {viewMode === 'list' ? (
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden min-h-[200px]">
+          {filteredClients.length === 0 && (
+              <div className="flex flex-col items-center justify-center p-12 text-center">
+                  <div className="text-4xl mb-4 opacity-20 grayscale">📭</div>
+                  <h3 className="text-slate-800 font-bold">No Clients Found</h3>
+                  <p className="text-slate-500 text-sm mb-6">Your pipeline looks empty. Try syncing or adding a new client.</p>
+                  <Button onClick={onRefresh} variant="secondary" leftIcon="⚡">Force Data Reload</Button>
+              </div>
+          )}
+          {filteredClients.length > 0 && viewMode === 'list' ? (
               <table className="w-full text-left text-sm">
                   <thead className="bg-slate-50 border-b border-slate-100">
                       <tr>
@@ -167,7 +179,9 @@ const CrmTab: React.FC<CrmTabProps> = ({
                       ))}
                   </tbody>
               </table>
-          ) : (
+          ) : null}
+          
+          {filteredClients.length > 0 && viewMode === 'cards' && (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 p-6">
                   {filteredClients.map(client => (
                       <ClientCard key={client.id} client={client} onUpdate={onUpdateGlobalClient} onDelete={deleteClient} />
