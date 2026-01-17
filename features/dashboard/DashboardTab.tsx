@@ -151,6 +151,9 @@ const DashboardTab: React.FC<DashboardTabProps> = ({ user, clients, onNewClient,
       const apptMetList: any[] = [];
 
       filteredClients.forEach(c => {
+          const clientName = c.profile?.name || c.name || 'Unnamed';
+          const clientPhone = c.profile?.phone || c.phone || '-';
+
           (c.sales || []).forEach(sale => {
               const d = new Date(sale.date);
               if (d >= start && d <= end) {
@@ -161,7 +164,7 @@ const DashboardTab: React.FC<DashboardTabProps> = ({ user, clients, onNewClient,
                   commission += comm;
                   const item = { 
                       id: sale.id, 
-                      name: c.profile.name, 
+                      name: clientName, 
                       date: sale.date, 
                       value: comm, 
                       subtitle: `${sale.productName} ($${sale.premiumAmount})`,
@@ -175,21 +178,21 @@ const DashboardTab: React.FC<DashboardTabProps> = ({ user, clients, onNewClient,
               const d = new Date(c.milestones.contactedAt);
               if (d >= start && d <= end) {
                   calls++;
-                  callList.push({ id: c.id, name: c.profile.name, date: c.milestones.contactedAt, value: 0, subtitle: c.phone, client: c });
+                  callList.push({ id: c.id, name: clientName, date: c.milestones.contactedAt, value: 0, subtitle: clientPhone, client: c });
               }
           }
           if (c.milestones?.appointmentSetAt) {
               const d = new Date(c.milestones.appointmentSetAt);
               if (d >= start && d <= end) {
                   apptsSet++;
-                  apptSetList.push({ id: c.id, name: c.profile.name, date: c.milestones.appointmentSetAt, value: 0, subtitle: 'Appointment Set', client: c });
+                  apptSetList.push({ id: c.id, name: clientName, date: c.milestones.appointmentSetAt, value: 0, subtitle: 'Appointment Set', client: c });
               }
           }
           if (c.milestones?.appointmentMetAt) {
               const d = new Date(c.milestones.appointmentMetAt);
               if (d >= start && d <= end) {
                   apptsMet++;
-                  apptMetList.push({ id: c.id, name: c.profile.name, date: c.milestones.appointmentMetAt, value: 0, subtitle: 'Appointment Met', client: c });
+                  apptMetList.push({ id: c.id, name: clientName, date: c.milestones.appointmentMetAt, value: 0, subtitle: 'Appointment Met', client: c });
               }
           }
       });

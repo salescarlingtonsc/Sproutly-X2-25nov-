@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Client } from '../../types';
@@ -24,10 +23,11 @@ const CommandBar: React.FC<CommandBarProps> = ({ isOpen, onClose, clients, onSel
     }
   }, [isOpen]);
 
-  const filteredClients = clients.filter(c => 
-    c.profile.name.toLowerCase().includes(query.toLowerCase()) || 
-    (c.profile.phone || '').includes(query)
-  ).slice(0, 5);
+  const filteredClients = clients.filter(c => {
+    const name = c.profile?.name || c.name || '';
+    const phone = c.profile?.phone || c.phone || '';
+    return name.toLowerCase().includes(query.toLowerCase()) || phone.includes(query);
+  }).slice(0, 5);
 
   const actions = [
     { id: 'new_client', label: 'Create New Client', icon: '＋' },
@@ -101,8 +101,8 @@ const CommandBar: React.FC<CommandBarProps> = ({ isOpen, onClose, clients, onSel
                 <div className="flex items-center gap-4">
                   <span className="text-lg w-6 flex justify-center opacity-70">{item.type === 'action' ? item.icon : '👤'}</span>
                   <div>
-                    <div className="text-sm font-bold">{item.type === 'action' ? item.label : item.profile.name}</div>
-                    {item.type === 'client' && <div className="text-[10px] opacity-50 uppercase font-black tracking-tighter">{item.profile.phone || item.profile.email}</div>}
+                    <div className="text-sm font-bold">{item.type === 'action' ? item.label : (item.profile?.name || item.name)}</div>
+                    {item.type === 'client' && <div className="text-[10px] opacity-50 uppercase font-black tracking-tighter">{item.profile?.phone || item.profile?.email || '-'}</div>}
                   </div>
                 </div>
                 {idx === activeIndex && <span className="text-[10px] font-black opacity-30 tracking-widest uppercase">Select ↵</span>}

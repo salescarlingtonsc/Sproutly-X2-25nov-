@@ -1,4 +1,3 @@
-
 import React, { useMemo, useState, useRef, useEffect } from 'react';
 import { useClient } from '../../contexts/ClientContext';
 import { toNum, fmtSGD } from '../../lib/helpers';
@@ -109,10 +108,12 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
   const filteredClients = useMemo(() => {
     if (!searchTerm) return [];
     const lower = searchTerm.toLowerCase();
-    return clients.filter(c => 
-      c.profile.name.toLowerCase().includes(lower) ||
-      (c.referenceCode && c.referenceCode.toLowerCase().includes(lower))
-    ).slice(0, 5);
+    return clients.filter(c => {
+      // SAFE ACCESS: Check if profile exists before accessing name
+      const name = c.profile?.name || c.name || '';
+      const ref = c.referenceCode || '';
+      return name.toLowerCase().includes(lower) || ref.toLowerCase().includes(lower);
+    }).slice(0, 5);
   }, [clients, searchTerm]);
 
   // --- AUDIO BRIEFING ---
@@ -206,16 +207,10 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
   // --- COMPOUNDING PROJECTION (IMPROVED) ---
   const compoundingData = useMemo(() => {
     const monthly = toNum(profile.monthlyInvestmentAmount);
-    
-    // UPDATED: Use explicit user input for starting capital if defined
-    // Otherwise fallback to 0 (clean slate) to avoid confusion about where the number came from
-    // The user can use the "Quick Fill" button to populate it from existing assets if they want.
     const startingPrincipal = toNum(profile.initialLumpSum);
 
-    // Allow calculation even if startingPrincipal is 0, provided there is monthly investment
     if (monthly <= 0 && startingPrincipal <= 0) return null;
 
-    // Use dynamic simulation return
     const r = simulationReturn / 100;
     const monthlyRate = r / 12;
     
@@ -314,7 +309,7 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
                 onChange={(e) => { setSearchTerm(e.target.value); setShowDropdown(true); }}
                 onFocus={() => setShowDropdown(true)}
                 placeholder="Find client..."
-                className="w-48 pl-3 pr-4 py-2 bg-gray-50 border border-gray-200 rounded-lg text-xs font-medium focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                className="w-48 pl-3 pr-4 py-2 bg-gray-50 border border-gray-200 rounded-lg text-xs font-medium focus:bg-white focus:border-indigo-500 outline-none transition-all"
              />
              {showDropdown && searchTerm && (
                 <div className="absolute top-full left-0 right-0 mt-2 bg-white border border-gray-100 rounded-xl shadow-xl overflow-hidden z-50">
@@ -324,7 +319,7 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
                         onClick={() => { if (onLoadClient) onLoadClient(c); setSearchTerm(''); setShowDropdown(false); }}
                         className="w-full text-left px-4 py-2 hover:bg-gray-50 text-xs flex justify-between"
                       >
-                        <span className="font-bold">{c.profile.name}</span>
+                        <span className="font-bold">{c.profile?.name || c.name || 'Unknown'}</span>
                         <span className="text-gray-400">{c.referenceCode}</span>
                       </button>
                    ))}

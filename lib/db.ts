@@ -4,7 +4,7 @@ import { Client } from '../types';
 /* =======================
    CONSTANTS
 ======================= */
-const DB_VERSION = 'db.ts v14 (Bulk & Transfer)';
+const DB_VERSION = 'db.ts v15 (Strict Confirmation)';
 
 const LOCAL_STORAGE_KEY = 'sproutly_clients_v2';
 const CLOUD_QUEUE_KEY = 'sproutly_cloud_queue_v1';
@@ -120,8 +120,6 @@ const markLocalSynced = (id: string) => {
 
 /* =======================
    SAFE UPSERT
-   - NO abortSignal here
-   - Timeout is enforced globally by supabase.ts fetchWithTimeout
 ======================= */
 async function upsertClientRow(row: any) {
   if (!supabase) throw new Error('Supabase not initialized');
@@ -129,10 +127,16 @@ async function upsertClientRow(row: any) {
   const { data, error } = await supabase
     .from('clients')
     .upsert(row)
-    // keep returning tiny to reduce payload
-    .select('id');
+    .select('id'); // We MUST select back to verify RLS visibility
 
   if (error) throw error;
+
+  // STRICT CHECK: If RLS allows write but blocks read, data is null/empty.
+  // We treat this as a failure so the UI doesn't falsely show "Synced".
+  if (!data || data.length === 0) {
+      throw new Error("Write accepted but row not visible. Check RLS policies.");
+  }
+
   return data;
 }
 
@@ -290,7 +294,7 @@ export const db = {
 
       const remaining: CloudQueueItem[] = [];
 
-      // ✅ sequential, and only write queue ONCE at end
+      // ✅ sequential
       for (const item of q) {
         try {
           debugLog(`[FLUSH] upsert ${item.id}`);
@@ -386,23 +390,19 @@ export const db = {
 
   /* ---------- transfer ownership ---------- */
   transferOwnership: async (clientId: string, newOwnerId: string) => {
-    // 1. Fetch current (using getClients to leverage full map logic)
     const clients = await db.getClients();
     const client = clients.find(c => c.id === clientId);
     
     if (!client) throw new Error("Client not found locally or in queue");
 
-    // 2. Update with new owner
     const updatedClient = {
       ...client,
       _ownerId: newOwnerId,
-      advisorId: newOwnerId, // Sync both for consistency
+      advisorId: newOwnerId,
       lastUpdated: new Date().toISOString(),
       _isSynced: false
     };
 
-    // 3. Save via standard pipeline
-    // This handles local update + queue push + flush attempt
     return db.saveClient(updatedClient, newOwnerId);
   }
 };

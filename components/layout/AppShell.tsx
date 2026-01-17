@@ -229,10 +229,13 @@ const AppShell: React.FC<AppShellProps> = ({
 
             <button
               onClick={onSaveClick}
-              disabled={saveStatus === 'saving'}
+              disabled={saveStatus === 'saving' || !clientName}
               className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-bold transition-all shadow-sm active:scale-95 ${
-                saveStatus === 'saving' ? 'bg-slate-100 text-slate-400' : 'bg-slate-900 text-white hover:bg-slate-800'
+                saveStatus === 'saving' || !clientName 
+                  ? 'bg-slate-100 text-slate-400 cursor-not-allowed' 
+                  : 'bg-slate-900 text-white hover:bg-slate-800'
               }`}
+              title={!clientName ? "Enter a name in Profile to save" : "Push Changes"}
             >
               <span>{saveStatus === 'saving' ? '⏳' : '💾'}</span>{' '}
               <span className="hidden sm:inline">Push Changes</span>

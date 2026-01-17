@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useCallback, memo } from 'react';
 import { Client, FamilyMember, Policy, UserProfile, Sale, Product, ContactStatus, WhatsAppTemplate } from '../../../types';
 import { analyzeClientMomentum, generateInvestmentReport } from '../../../lib/gemini';
@@ -586,7 +585,7 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
                           <div className="space-y-1">
                               <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Est. Monthly Income</label>
                               <div className="text-xs font-bold text-slate-700 px-2 py-1.5 bg-slate-100 rounded-lg border border-slate-200">
-                                  {fmtSGD(toNum(client.profile.monthlyIncome) || toNum(client.profile.grossSalary))}
+                                  {fmtSGD(toNum(client.profile?.monthlyIncome) || toNum(client.profile?.grossSalary))}
                               </div>
                           </div>
                       </div>

@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import { Client, ContactStatus } from '../../../types';
 import { STATUS_CONFIG } from './StatusDropdown';
@@ -95,7 +94,7 @@ const CallSessionModal: React.FC<CallSessionModalProps> = ({ isOpen, onClose, cl
         
         logActivity(currentClient.id, 'call_outcome', `Call Result: ${outcome} (${newStageName})`);
 
-        setSessionLog(prev => [...prev, { name: currentClient.profile.name, duration: formatTime(timer), outcome: newStatus }]);
+        setSessionLog(prev => [...prev, { name: currentClient.profile?.name || currentClient.name, duration: formatTime(timer), outcome: newStatus }]);
     }
 
     // Move to next
@@ -156,14 +155,14 @@ const CallSessionModal: React.FC<CallSessionModalProps> = ({ isOpen, onClose, cl
              </div>
              
              <div className="p-10 text-center space-y-4">
-                <h1 className="text-4xl md:text-5xl font-black text-slate-900 tracking-tight">{currentClient.profile.name}</h1>
+                <h1 className="text-4xl md:text-5xl font-black text-slate-900 tracking-tight">{currentClient.profile?.name || currentClient.name || 'Unnamed'}</h1>
                 <div className="inline-block bg-slate-100 px-6 py-3 rounded-2xl">
-                   <a href={`tel:${currentClient.profile.phone}`} className="text-2xl md:text-3xl font-bold text-indigo-600 hover:underline decoration-2 underline-offset-4 decoration-indigo-300">
-                      {currentClient.profile.phone || 'No Number'}
+                   <a href={`tel:${currentClient.profile?.phone || currentClient.phone}`} className="text-2xl md:text-3xl font-bold text-indigo-600 hover:underline decoration-2 underline-offset-4 decoration-indigo-300">
+                      {currentClient.profile?.phone || currentClient.phone || 'No Number'}
                    </a>
                 </div>
                 <div className="text-sm text-slate-500 font-medium uppercase tracking-widest pt-4">
-                   {currentClient.company || 'No Company'} • {currentClient.profile.jobTitle || 'No Title'}
+                   {currentClient.company || 'No Company'} • {currentClient.profile?.jobTitle || 'No Title'}
                 </div>
                 {/* Note Preview */}
                 {currentClient.notes && currentClient.notes.length > 0 && (

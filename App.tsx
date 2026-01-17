@@ -129,6 +129,14 @@ const SproutlyApp = () => {
 
   const handleSave = useCallback(async () => {
     if (!user?.id) return;
+
+    // 🛑 VALIDATION: Prevent empty ghost leads
+    if (!profile.name || !profile.name.trim()) {
+        alert("Unable to save: Please enter a Client Name in the Profile tab first.");
+        setActiveTab('profile');
+        return;
+    }
+
     setSaveStatus('saving');
     setSyncError(null);
 
@@ -157,7 +165,7 @@ const SproutlyApp = () => {
       setSaveStatus('error');
       setSyncError(e.message || "Critical save error");
     }
-  }, [user?.id, generateClientObject, refreshLocal]);
+  }, [user?.id, generateClientObject, refreshLocal, profile.name]);
 
   const handleLoadClient = (client: Client, redirect: boolean = false) => {
     loadClient(client);
@@ -187,6 +195,7 @@ const SproutlyApp = () => {
     setSaveStatus('saving');
     setSyncError(null);
 
+    // Reduced debounce to 500ms to reduce data loss on rapid refresh
     debounceTimerRef.current = setTimeout(async () => {
       try {
         // Enforce a hard stop if this async call somehow hangs
@@ -209,7 +218,7 @@ const SproutlyApp = () => {
         setSaveStatus('error');
         setSyncError(e.message);
       }
-    }, 900);
+    }, 500);
   };
 
   if (authLoading) {

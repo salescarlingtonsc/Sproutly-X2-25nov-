@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { Client, ContactStatus } from '../../../types';
 import { fetchActivities, Activity } from '../../../lib/db/activities';
@@ -136,7 +135,7 @@ const ClientDrawer: React.FC<ClientDrawerProps> = ({
     // Use Custom Confirm
     const isConfirmed = await confirm({
         title: "Transfer Client?",
-        message: `Initialize portfolio handover of ${client.profile.name} to ${email}?`,
+        message: `Initialize portfolio handover of ${client.profile?.name || client.name} to ${email}?`,
         confirmText: "Execute Transfer"
     });
 
@@ -195,7 +194,7 @@ const ClientDrawer: React.FC<ClientDrawerProps> = ({
         
         <div className="px-8 py-6 border-b border-slate-50 flex items-center justify-between bg-white">
            <div className="space-y-1">
-              <h3 className="font-black text-xl text-slate-800 tracking-tighter">{client.profile.name || 'Unnamed Client'}</h3>
+              <h3 className="font-black text-xl text-slate-800 tracking-tighter">{client.profile?.name || client.name || 'Unnamed Client'}</h3>
               <div className="flex items-center gap-3">
                  <p className="text-[10px] text-slate-300 font-black uppercase tracking-widest">ID: {client.id.split('-')[0]}</p>
                  <StatusDropdown client={client} onUpdate={onStatusUpdate} />

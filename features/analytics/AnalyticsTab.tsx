@@ -1,4 +1,3 @@
-
 import React, { useMemo, useState } from 'react';
 import { Client } from '../../types';
 import { toNum, fmtSGD, getAge } from '../../lib/helpers';
@@ -22,12 +21,12 @@ const AnalyticsTab: React.FC<AnalyticsTabProps> = ({ clients }) => {
 
   const analyzedData = useMemo(() => {
     return clients.map(c => {
-      const age = c.profile.dob ? getAge(c.profile.dob) : 30;
-      const income = toNum(c.profile.monthlyIncome) || toNum(c.profile.grossSalary);
+      const age = c.profile?.dob ? getAge(c.profile.dob) : 30;
+      const income = toNum(c.profile?.monthlyIncome) || toNum(c.profile?.grossSalary);
       const cash = toNum(c.cashflowState?.currentSavings, 0);
       const investments = toNum(c.investorState?.portfolioValue, 0);
       const deathCov = (c.insuranceState?.policies || []).reduce((acc, p) => acc + toNum(p.deathCoverage), 0);
-      return { id: c.id, name: c.profile.name, age, income, netWorth: cash + investments, hasInvestment: investments > 10000, hasInsurance: deathCov > 100000 };
+      return { id: c.id, name: c.profile?.name || c.name || 'Unnamed', age, income, netWorth: cash + investments, hasInvestment: investments > 10000, hasInsurance: deathCov > 100000 };
     });
   }, [clients]);
 
@@ -98,7 +97,7 @@ const AnalyticsTab: React.FC<AnalyticsTabProps> = ({ clients }) => {
                       value={selectedClientForAI} onChange={(e) => setSelectedClientForAI(e.target.value)}
                    >
                      <option value="">Choose Dossier...</option>
-                     {clients.map(c => <option key={c.id} value={c.id}>{c.profile.name}</option>)}
+                     {clients.map(c => <option key={c.id} value={c.id}>{c.profile?.name || c.name || 'Unnamed'}</option>)}
                    </select>
                 </div>
                 <button 
@@ -138,139 +137,79 @@ const AnalyticsTab: React.FC<AnalyticsTabProps> = ({ clients }) => {
             ) : quantumReport ? (
               <div className="space-y-8 animate-in fade-in duration-1000">
                 <div className="bg-white rounded-[3rem] border border-slate-100 p-12 shadow-sm">
-                   <h4 className="text-[9px] font-black text-indigo-600 uppercase tracking-[0.4em] mb-6">Strategic Audit Verdict</h4>
-                   <p className="text-2xl font-bold text-slate-900 leading-snug mb-12">{quantumReport.executive_summary}</p>
-                   
-                   <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
-                      <div className="space-y-6">
-                         <h5 className="text-[10px] font-black text-slate-300 uppercase tracking-widest">Recursive Gap Detection</h5>
-                         {quantumReport.critical_gaps.map((gap: any, i: number) => (
-                            <div key={i} className="p-6 rounded-3xl bg-slate-50 border border-slate-100 group hover:border-indigo-500/30 transition-all hover:shadow-lg">
-                               <div className="flex justify-between items-center mb-3">
-                                  <span className="text-[10px] font-black text-slate-800 uppercase tracking-widest">{gap.area}</span>
-                                  <span className={`text-[8px] font-black px-2 py-1 rounded-lg ${gap.severity === 'CRITICAL' ? 'bg-red-500 text-white' : 'bg-amber-100 text-amber-700'}`}>{gap.severity}</span>
-                               </div>
-                               <p className="text-xs text-slate-500 leading-relaxed font-medium">{gap.observation}</p>
-                               <div className="mt-4 pt-4 border-t border-slate-200 hidden group-hover:block animate-in slide-in-from-top-2">
-                                  <p className="text-[9px] font-black text-indigo-500 uppercase mb-2">Reasoning Protocol:</p>
-                                  <p className="text-[10px] text-slate-400 leading-relaxed italic">{gap.reasoning_path}</p>
-                               </div>
+                   <h4 className="text-[9px] font-black text-indigo-600 uppercase tracking-[0.4em] mb-6">Quantum Assessment</h4>
+                   <p className="text-sm font-medium text-slate-700 leading-relaxed whitespace-pre-wrap">{quantumReport.executive_summary}</p>
+                </div>
+
+                <div className="grid grid-cols-1 gap-4">
+                   {quantumReport.critical_gaps?.map((gap: any, idx: number) => (
+                      <div key={idx} className="bg-rose-50 p-6 rounded-3xl border border-rose-100 flex gap-4 items-start">
+                         <div className="text-2xl mt-1">⚠️</div>
+                         <div>
+                            <div className="flex items-center gap-3 mb-2">
+                               <span className="text-[10px] font-black text-rose-600 uppercase tracking-widest bg-rose-100 px-2 py-1 rounded">{gap.area}</span>
+                               <span className="text-[10px] font-bold text-rose-400 uppercase">{gap.severity} Severity</span>
                             </div>
-                         ))}
-                      </div>
-                      <div className="space-y-6">
-                         <h5 className="text-[10px] font-black text-slate-300 uppercase tracking-widest">Remediation Action Plan</h5>
-                         <div className="bg-slate-900 rounded-[2.5rem] p-10 text-indigo-100 space-y-6 shadow-2xl">
-                            {quantumReport.action_plan.map((action: string, i: number) => (
-                               <div key={i} className="flex gap-6">
-                                  <span className="text-indigo-500 font-black text-lg">0{i+1}</span>
-                                  <p className="text-xs font-bold leading-relaxed">{action}</p>
-                               </div>
-                            ))}
+                            <p className="text-sm font-bold text-rose-900 mb-1">{gap.observation}</p>
+                            <p className="text-xs text-rose-700/80 leading-relaxed italic">{gap.reasoning_path}</p>
                          </div>
                       </div>
-                   </div>
+                   ))}
+                </div>
+
+                <div className="bg-slate-900 text-white p-10 rounded-[3rem] shadow-xl">
+                   <h4 className="text-[9px] font-black text-indigo-300 uppercase tracking-[0.4em] mb-8">Strategic Protocol</h4>
+                   <ul className="space-y-4">
+                      {quantumReport.action_plan?.map((action: string, i: number) => (
+                         <li key={i} className="flex gap-4 items-start">
+                            <div className="w-6 h-6 rounded-full bg-indigo-500 flex items-center justify-center text-[10px] font-black shrink-0 mt-0.5">{i+1}</div>
+                            <span className="text-sm font-medium text-slate-300">{action}</span>
+                         </li>
+                      ))}
+                   </ul>
                 </div>
               </div>
             ) : (
-              <div className="h-full min-h-[600px] flex flex-col items-center justify-center bg-slate-50/50 rounded-[3rem] border-4 border-dashed border-slate-100 text-slate-300 p-20 text-center">
-                 <div className="text-8xl mb-8 grayscale opacity-10 filter blur-[1px]">🧠</div>
-                 <h3 className="text-2xl font-black text-slate-400 tracking-tight">Intelligence Ready</h3>
-                 <p className="text-sm font-medium text-slate-400 max-w-sm mt-4 leading-relaxed">Select a client dossier and initiate the Quantum reasoning engine to uncover deep strategic gaps.</p>
-              </div>
+               <div className="h-full flex flex-col items-center justify-center text-slate-300 border-2 border-dashed border-slate-100 rounded-[3rem]">
+                  <p className="text-xs font-bold uppercase tracking-widest">Select a client to initiate scan</p>
+               </div>
             )}
           </div>
         </div>
       )}
 
-      {activeView === 'market_pulse' && (
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-10 animate-in fade-in duration-700">
-           <div className="md:col-span-4">
-              <div className="bg-white rounded-[2.5rem] border border-slate-100 p-10 shadow-sm">
-                 <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-8">Grounding Sensor</h3>
-                 <div className="space-y-6">
-                    <input 
-                       type="text" value={marketQuery} 
-                       onChange={(e) => setMarketQuery(e.target.value)} 
-                       onKeyDown={(e) => e.key === 'Enter' && handleMarketCheck()} 
-                       placeholder="e.g. Current STI benchmark 2025" 
-                       className="w-full p-5 bg-slate-50 border-2 border-transparent rounded-2xl text-xs font-bold focus:bg-white focus:border-emerald-500 outline-none transition-all placeholder-slate-300" 
-                    />
-                    <button onClick={handleMarketCheck} disabled={!marketQuery || loadingAi} className="w-full py-5 bg-emerald-600 text-white font-black text-[10px] uppercase tracking-widest rounded-2xl shadow-2xl hover:bg-emerald-700 disabled:opacity-30 transition-all">
-                       {loadingAi ? 'Scanning Data Signals...' : 'Sync Market Intelligence'}
-                    </button>
-                 </div>
-              </div>
-           </div>
-           <div className="md:col-span-8">
-              <div className="bg-white rounded-[3rem] border border-slate-100 p-12 shadow-sm min-h-[500px]">
-                 {marketResult ? (
-                    <div className="prose prose-slate max-w-none">
-                       <div className="text-slate-700 font-medium text-lg leading-relaxed whitespace-pre-line">{marketResult.text}</div>
-                       {marketResult.sources && (
-                          <div className="mt-12 pt-12 border-t border-slate-50">
-                             <h5 className="text-[9px] font-black text-slate-300 uppercase tracking-widest mb-6">Verified Grounding Nodes</h5>
-                             <div className="flex flex-wrap gap-3">
-                                {marketResult.sources.map((s: any, idx: number) => (
-                                   s.web && <a key={idx} href={s.web.uri} target="_blank" rel="noreferrer" className="px-5 py-2.5 bg-slate-50 border border-slate-100 rounded-xl text-[10px] font-bold text-slate-500 hover:text-indigo-600 hover:border-indigo-200 transition-all shadow-sm">{s.web.title || 'Data Source'}</a>
-                                ))}
-                             </div>
-                          </div>
-                       )}
-                    </div>
-                 ) : (
-                    <div className="h-full flex flex-col items-center justify-center text-slate-200 p-20">
-                       <span className="text-8xl mb-6">📡</span>
-                       <p className="text-[10px] font-black uppercase tracking-[0.4em]">Awaiting Uplink</p>
-                    </div>
-                 )}
-              </div>
-           </div>
-        </div>
+      {activeView === 'market_map' && (
+         <div className="text-center py-20 bg-white rounded-[3rem] border border-slate-100">
+            <h3 className="text-slate-400 font-bold mb-4">Market Map Visualization</h3>
+            <p className="text-xs text-slate-400">Coming in next update.</p>
+         </div>
       )}
 
-      {activeView === 'market_map' && analyzedData.length > 0 && (
-         <div className="grid grid-cols-1 lg:grid-cols-2 gap-10 animate-in fade-in duration-700">
-            <div className="bg-white rounded-[3rem] border border-slate-100 p-10 shadow-sm">
-               <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-10 px-2">Asset Topography</h3>
-               <div className="h-[450px]">
-                  <ResponsiveContainer>
-                     <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
-                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f8fafc" />
-                        <XAxis type="number" dataKey="age" name="Age" unit="y" fontSize={9} axisLine={false} tickLine={false} tick={{fill: '#cbd5e1'}} />
-                        <YAxis type="number" dataKey="netWorth" name="Net Worth" unit="$" fontSize={9} axisLine={false} tickLine={false} tick={{fill: '#cbd5e1'}} tickFormatter={(v) => `$${(v/1000).toFixed(0)}k`} />
-                        <ZAxis type="number" dataKey="income" range={[100, 1000]} name="Income" />
-                        <Tooltip cursor={{ strokeDasharray: '3 3' }} contentStyle={{ borderRadius: '24px', border: 'none', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.15)' }} />
-                        <Scatter name="Clients" data={analyzedData} fill="#4f46e5">
-                           {analyzedData.map((entry, index) => (
-                              <Cell key={`cell-${index}`} fill={entry.hasInvestment ? '#10b981' : '#f43f5e'} />
-                           ))}
-                        </Scatter>
-                        <Legend iconType="circle" />
-                     </ScatterChart>
-                  </ResponsiveContainer>
+      {activeView === 'market_pulse' && (
+         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm">
+               <h3 className="font-bold text-slate-800 mb-4">Global Signal Check</h3>
+               <div className="flex gap-2 mb-4">
+                  <input value={marketQuery} onChange={e => setMarketQuery(e.target.value)} placeholder="e.g. Impact of US Fed Rates on SG REITs" className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm outline-none" />
+                  <button onClick={handleMarketCheck} disabled={loadingAi} className="bg-slate-900 text-white px-6 py-3 rounded-xl font-bold text-xs hover:bg-slate-800">Analyze</button>
                </div>
-            </div>
-
-            <div className="bg-white rounded-[3rem] border border-slate-100 p-10 shadow-sm">
-               <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-10 px-2">Income Replacement Liability</h3>
-               <div className="h-[450px]">
-                  <ResponsiveContainer>
-                     <AreaChart data={analyzedData.sort((a,b) => a.age - b.age)}>
-                        <defs>
-                           <linearGradient id="colorIncome" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="5%" stopColor="#6366f1" stopOpacity={0.2}/>
-                              <stop offset="95%" stopColor="#6366f1" stopOpacity={0}/>
-                           </linearGradient>
-                        </defs>
-                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f8fafc" />
-                        <XAxis dataKey="name" fontSize={8} axisLine={false} tickLine={false} tick={{fill: '#cbd5e1'}} />
-                        <YAxis fontSize={9} axisLine={false} tickLine={false} tick={{fill: '#cbd5e1'}} tickFormatter={(v) => `$${(v/1000).toFixed(0)}k`} />
-                        <Tooltip contentStyle={{ borderRadius: '20px', border: 'none' }} />
-                        <Area type="monotone" dataKey="income" stackId="1" stroke="#6366f1" fill="url(#colorIncome)" strokeWidth={3} name="Current Monthly" />
-                     </AreaChart>
-                  </ResponsiveContainer>
-               </div>
+               {marketResult && (
+                  <div className="mt-6 prose prose-sm text-slate-600">
+                     <p className="whitespace-pre-wrap">{marketResult.text}</p>
+                     {marketResult.sources && (
+                        <div className="mt-4 pt-4 border-t border-slate-100">
+                           <p className="text-[10px] font-bold text-slate-400 uppercase mb-2">Sources</p>
+                           <div className="flex flex-wrap gap-2">
+                              {marketResult.sources.map((s: any, i: number) => (
+                                 <a key={i} href={s.web?.uri} target="_blank" rel="noreferrer" className="text-[10px] bg-slate-50 text-indigo-600 px-2 py-1 rounded hover:bg-indigo-50 border border-slate-100 truncate max-w-[200px] block">
+                                    {s.web?.title}
+                                 </a>
+                              ))}
+                           </div>
+                        </div>
+                     )}
+                  </div>
+               )}
             </div>
          </div>
       )}

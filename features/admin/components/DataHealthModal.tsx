@@ -3,6 +3,7 @@ import Modal from '../../../components/ui/Modal';
 import Button from '../../../components/ui/Button';
 import { db } from '../../../lib/db';
 import { supabase } from '../../../lib/supabase';
+import { runDiagnostics, probeWriteAccess } from '../../../lib/db/debug';
 import { useAuth } from '../../../contexts/AuthContext';
 import { useToast } from '../../../contexts/ToastContext';
 
@@ -20,15 +21,20 @@ const DataHealthModal: React.FC<DataHealthModalProps> = ({ isOpen, onClose }) =>
   const [unsyncedLocal, setUnsyncedLocal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [flushing, setFlushing] = useState(false);
+  
+  // Probe State
+  const [probeLogs, setProbeLogs] = useState<string[]>([]);
+  const [isProbing, setIsProbing] = useState(false);
+  const [showSessionFix, setShowSessionFix] = useState(false);
 
   // Initial Scan on Open
   useEffect(() => {
     if (isOpen && user) {
-        runDiagnostics();
+        runHealthScan();
         
         // 1. Poll Local Queue every 2s (to catch background flushes)
         const interval = setInterval(() => {
-            runDiagnostics(true); // Silent run
+            runHealthScan(true); // Silent run
         }, 2000);
 
         // 2. Subscribe to Cloud Changes (Realtime)
@@ -39,7 +45,7 @@ const DataHealthModal: React.FC<DataHealthModalProps> = ({ isOpen, onClose }) =>
                 .on(
                     'postgres_changes', 
                     { event: '*', schema: 'public', table: 'clients', filter: `user_id=eq.${user.id}` }, 
-                    () => runDiagnostics(true)
+                    () => runHealthScan(true)
                 )
                 .subscribe();
         }
@@ -51,7 +57,7 @@ const DataHealthModal: React.FC<DataHealthModalProps> = ({ isOpen, onClose }) =>
     }
   }, [isOpen, user]);
 
-  const runDiagnostics = async (silent = false) => {
+  const runHealthScan = async (silent = false) => {
     if (!user) return;
     if (!silent) setLoading(true);
     try {
@@ -77,9 +83,11 @@ const DataHealthModal: React.FC<DataHealthModalProps> = ({ isOpen, onClose }) =>
         if (error) throw error;
         setCloudCount(count);
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error("Diagnostic error", e);
-      if (!silent) toast.error("Failed to query database.");
+      // Ensure we don't crash with [object Object]
+      const msg = e?.message || (typeof e === 'string' ? e : 'Unknown Database Error');
+      if (!silent) toast.error(`Health Scan Error: ${msg}`);
     } finally {
       if (!silent) setLoading(false);
     }
@@ -90,13 +98,75 @@ const DataHealthModal: React.FC<DataHealthModalProps> = ({ isOpen, onClose }) =>
     setFlushing(true);
     try {
       await db.flushCloudQueue(user.id);
-      await runDiagnostics(); // Re-run to update numbers
+      await runHealthScan(); // Re-run to update numbers
       toast.success("Outbox processed.");
     } catch (e) {
       toast.error("Flush failed.");
     } finally {
       setFlushing(false);
     }
+  };
+
+  const handleRunProbe = async () => {
+      if (isProbing) return;
+      setIsProbing(true);
+      setShowSessionFix(false);
+      setProbeLogs(['Initializing Write Probe...']);
+      
+      try {
+          const res = await probeWriteAccess();
+          setProbeLogs(res.logs);
+          
+          // Check for specific session timeout errors or network aborts
+          const errorPattern = /timed out|No Active Session|aborted|Failed to fetch|Network request failed|TypeError/i;
+          if (res.logs.some(l => errorPattern.test(l))) {
+              setShowSessionFix(true);
+          }
+      } catch (e: any) {
+          const msg = e?.message || String(e);
+          setProbeLogs(prev => [...prev, `❌ FATAL ERROR: ${msg}`]);
+          setShowSessionFix(true); // Assume fatal error might be fixable by reset
+      } finally {
+          setIsProbing(false);
+      }
+  };
+
+  const handleSessionReset = (e?: React.MouseEvent) => {
+      if (e) {
+          e.preventDefault();
+          e.stopPropagation();
+      }
+      
+      console.log("Manual Session Reset Triggered");
+
+      if (!window.confirm("This will clear your local login session and reload the page. You will need to log in again. Proceed?")) return;
+      
+      try {
+          // Collect keys first to avoid index shifting bugs during removal
+          const keysToRemove: string[] = [];
+          for (let i = 0; i < localStorage.length; i++) {
+              const key = localStorage.key(i);
+              // Target Supabase keys (sb-*), App Auth keys (sproutly_auth), and User Cache
+              if (key && (
+                  key.startsWith('sb-') || 
+                  key.includes('sproutly_auth') || 
+                  key.includes('supabase') ||
+                  key.includes('sproutly.user_cache')
+              )) {
+                  keysToRemove.push(key);
+              }
+          }
+          
+          keysToRemove.forEach(k => localStorage.removeItem(k));
+          // Clear session storage as well for good measure
+          sessionStorage.clear();
+          
+          // Force reload
+          window.location.reload();
+      } catch (err) {
+          console.error("Session reset error", err);
+          alert("Automatic reset failed. Please clear browser cookies/data manually.");
+      }
   };
 
   const handleBackup = async () => {
@@ -133,7 +203,7 @@ const DataHealthModal: React.FC<DataHealthModalProps> = ({ isOpen, onClose }) =>
           <Button variant="secondary" onClick={handleBackup} leftIcon="💾">Download Backup</Button>
           <div className="flex gap-2">
              <Button variant="ghost" onClick={onClose}>Close</Button>
-             <Button variant="primary" onClick={() => runDiagnostics(false)} isLoading={loading} leftIcon="↻">Re-Scan</Button>
+             <Button variant="primary" onClick={() => runHealthScan(false)} isLoading={loading} leftIcon="↻">Re-Scan</Button>
           </div>
         </div>
       }
@@ -209,6 +279,34 @@ const DataHealthModal: React.FC<DataHealthModalProps> = ({ isOpen, onClose }) =>
            <div className="mt-4 p-3 bg-blue-50 border border-blue-100 rounded-lg text-[10px] text-blue-800 leading-relaxed">
                <strong>Note:</strong> Your data is saved to this device instantly even if "Cloud Sync" is pending. It will not be lost if you refresh, as long as you are on the same device/browser.
            </div>
+        </div>
+
+        {/* CONNECTIVITY PROBE */}
+        <div className="border-t border-slate-100 pt-4 relative z-10">
+            <div className="flex justify-between items-center mb-3">
+                <h4 className="font-bold text-slate-700 text-xs uppercase tracking-wide">Connectivity Probe</h4>
+                <div className="flex gap-2 items-center relative z-20 pointer-events-auto">
+                    {showSessionFix && (
+                        <Button 
+                            variant="danger"
+                            size="sm"
+                            onClick={handleSessionReset}
+                            className="shadow-lg ring-2 ring-red-200 animate-none z-50 relative"
+                            leftIcon="🔧"
+                        >
+                            Fix Stuck Session
+                        </Button>
+                    )}
+                    <Button size="sm" variant="secondary" onClick={handleRunProbe} isLoading={isProbing}>Run Write Test</Button>
+                </div>
+            </div>
+            {probeLogs.length > 0 && (
+                <div className="bg-slate-900 rounded-xl p-4 font-mono text-[10px] text-green-400 overflow-y-auto max-h-40">
+                    {probeLogs.map((log, i) => (
+                        <div key={i} className={log.includes('❌') ? 'text-red-400 font-bold' : ''}>{log}</div>
+                    ))}
+                </div>
+            )}
         </div>
       </div>
     </Modal>

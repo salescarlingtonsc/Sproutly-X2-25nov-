@@ -1,4 +1,3 @@
-
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { UserProfile, SubscriptionTier } from '../types';
@@ -50,7 +49,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const checkSession = async () => {
       try {
-        const { data: { session }, error } = await supabase.auth.getSession();
+        // TIMEOUT WRAPPER: Force fail if Supabase hangs > 5s
+        const sessionPromise = supabase.auth.getSession();
+        const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Auth Init Timeout")), 5000));
+        
+        const { data: { session }, error } = await Promise.race([sessionPromise, timeoutPromise]) as any;
         
         if (error) throw error;
 
@@ -97,7 +100,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         ) {
             return;
         }
-        console.error("Session check failed", err);
+        console.error("Session check failed/timed out", err);
+        // If timed out, but we have cache, we stay logged in (offline mode).
+        // If no cache, we stop loading so user sees Landing Page instead of white screen.
         if (!hasCache) setIsLoading(false);
       }
     };

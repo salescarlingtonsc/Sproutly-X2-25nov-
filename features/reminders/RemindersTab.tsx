@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useMemo } from 'react';
 import { db } from '../../lib/db';
 import { Client, Product, Sale, ContactStatus } from '../../types';
@@ -176,7 +175,7 @@ const RemindersTab: React.FC = () => {
 
   const handleWhatsApp = async (e: React.MouseEvent, client: Client, isBirthday: boolean = false) => {
     e.stopPropagation();
-    const phone = client.profile.phone?.replace(/\D/g, '') || '';
+    const phone = client.profile?.phone?.replace(/\D/g, '') || '';
     
     if (!phone) {
         toast.error("No phone number found");
@@ -186,7 +185,8 @@ const RemindersTab: React.FC = () => {
     // 1. Construct Message
     let text = '';
     if (isBirthday) {
-        text = `Happy Birthday ${client.profile.name.split(' ')[0]}! 🎂 Wishing you a fantastic year ahead!`;
+        const name = client.profile?.name ? client.profile.name.split(' ')[0] : 'there';
+        text = `Happy Birthday ${name}! 🎂 Wishing you a fantastic year ahead!`;
     }
     
     // 2. Open WhatsApp
@@ -228,10 +228,10 @@ const RemindersTab: React.FC = () => {
         const d = new Date(dobStr);
         return d.getMonth() === currentMonth;
     };
-    return checkBirthday(c.profile.dob) || (c.familyMembers || []).some(f => checkBirthday(f.dob));
+    return checkBirthday(c.profile?.dob) || (c.familyMembers || []).some(f => checkBirthday(f.dob));
   }).sort((a, b) => {
-      const dayA = new Date(a.profile.dob || '').getDate() || 32;
-      const dayB = new Date(b.profile.dob || '').getDate() || 32;
+      const dayA = new Date(a.profile?.dob || '').getDate() || 32;
+      const dayB = new Date(b.profile?.dob || '').getDate() || 32;
       
       // Move "Wished" (contacted today) clients to the bottom
       const wishedA = isContactedToday(a) ? 1 : 0;
@@ -322,12 +322,12 @@ const RemindersTab: React.FC = () => {
                                 <div className="flex-1 min-w-0">
                                     <div className="flex items-center justify-between gap-2 mb-1">
                                         <p className={`text-xs font-bold truncate ${wished ? 'text-slate-500 line-through' : 'text-slate-800'}`}>
-                                            {c.profile.name || c.name}
+                                            {c.profile?.name || c.name || 'Unnamed'}
                                         </p>
                                         
                                         {/* Dynamic Date Badge */}
                                         {isBirthdayCard ? (
-                                            c.profile.dob && (
+                                            c.profile?.dob && (
                                                 <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${wished ? 'bg-slate-100 text-slate-400 border-slate-200' : 'bg-emerald-50 text-emerald-600 border-emerald-100'}`}>
                                                     {wished ? 'Wished' : `${new Date(c.profile.dob).getDate()} ${new Date(c.profile.dob).toLocaleString('default', {month: 'short'})}`}
                                                 </span>
@@ -356,7 +356,7 @@ const RemindersTab: React.FC = () => {
                                             {c.followUp.status?.replace('npu_', 'NPU ')}
                                         </span>
                                         <span className="text-[9px] text-slate-400 truncate font-mono">
-                                            {c.profile.phone || '-'}
+                                            {c.profile?.phone || '-'}
                                         </span>
                                     </div>
                                     
