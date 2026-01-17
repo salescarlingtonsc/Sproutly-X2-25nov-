@@ -1,4 +1,3 @@
-
 import React, { useMemo, useState, useRef, useEffect } from 'react';
 import { useClient } from '../../contexts/ClientContext';
 import { toNum, fmtSGD } from '../../lib/helpers';
@@ -110,7 +109,8 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
     const lower = searchTerm.toLowerCase();
     return clients.filter(c => 
       c.profile.name.toLowerCase().includes(lower) ||
-      (c.referenceCode && c.referenceCode.toLowerCase().includes(lower))
+      (c.referenceCode && c.referenceCode.toLowerCase().includes(lower)) ||
+      (c.profile.phone && c.profile.phone.includes(lower))
     ).slice(0, 5);
   }, [clients, searchTerm]);
 

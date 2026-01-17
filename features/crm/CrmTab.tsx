@@ -203,9 +203,11 @@ const CrmTab: React.FC<CrmTabProps> = ({
     let filtered = clients.filter(client => {
       const name = client.name || client.profile?.name || '';
       const company = client.company || '';
+      const phone = client.phone || client.profile?.phone || '';
       
       const matchesSearch = name.toLowerCase().includes(searchTerm.toLowerCase()) || 
                             company.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                            phone.includes(searchTerm) ||
                             (client.tags || []).some(t => t.toLowerCase().includes(searchTerm.toLowerCase()));
       
       const currentStatus = client.followUp?.status || client.stage || '';

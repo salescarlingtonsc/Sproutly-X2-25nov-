@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import { TAB_DEFINITIONS } from '../../lib/config';
 import { Client } from '../../types';
@@ -41,7 +40,8 @@ const CommandPalette: React.FC<CommandPaletteProps> = ({ clients, onNavigate, on
   
   const filteredClients = clients.filter(c => 
     c.profile.name.toLowerCase().includes(query.toLowerCase()) || 
-    (c.referenceCode || '').toLowerCase().includes(query.toLowerCase())
+    (c.referenceCode || '').toLowerCase().includes(query.toLowerCase()) ||
+    (c.profile.phone || '').includes(query)
   ).slice(0, 5);
 
   const allResults = [
