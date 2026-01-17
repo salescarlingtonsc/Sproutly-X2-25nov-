@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import Modal from '../../../components/ui/Modal';
 import Button from '../../../components/ui/Button';
@@ -194,7 +193,7 @@ create policy "Files Public Access" on storage.objects for select using ( bucket
 DROP POLICY IF EXISTS "Files Upload Access" ON storage.objects;
 create policy "Files Upload Access" on storage.objects for insert with check ( bucket_id = 'client-files' );
 
--- 9. RLS POLICIES (Recursion-Proofed & Hierarchical)
+-- 9. RLS POLICIES (Recursion-Proofed)
 
 -- Profiles
 DROP POLICY IF EXISTS "Public profiles are viewable by everyone" ON profiles;
@@ -207,54 +206,41 @@ DROP POLICY IF EXISTS "Users can update own profile" ON profiles;
 CREATE POLICY "Users can update own profile" ON profiles FOR UPDATE USING ( auth.uid() = id );
 
 DROP POLICY IF EXISTS "Admins can update everyone" ON profiles;
-CREATE POLICY "Admins can update everyone" ON profiles FOR UPDATE USING ( check_is_admin() OR check_is_manager_or_director() );
+CREATE POLICY "Admins can update everyone" ON profiles FOR UPDATE USING ( check_is_admin() );
 
 -- Clients
--- ALLOW ADMINS/MANAGERS TO VIEW/EDIT ALL CLIENTS
 DROP POLICY IF EXISTS "Users view own clients" ON clients;
 CREATE POLICY "Users view own clients" ON clients FOR SELECT USING ( 
   auth.uid() = user_id OR 
   check_is_admin() OR 
-  check_is_manager_or_director()
+  (check_is_manager_or_director() AND (data->>'organizationId') = get_my_org_id())
 );
 
 DROP POLICY IF EXISTS "Users insert own clients" ON clients;
-CREATE POLICY "Users insert own clients" ON clients FOR INSERT WITH CHECK ( 
-  auth.uid() = user_id OR 
-  check_is_admin() OR 
-  check_is_manager_or_director()
-);
+CREATE POLICY "Users insert own clients" ON clients FOR INSERT WITH CHECK ( auth.uid() = user_id );
 
 DROP POLICY IF EXISTS "Users update own clients" ON clients;
-CREATE POLICY "Users update own clients" ON clients FOR UPDATE USING ( 
-  auth.uid() = user_id OR 
-  check_is_admin() OR 
-  check_is_manager_or_director()
-);
+CREATE POLICY "Users update own clients" ON clients FOR UPDATE USING ( auth.uid() = user_id OR check_is_admin() );
 
 DROP POLICY IF EXISTS "Users delete own clients" ON clients;
-CREATE POLICY "Users delete own clients" ON clients FOR DELETE USING ( 
-  auth.uid() = user_id OR 
-  check_is_admin() OR 
-  check_is_manager_or_director()
-);
+CREATE POLICY "Users delete own clients" ON clients FOR DELETE USING ( auth.uid() = user_id OR check_is_admin() );
 
 -- Settings
 DROP POLICY IF EXISTS "Read Settings" ON organization_settings;
 CREATE POLICY "Read Settings" ON organization_settings FOR SELECT USING ( true );
 
 DROP POLICY IF EXISTS "Update Settings" ON organization_settings;
-CREATE POLICY "Update Settings" ON organization_settings FOR UPDATE USING ( check_is_admin() OR check_is_manager_or_director() );
+CREATE POLICY "Update Settings" ON organization_settings FOR UPDATE USING ( check_is_admin() );
 
 DROP POLICY IF EXISTS "Insert Settings" ON organization_settings;
-CREATE POLICY "Insert Settings" ON organization_settings FOR INSERT WITH CHECK ( check_is_admin() OR check_is_manager_or_director() );
+CREATE POLICY "Insert Settings" ON organization_settings FOR INSERT WITH CHECK ( check_is_admin() );
 
 -- Knowledge Base
 DROP POLICY IF EXISTS "Read Knowledge" ON sproutly_knowledge;
 CREATE POLICY "Read Knowledge" ON sproutly_knowledge FOR SELECT USING ( true );
 
 DROP POLICY IF EXISTS "Manage Knowledge" ON sproutly_knowledge;
-CREATE POLICY "Manage Knowledge" ON sproutly_knowledge FOR ALL USING ( check_is_admin() OR check_is_manager_or_director() );
+CREATE POLICY "Manage Knowledge" ON sproutly_knowledge FOR ALL USING ( check_is_admin() );
 
 -- 10. NEW USER TRIGGER
 CREATE OR REPLACE FUNCTION public.handle_new_user() 
@@ -305,14 +291,13 @@ const DbRepairModal: React.FC<DbRepairModalProps> = ({ isOpen, onClose }) => {
         <div className="bg-amber-50 p-4 rounded-xl border border-amber-100 flex items-start gap-3">
             <span className="text-xl">🛠️</span>
             <div>
-                <h4 className="font-bold text-amber-900 text-sm">Action Required: Update Database Policies</h4>
-                <p className="text-xs text-amber-800 mt-1 mb-2">
-                   You are seeing RLS errors because the database policies are too strict. Run this script to allow Admins/Directors to manage team data.
-                </p>
-                <ol className="list-decimal list-inside text-xs text-amber-800 space-y-1">
+                <h4 className="font-bold text-amber-900 text-sm">How to Fix Your Database</h4>
+                <ol className="list-decimal list-inside text-xs text-amber-800 mt-2 space-y-1">
                     <li>Click <strong>"Copy Repair Script"</strong> below.</li>
-                    <li>Go to your <strong>Supabase Dashboard</strong> {'>'} <strong>SQL Editor</strong>.</li>
-                    <li>Paste the script into a new query and click <strong>RUN</strong>.</li>
+                    <li>Go to your <strong>Supabase Dashboard</strong>.</li>
+                    <li>Click <strong>SQL Editor</strong> in the left sidebar.</li>
+                    <li>Paste the script into a new query.</li>
+                    <li>Click <strong>RUN</strong>.</li>
                 </ol>
             </div>
         </div>

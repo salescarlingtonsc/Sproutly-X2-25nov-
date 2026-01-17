@@ -49,11 +49,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const checkSession = async () => {
       try {
-        // TIMEOUT WRAPPER: Force fail if Supabase hangs > 5s
-        const sessionPromise = supabase.auth.getSession();
-        const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Auth Init Timeout")), 5000));
-        
-        const { data: { session }, error } = await Promise.race([sessionPromise, timeoutPromise]) as any;
+        const { data: { session }, error } = await supabase.auth.getSession();
         
         if (error) throw error;
 
@@ -91,18 +87,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       } catch (err: any) {
         // Ignore abort errors which can happen in strict mode or rapid navigation
-        const msg = (err.message || '').toLowerCase();
-        if (
-            err.name === 'AbortError' || 
-            msg.includes('aborted') ||
-            msg.includes('signal') ||
-            msg.includes('fetch failed')
-        ) {
+        if (err.name === 'AbortError' || err.message?.includes('aborted')) {
             return;
         }
-        console.error("Session check failed/timed out", err);
-        // If timed out, but we have cache, we stay logged in (offline mode).
-        // If no cache, we stop loading so user sees Landing Page instead of white screen.
+        console.error("Session check failed", err);
         if (!hasCache) setIsLoading(false);
       }
     };

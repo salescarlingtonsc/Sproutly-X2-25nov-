@@ -25,11 +25,6 @@ const FREQUENCY_MULTIPLIERS: Record<string, number> = {
 // --- HELPER FUNCTIONS ---
 
 const calculateInvested = (p: PortfolioItem) => {
-  // Priority: Manual Override (This fixes the calculation issue)
-  if (p.totalInvested !== undefined && p.totalInvested !== null && p.totalInvested > 0) {
-      return p.totalInvested;
-  }
-
   if (p.frequency === 'lump_sum') return p.premium;
   
   const start = new Date(p.inceptionDate);
@@ -77,15 +72,11 @@ const PortfolioTab: React.FC<PortfolioTabProps> = ({ clients, onUpdateClient }) 
   const [formPremium, setFormPremium] = useState('');
   const [formFreq, setFormFreq] = useState<'monthly'|'yearly'|'lump_sum'>('monthly');
   const [formCurrentValue, setFormCurrentValue] = useState('');
-  const [formInvestedOverride, setFormInvestedOverride] = useState(''); // New State for Override
   
   const [editingItem, setEditingItem] = useState<{clientId: string, item: PortfolioItem} | null>(null);
   
   const [analysisResult, setAnalysisResult] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  
-  // Masking State
-  const [maskNames, setMaskNames] = useState(false);
 
   // --- AGGREGATION ---
   const consolidatedData = useMemo(() => {
@@ -109,7 +100,6 @@ const PortfolioTab: React.FC<PortfolioTabProps> = ({ clients, onUpdateClient }) 
           id: p.id,
           clientId: client.id,
           clientName: client.profile.name || client.name,
-          clientRef: client.referenceCode || client.id.substring(0, 6),
           advisor: client._ownerEmail?.split('@')[0] || 'Unassigned',
           plan: p.planName,
           insurer: p.insurer,
@@ -149,7 +139,6 @@ const PortfolioTab: React.FC<PortfolioTabProps> = ({ clients, onUpdateClient }) 
       premium: parseFloat(formPremium),
       frequency: formFreq as any,
       currentValue: parseFloat(formCurrentValue),
-      totalInvested: formInvestedOverride ? parseFloat(formInvestedOverride) : undefined, // Save override value
       lastUpdated: new Date().toISOString()
     };
 
@@ -174,8 +163,6 @@ const PortfolioTab: React.FC<PortfolioTabProps> = ({ clients, onUpdateClient }) 
     setFormPremium(row.premium.toString());
     setFormFreq(row.freq);
     setFormCurrentValue(row.current.toString());
-    // Load existing override or empty
-    setFormInvestedOverride(row.originalItem.totalInvested ? row.originalItem.totalInvested.toString() : '');
     setIsAddModalOpen(true);
   };
 
@@ -187,7 +174,6 @@ const PortfolioTab: React.FC<PortfolioTabProps> = ({ clients, onUpdateClient }) 
     setFormInception('');
     setFormPremium('');
     setFormCurrentValue('');
-    setFormInvestedOverride('');
   };
 
   const runAnalysis = async () => {
@@ -226,14 +212,6 @@ const PortfolioTab: React.FC<PortfolioTabProps> = ({ clients, onUpdateClient }) 
         subtitle="Consolidated view of all Investment-Linked Policies under management."
         action={
           <div className="flex gap-2">
-             <Button 
-                variant="ghost" 
-                onClick={() => setMaskNames(!maskNames)} 
-                className={maskNames ? 'bg-indigo-50 text-indigo-600' : ''}
-                leftIcon={maskNames ? '🙈' : '👁️'}
-             >
-                {maskNames ? 'Masked' : 'Mask Names'}
-             </Button>
              <Button variant="secondary" onClick={runAnalysis} isLoading={isAnalyzing} leftIcon="🧠">
                 AI Analyst
              </Button>
@@ -313,20 +291,14 @@ const PortfolioTab: React.FC<PortfolioTabProps> = ({ clients, onUpdateClient }) 
                      consolidatedData.rows.map((row) => (
                         <tr key={row.id} className="hover:bg-slate-50/80 transition-colors group">
                            <td className="px-6 py-4">
-                              <div className="font-bold text-slate-900">
-                                  {/* MASKING APPLIED HERE */}
-                                  {maskNames ? `Client ${row.clientRef}` : row.clientName}
-                              </div>
+                              <div className="font-bold text-slate-900">{row.clientName}</div>
                               <div className="text-[10px] text-slate-400 font-medium">Adv: {row.advisor}</div>
                            </td>
                            <td className="px-6 py-4">
                               <div className="font-medium text-slate-700">{row.plan}</div>
                               <div className="text-[10px] text-slate-500">{row.insurer} • Since {new Date(row.inception).getFullYear()}</div>
                            </td>
-                           <td className="px-6 py-4 text-right font-mono text-slate-600">
-                               {fmtSGD(row.invested)}
-                               {row.originalItem.totalInvested && <span className="text-[9px] text-slate-400 ml-1">(Fixed)</span>}
-                           </td>
+                           <td className="px-6 py-4 text-right font-mono text-slate-600">{fmtSGD(row.invested)}</td>
                            <td className="px-6 py-4 text-right font-mono font-bold text-slate-800">{fmtSGD(row.current)}</td>
                            <td className="px-6 py-4 text-right">
                               <div className={`font-bold ${row.pl >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
@@ -366,8 +338,7 @@ const PortfolioTab: React.FC<PortfolioTabProps> = ({ clients, onUpdateClient }) 
                      onChange={e => setSelectedClientId(e.target.value)}
                   >
                      <option value="">-- Choose Client --</option>
-                     {/* MASKING APPLIED HERE TOO */}
-                     {clients.map(c => <option key={c.id} value={c.id}>{maskNames ? c.referenceCode : c.profile.name}</option>)}
+                     {clients.map(c => <option key={c.id} value={c.id}>{c.profile.name}</option>)}
                   </select>
                </div>
             )}
@@ -409,23 +380,6 @@ const PortfolioTab: React.FC<PortfolioTabProps> = ({ clients, onUpdateClient }) 
                   <label className="block text-[10px] font-bold text-emerald-600 uppercase mb-1">Current Value ($)</label>
                   <input type="number" className="w-full p-2 border border-emerald-200 rounded-lg text-sm outline-none font-bold text-emerald-700 bg-emerald-50" value={formCurrentValue} onChange={e => setFormCurrentValue(e.target.value)} placeholder="Updated Value" />
                </div>
-            </div>
-
-            {/* NEW FIELD: Total Net Invested Override */}
-            <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 mt-2">
-               <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">
-                   Total Net Invested (Override)
-               </label>
-               <input 
-                   type="number" 
-                   className="w-full p-2 border border-slate-300 rounded-lg text-sm outline-none font-mono" 
-                   value={formInvestedOverride} 
-                   onChange={e => setFormInvestedOverride(e.target.value)} 
-                   placeholder="Auto-calculated if empty" 
-               />
-               <p className="text-[10px] text-slate-400 mt-1 italic">
-                   Set this value manually to fix the cost basis. P/L will be calculated as Current Value - this amount.
-               </p>
             </div>
 
             <div className="pt-4 flex gap-3">

@@ -76,30 +76,6 @@ const CashflowTab: React.FC = () => {
         return months / 12;
     };
 
-    // Helper: Calculate projection month index from an (Age, Month) input
-    // This fixes the "Year Later" bug by respecting DOB
-    const getProjectionMonthIndex = (targetAge: number, targetMonthIdx: number) => {
-        if (dobDate) {
-            // Determine the calendar year where this Age occurs
-            // E.g. Born Dec 1990. "Age 30, Jan" -> Jan 2021 (because Jan 2020 was Age 29)
-            // Logic: Base Year = BirthYear + TargetAge.
-            // If targetMonth < birthMonth, it means the birthday hasn't happened in that calendar year yet,
-            // so to be "Age X", it must be the NEXT calendar year (Year+1).
-            
-            let targetYear = dobDate.getFullYear() + targetAge;
-            if (targetMonthIdx < dobDate.getMonth()) {
-               targetYear += 1;
-            }
-            
-            // Now diff against start
-            const diffYears = targetYear - startYear;
-            const diffMonths = targetMonthIdx - startMonth;
-            return diffYears * 12 + diffMonths;
-        }
-        // Fallback if no DOB: Simple offset from current age
-        return (targetAge - currentAge) * 12 + (targetMonthIdx - startMonth);
-    };
-
     const targetAge = parseInt(projectToAge) || 100;
     const totalMonths = Math.max(1, (targetAge - currentAge) * 12);
     const projection: any[] = [];
@@ -165,9 +141,8 @@ const CashflowTab: React.FC = () => {
       // Add. Income
       additionalIncomes.forEach(i => {
          if (i.isEnabled === false) return; // Skip disabled
-         
-         let startM = getProjectionMonthIndex(toNum(i.startAge), toNum(i.startMonth));
-         const endM = i.endAge ? getProjectionMonthIndex(toNum(i.endAge), (i.endMonth || 11)) : 9999;
+         let startM = (toNum(i.startAge) - currentAge)*12 + (toNum(i.startMonth)-startMonth);
+         const endM = i.endAge ? (toNum(i.endAge)-currentAge)*12 + ((i.endMonth||11)-startMonth) : 9999;
          
          // CRITICAL FIX: If a One-Time income is scheduled for the past (e.g. Jan when it's June), 
          // snap it to Month 0 (Now) so it isn't lost in the projection.
@@ -193,8 +168,8 @@ const CashflowTab: React.FC = () => {
       // Withdrawals
       withdrawals.forEach(w => {
          if (w.isEnabled === false) return; // Skip disabled
-         let startM = getProjectionMonthIndex(toNum(w.startAge), toNum(w.startMonth));
-         const endM = w.endAge ? getProjectionMonthIndex(toNum(w.endAge), (w.endMonth || 11)) : 9999;
+         let startM = (toNum(w.startAge) - currentAge)*12 + (toNum(w.startMonth)-startMonth);
+         const endM = w.endAge ? (toNum(w.endAge)-currentAge)*12 + ((w.endMonth||11)-startMonth) : 9999;
          
          // CRITICAL FIX: Same for One-Time withdrawals
          if (w.type === 'onetime' && startM < 0 && startM > -12) {

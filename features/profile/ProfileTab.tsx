@@ -1,3 +1,4 @@
+
 import React, { useMemo, useState, useRef, useEffect } from 'react';
 import { useClient } from '../../contexts/ClientContext';
 import { toNum, fmtSGD } from '../../lib/helpers';
@@ -72,7 +73,6 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
 
   // Chart State
   const [showCostOfWaiting, setShowCostOfWaiting] = useState(false);
-  const [showBankComparison, setShowBankComparison] = useState(true); // Default to true to show the loss immediately
   const [selectedStrategy, setSelectedStrategy] = useState<'conservative' | 'moderate' | 'growth'>('moderate');
   
   // Dynamic Simulation State
@@ -108,12 +108,10 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
   const filteredClients = useMemo(() => {
     if (!searchTerm) return [];
     const lower = searchTerm.toLowerCase();
-    return clients.filter(c => {
-      // SAFE ACCESS: Check if profile exists before accessing name
-      const name = c.profile?.name || c.name || '';
-      const ref = c.referenceCode || '';
-      return name.toLowerCase().includes(lower) || ref.toLowerCase().includes(lower);
-    }).slice(0, 5);
+    return clients.filter(c => 
+      c.profile.name.toLowerCase().includes(lower) ||
+      (c.referenceCode && c.referenceCode.toLowerCase().includes(lower))
+    ).slice(0, 5);
   }, [clients, searchTerm]);
 
   // --- AUDIO BRIEFING ---
@@ -207,16 +205,23 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
   // --- COMPOUNDING PROJECTION (IMPROVED) ---
   const compoundingData = useMemo(() => {
     const monthly = toNum(profile.monthlyInvestmentAmount);
-    const startingPrincipal = toNum(profile.initialLumpSum);
+    const currentPortfolio = investorState ? toNum(investorState.portfolioValue) : 0;
+    const currentCash = cashflowState ? toNum(cashflowState.currentSavings) : 0;
+    const startingPrincipal = currentPortfolio + currentCash;
 
     if (monthly <= 0 && startingPrincipal <= 0) return null;
 
+    // Use dynamic simulation return
     const r = simulationReturn / 100;
     const monthlyRate = r / 12;
     
+    // --- SCENARIO 2: WAIT X YEARS ---
+    // Rules: 
+    // 1. Existing Principal sits in Bank (0.5%) for delayYears.
+    // 2. Monthly Contributions are ZERO for delayYears (delaying the start).
+    // 3. At Year X, Principal moves to Market + Monthly Contributions begin.
     const delayDuration = delayYears;
-    const bankRateAnnual = 0.005; // 0.5% p.a.
-    const bankMonthlyRate = bankRateAnnual / 12;
+    const bankRate = 0.005 / 12; // 0.5% p.a.
 
     const maxAge = retirementAge;
     const duration = maxAge - age;
@@ -224,29 +229,31 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
     
     let finalNow = 0;
     let finalLater = 0;
-    let finalBank = 0;
 
     for (let y = 0; y <= duration + 5; y++) {
         const currentSimAge = age + y;
-        const months = y * 12;
         
-        // --- 1. INVEST NOW ---
+        // --- CALC NOW ---
+        const months = y * 12;
         const growthFactor = Math.pow(1 + monthlyRate, months);
         const pmtFactor = monthlyRate > 0 ? (growthFactor - 1) / monthlyRate : months;
         const valNow = (startingPrincipal * growthFactor) + (monthly * pmtFactor);
 
-        // --- 2. INVEST LATER ---
+        // --- CALC LATER ---
         let valLater = 0;
         if (y < delayDuration) {
-            // Delay Phase: Bank Growth
-            const bankGrowth = Math.pow(1 + bankMonthlyRate, months);
+            // Delay Phase: Principal sits in bank. NO monthly contributions.
+            const bankGrowth = Math.pow(1 + bankRate, months);
             valLater = startingPrincipal * bankGrowth;
         } else {
             // Catch Up Phase:
+            // 1. Principal has grown in bank for Delay Period
             const monthsDelay = delayDuration * 12;
-            const bankGrowthDelayed = Math.pow(1 + bankMonthlyRate, monthsDelay);
+            const bankGrowthDelayed = Math.pow(1 + bankRate, monthsDelay);
             const principalAtStart = startingPrincipal * bankGrowthDelayed;
 
+            // 2. Grow that new principal for (y - delay) years at Investment Rate
+            // 3. START monthly contributions now
             const activeMonths = (y - delayDuration) * 12;
             const growthFactorActive = Math.pow(1 + monthlyRate, activeMonths);
             const pmtFactorActive = (growthFactorActive - 1) / monthlyRate;
@@ -254,15 +261,9 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
             valLater = (principalAtStart * growthFactorActive) + (monthly * pmtFactorActive);
         }
 
-        // --- 3. BANK ONLY (STATUS QUO) ---
-        const bankGrowthFull = Math.pow(1 + bankMonthlyRate, months);
-        const bankPmtFull = (bankGrowthFull - 1) / bankMonthlyRate;
-        const valBank = (startingPrincipal * bankGrowthFull) + (monthly * bankPmtFull);
-
         if (currentSimAge === maxAge) {
             finalNow = valNow;
             finalLater = valLater;
-            finalBank = valBank;
         }
 
         chartData.push({
@@ -270,20 +271,12 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
             label: `Age ${currentSimAge}`,
             now: Math.round(valNow),
             later: Math.round(valLater),
-            bank: Math.round(valBank),
             gap: Math.round(valNow - valLater)
         });
     }
     
-    return { 
-        chartData, 
-        finalNow, 
-        finalLater, 
-        finalBank,
-        opportunityCost: finalNow - finalLater, // Cost of Delay
-        potentialLoss: finalNow - finalBank // Cost of Banking (Risk of Inaction)
-    };
-  }, [profile.monthlyInvestmentAmount, profile.initialLumpSum, simulationReturn, delayYears, age, retirementAge]);
+    return { chartData, finalNow, finalLater, opportunityCost: finalNow - finalLater };
+  }, [profile.monthlyInvestmentAmount, simulationReturn, delayYears, age, retirementAge, investorState?.portfolioValue, cashflowState?.currentSavings]);
 
   const LIFESTYLES = [
     { label: 'Basic', value: '2500', icon: '⛺', desc: 'Simple needs' },
@@ -291,13 +284,6 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
     { label: 'Affluent', value: '8000', icon: '🥂', desc: 'Travel & Dining' },
     { label: 'Legacy', value: '15000', icon: '🏛️', desc: 'Generational wealth' },
   ];
-
-  const handleQuickFillAssets = () => {
-      const currentPortfolio = investorState ? toNum(investorState.portfolioValue) : 0;
-      const currentCash = cashflowState ? toNum(cashflowState.currentSavings) : 0;
-      const total = currentPortfolio + currentCash;
-      setProfile({ ...profile, initialLumpSum: total.toString() });
-  };
 
   // ACTION BUTTONS
   const headerActions = (
@@ -309,7 +295,7 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
                 onChange={(e) => { setSearchTerm(e.target.value); setShowDropdown(true); }}
                 onFocus={() => setShowDropdown(true)}
                 placeholder="Find client..."
-                className="w-48 pl-3 pr-4 py-2 bg-gray-50 border border-gray-200 rounded-lg text-xs font-medium focus:bg-white focus:border-indigo-500 outline-none transition-all"
+                className="w-48 pl-3 pr-4 py-2 bg-gray-50 border border-gray-200 rounded-lg text-xs font-medium focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
              />
              {showDropdown && searchTerm && (
                 <div className="absolute top-full left-0 right-0 mt-2 bg-white border border-gray-100 rounded-xl shadow-xl overflow-hidden z-50">
@@ -319,7 +305,7 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
                         onClick={() => { if (onLoadClient) onLoadClient(c); setSearchTerm(''); setShowDropdown(false); }}
                         className="w-full text-left px-4 py-2 hover:bg-gray-50 text-xs flex justify-between"
                       >
-                        <span className="font-bold">{c.profile?.name || c.name || 'Unknown'}</span>
+                        <span className="font-bold">{c.profile.name}</span>
                         <span className="text-gray-400">{c.referenceCode}</span>
                       </button>
                    ))}
@@ -621,44 +607,19 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
                   </div>
 
                   <div className="bg-white/5 rounded-2xl p-4 border border-white/10 backdrop-blur-md space-y-4">
-                     {/* Input Row */}
-                     <div className="grid grid-cols-2 gap-4">
-                        <div>
-                           <label className="text-[10px] font-bold text-indigo-300 uppercase tracking-widest">Monthly Commitment</label>
-                           <div className="flex items-center mt-1">
-                              <span className="text-xl text-gray-400 mr-1">$</span>
-                              <input 
-                                 type="text" 
-                                 value={profile.monthlyInvestmentAmount || ''} 
-                                 onChange={(e) => setProfile({...profile, monthlyInvestmentAmount: e.target.value})}
-                                 className="w-full bg-transparent text-xl font-bold text-white outline-none placeholder-gray-600"
-                                 placeholder={fmtSGD(currentMonthlySavings)}
-                              />
-                           </div>
+                     {/* Monthly Input */}
+                     <div>
+                        <label className="text-[10px] font-bold text-indigo-300 uppercase tracking-widest">Monthly Commitment</label>
+                        <div className="flex items-center mt-1">
+                           <span className="text-xl text-gray-400 mr-1">$</span>
+                           <input 
+                              type="text" 
+                              value={profile.monthlyInvestmentAmount || ''} 
+                              onChange={(e) => setProfile({...profile, monthlyInvestmentAmount: e.target.value})}
+                              className="w-full bg-transparent text-2xl font-bold text-white outline-none placeholder-gray-600"
+                              placeholder={fmtSGD(currentMonthlySavings)}
+                           />
                         </div>
-                        
-                        <div>
-                           <label className="text-[10px] font-bold text-indigo-300 uppercase tracking-widest">Starting Capital</label>
-                           <div className="flex items-center mt-1">
-                              <span className="text-xl text-gray-400 mr-1">$</span>
-                              <input 
-                                 type="text" 
-                                 value={profile.initialLumpSum || ''} 
-                                 onChange={(e) => setProfile({...profile, initialLumpSum: e.target.value})}
-                                 className="w-full bg-transparent text-xl font-bold text-white outline-none placeholder-gray-600"
-                                 placeholder="0"
-                              />
-                           </div>
-                        </div>
-                     </div>
-                     
-                     <div className="flex justify-end">
-                        <button 
-                           onClick={handleQuickFillAssets}
-                           className="text-[9px] text-indigo-400 hover:text-white font-bold uppercase tracking-widest transition-colors flex items-center gap-1"
-                        >
-                           <span>⤺</span> Quick Fill Current Assets
-                        </button>
                      </div>
 
                      <div className="h-px bg-white/10 w-full"></div>
@@ -691,21 +652,16 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
                         </div>
 
                         <div>
-                           <label className="text-[10px] font-bold text-indigo-300 uppercase tracking-widest mb-1 block">Analysis Tools</label>
-                           <div className="flex flex-col gap-2">
+                           <label className="text-[10px] font-bold text-indigo-300 uppercase tracking-widest mb-1 block">Delay Impact</label>
+                           <div className="flex items-center gap-2 mb-2">
+                              <span className={`text-xl font-bold ${showCostOfWaiting ? 'text-red-400' : 'text-slate-500'}`}>
+                                 {showCostOfWaiting ? `${delayYears} Yrs` : 'None'}
+                              </span>
                               <button 
                                  onClick={() => setShowCostOfWaiting(!showCostOfWaiting)}
-                                 className={`px-2 py-1.5 rounded text-[10px] font-bold uppercase transition-all flex justify-between items-center ${showCostOfWaiting ? 'bg-red-500/20 text-red-400 border border-red-500/30' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'}`}
+                                 className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase transition-all ${showCostOfWaiting ? 'bg-red-500/20 text-red-400 border border-red-500/30' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'}`}
                               >
-                                 <span>Delay Cost</span>
-                                 <span className="text-[8px]">{delayYears}y</span>
-                              </button>
-                              <button 
-                                 onClick={() => setShowBankComparison(!showBankComparison)}
-                                 className={`px-2 py-1.5 rounded text-[10px] font-bold uppercase transition-all flex justify-between items-center ${showBankComparison ? 'bg-slate-600 text-white border border-slate-500' : 'bg-slate-800 text-slate-500 hover:bg-slate-700'}`}
-                              >
-                                 <span>Compare Bank</span>
-                                 <span className="text-[8px]">0.5%</span>
+                                 {showCostOfWaiting ? 'Active' : 'Enable'}
                               </button>
                            </div>
                            {showCostOfWaiting && (
@@ -713,7 +669,7 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
                                  type="range" min="1" max="20" step="1" 
                                  value={delayYears} 
                                  onChange={(e) => setDelayYears(Number(e.target.value))}
-                                 className="w-full h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-red-500 mt-2"
+                                 className="w-full h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-red-500"
                               />
                            )}
                         </div>
@@ -750,10 +706,6 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
                                     <stop offset="5%" stopColor="#94a3b8" stopOpacity={0.8}/>
                                     <stop offset="95%" stopColor="#94a3b8" stopOpacity={0}/>
                                  </linearGradient>
-                                 <linearGradient id="colorBank" x1="0" y1="0" x2="0" y2="1">
-                                    <stop offset="5%" stopColor="#64748b" stopOpacity={0.5}/>
-                                    <stop offset="95%" stopColor="#64748b" stopOpacity={0.1}/>
-                                 </linearGradient>
                               </defs>
                               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#1e293b" />
                               <XAxis dataKey="age" tick={{fill: '#475569', fontSize: 10}} axisLine={false} tickLine={false} tickFormatter={(v) => `Age ${v}`} />
@@ -771,7 +723,7 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
                                  stroke="#10b981" 
                                  strokeWidth={3}
                                  fill="url(#colorNow)" 
-                                 name="Investment Strategy" 
+                                 name="Start Today" 
                                  animationDuration={1500}
                               />
                               
@@ -787,38 +739,27 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
                                     animationDuration={1500}
                                  />
                               )}
-
-                              {showBankComparison && (
-                                 <Area 
-                                    type="monotone" 
-                                    dataKey="bank" 
-                                    stroke="#94a3b8" 
-                                    strokeWidth={2} 
-                                    strokeDasharray="3 3"
-                                    fill="url(#colorBank)" 
-                                    name="Bank Savings (0.5%)" 
-                                    animationDuration={1500}
-                                 />
-                              )}
                            </AreaChart>
                         </ResponsiveContainer>
                      </div>
                      
-                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6 bg-slate-800/50 p-4 rounded-xl border border-white/5">
-                        <div className="text-center md:text-left md:pl-4">
+                     <div className="grid grid-cols-3 gap-4 mt-6 bg-slate-800/50 p-4 rounded-xl border border-white/5">
+                        <div className="text-center">
+                           <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Target Return</div>
+                           <div className="text-xl font-bold text-indigo-400">
+                              {simulationReturn.toFixed(1)}%
+                           </div>
+                        </div>
+                        <div className="text-center">
                            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Projected Wealth</div>
-                           <div className="text-2xl font-black text-emerald-400">{fmtSGD(compoundingData.finalNow)}</div>
-                           <div className="text-[9px] text-emerald-300/60 font-medium mt-1">Target Strategy</div>
+                           <div className="text-xl font-bold text-white">{fmtSGD(compoundingData.finalNow)}</div>
                         </div>
-                        <div className="text-center md:border-l md:border-white/10">
-                           <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Bank Equivalent</div>
-                           <div className="text-2xl font-black text-slate-300">{fmtSGD(compoundingData.finalBank)}</div>
-                           <div className="text-[9px] text-slate-500 font-medium mt-1">If left in savings</div>
-                        </div>
-                        <div className="text-center md:border-l md:border-white/10">
-                           <div className="text-[10px] font-bold text-red-300 uppercase tracking-widest mb-1">Potential Loss</div>
-                           <div className="text-2xl font-black text-red-400">-{fmtSGD(compoundingData.potentialLoss).replace('SGD $', '$')}</div>
-                           <div className="text-[9px] text-red-300/60 font-medium mt-1">Opportunity Cost vs Bank</div>
+                        <div className="text-center relative">
+                           <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Wait {delayYears} Years</div>
+                           <div className={`text-xl font-bold ${showCostOfWaiting ? 'text-red-400 line-through' : 'text-gray-500'}`}>
+                              {fmtSGD(compoundingData.finalLater)}
+                           </div>
+                           {!showCostOfWaiting && <div className="absolute inset-0 flex items-center justify-center bg-slate-800/90 text-[10px] text-white font-bold rounded cursor-pointer" onClick={() => setShowCostOfWaiting(true)}>Tap to Reveal</div>}
                         </div>
                      </div>
                   </div>

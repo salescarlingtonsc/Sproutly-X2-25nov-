@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, memo } from 'react';
-import { Client, FamilyMember, Policy, UserProfile, Sale, Product, ContactStatus, WhatsAppTemplate } from '../../../types';
+import { Client, FamilyMember, Policy, UserProfile, Sale, Product, ContactStatus } from '../../../types';
 import { analyzeClientMomentum, generateInvestmentReport } from '../../../lib/gemini';
 import { DEFAULT_SETTINGS } from '../../../lib/config';
 import { FinancialTools } from './FinancialTools';
@@ -9,11 +9,8 @@ import { useToast } from '../../../contexts/ToastContext';
 import { useDialog } from '../../../contexts/DialogContext'; 
 import { db } from '../../../lib/db';
 import { AddSaleModal } from './AddSaleModal';
-import { WhatsAppModal } from './WhatsAppModal';
 import ClosureDeckModal from './ClosureDeckModal'; 
 import { adminDb } from '../../../lib/db/admin'; 
-import { dbTemplates } from '../../../lib/db/templates';
-import { DEFAULT_TEMPLATES } from '../../../lib/templates';
 
 interface ClientCardProps {
   client: Client;
@@ -110,10 +107,6 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
   const [editingSale, setEditingSale] = useState<Sale | null>(null);
   const [showClosureDeck, setShowClosureDeck] = useState(false);
 
-  // WhatsApp Logic
-  const [showWhatsApp, setShowWhatsApp] = useState(false);
-  const [templates, setTemplates] = useState<WhatsAppTemplate[]>([]);
-
   // Permission Logic
   const isOwner = client._ownerId === currentUser?.id;
   const canDeleteClient = 
@@ -135,9 +128,10 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
       ? client._ownerEmail 
       : (client.advisorId && client.advisorId === currentUser?.id ? 'Me' : (client.advisorId ? 'Assigned (Pending Sync)' : 'System/Me'));
 
-  // Load Campaigns & Templates
+  // Load Campaigns on Mount with Organization Context
   useEffect(() => {
       const loadSettings = async () => {
+          // Pass current user's org ID to get correct campaigns
           const settings = await adminDb.getSystemSettings(currentUser?.organizationId);
           if (settings?.appSettings?.campaigns && settings.appSettings.campaigns.length > 0) {
               setCampaignOptions(settings.appSettings.campaigns);
@@ -147,17 +141,6 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
       };
       loadSettings();
   }, [currentUser?.organizationId]);
-
-  // Load Templates only when needed or on mount
-  const loadTemplates = useCallback(async () => {
-      const dbTpls = await dbTemplates.getTemplates();
-      const defaults = DEFAULT_TEMPLATES.map(t => ({ id: t.id, label: t.label, content: t.content }));
-      setTemplates(dbTpls.length > 0 ? dbTpls : defaults);
-  }, []);
-
-  useEffect(() => {
-      if (showWhatsApp) loadTemplates();
-  }, [showWhatsApp, loadTemplates]);
 
   const handleRefreshAnalysis = async (e: React.MouseEvent) => {
     e.stopPropagation(); 
@@ -195,13 +178,6 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
       if (field === 'nextFollowUpDate') {
           const newFollowUp = { ...client.followUp, nextFollowUpDate: val };
           onUpdate({ ...client, followUp: newFollowUp });
-          return;
-      }
-      
-      // Special handler for Appt Time to ensure we have a valid time format
-      if (field === 'apptTime') {
-          const newAppts = { ...client.appointments, apptTime: val };
-          onUpdate({ ...client, appointments: newAppts });
           return;
       }
 
@@ -299,7 +275,7 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
           const updatedClient = { ...client, notes: currentNotes, lastUpdated: new Date().toISOString() };
           onUpdate(updatedClient);
           try {
-              await db.saveClient(updatedClient, currentUser?.id || '');
+              await db.saveClient(updatedClient, currentUser?.id);
               toast.success("Log removed.");
           } catch (err: any) {
               console.error("Save after delete failed:", err);
@@ -335,7 +311,7 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
       const sales = (client.sales || []).filter(s => s.id !== saleId);
       const updatedClient = { ...client, sales, lastUpdated: new Date().toISOString() };
       onUpdate(updatedClient);
-      await db.saveClient(updatedClient, currentUser?.id || '');
+      await db.saveClient(updatedClient, currentUser?.id);
       toast.success("Sale deleted.");
   };
 
@@ -399,11 +375,12 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
   const handleWhatsApp = (e: React.MouseEvent) => {
     e.stopPropagation();
     const rawPhone = client.phone || client.profile?.phone || '';
-    
-    if (!rawPhone) {
-      toast.error("No phone number found");
-      return;
-    }
+    let cleanPhone = rawPhone.replace(/\D/g, '');
+    if (cleanPhone.length === 8) cleanPhone = '65' + cleanPhone;
+    const firstName = (client.name || '').split(' ')[0] || 'there';
+    const template = `Hi ${firstName}, it's Sproutly. I found an opportunity that matches your portfolio. Do you have 5 mins?`;
+    const encodedText = encodeURIComponent(template);
+    const url = cleanPhone.length >= 8 ? `https://wa.me/${cleanPhone}?text=${encodedText}` : `https://wa.me/?text=${encodedText}`;
     
     const now = new Date().toISOString();
     const logEntry = {
@@ -418,31 +395,21 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
         lastUpdated: now,
         notes: [logEntry, ...(client.notes || [])]
     });
-    
-    // Instead of opening directly, open the Modal
-    setShowWhatsApp(true);
+    logActivity(client.id, 'message', 'WhatsApp chat initiated');
+    window.open(url, '_blank');
   };
 
   const handleCalendar = (e: React.MouseEvent) => {
     e.stopPropagation();
     let url = '';
-    
-    // Construct Google Calendar Link
     if (client.firstApptDate) {
-        const dateStr = client.firstApptDate.split('T')[0];
-        const timeStr = client.appointments?.apptTime || '12:00';
-        
-        const startDate = new Date(`${dateStr}T${timeStr}:00`);
-        const endDate = new Date(startDate.getTime() + 60 * 60 * 1000); // 1 hour duration
-        
+        const startDate = new Date(client.firstApptDate);
+        const endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
         const fmt = (d: Date) => d.toISOString().replace(/-|:|\.\d\d\d/g, "");
-        
-        const details = `Client: ${client.name}\nPhone: ${client.phone}\n\nSproutly Review Session`;
-        url = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=Meeting+with+${encodeURIComponent(client.name)}&details=${encodeURIComponent(details)}&dates=${fmt(startDate)}/${fmt(endDate)}`;
+        url = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=Meeting+with+${encodeURIComponent(client.name)}&details=Sproutly+Client+Review&dates=${fmt(startDate)}/${fmt(endDate)}`;
     } else {
         url = `https://calendar.google.com/calendar/u/0/r/eventedit?text=Meeting+with+${encodeURIComponent(client.name)}&details=Review+portfolio+performance`;
     }
-    
     window.open(url, '_blank');
   };
 
@@ -451,9 +418,6 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
     if (score >= 40) return 'text-amber-600 bg-amber-50 border-amber-100';
     return 'text-rose-600 bg-rose-50 border-rose-100';
   };
-
-  const hasApptDate = !!client.firstApptDate;
-  const hasApptTime = !!client.appointments?.apptTime;
 
   return (
     <div className="group bg-white rounded-xl border border-slate-200 shadow-sm hover:shadow-md transition-all duration-200 cursor-default mb-3 relative overflow-hidden flex flex-col h-full max-h-[700px]">
@@ -517,40 +481,15 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
 
                   <div className="border-t border-slate-100 my-2"></div>
                   {/* Scheduling Row */}
-                  <div className="space-y-3">
-                      <div className="grid grid-cols-2 gap-4">
-                          <EditableField label="Next Appt (Firm)" value={client.firstApptDate} onChange={(v:any) => handleUpdateField('firstApptDate', v)} type="date" />
-                          <div className="space-y-1">
-                              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Time</label>
-                              <div className="flex items-center gap-2">
-                                  <input 
-                                      type="time" 
-                                      value={client.appointments?.apptTime || ''} 
-                                      onChange={(e) => handleUpdateField('apptTime', e.target.value)} 
-                                      className="w-full bg-slate-50 border border-slate-200 text-slate-700 text-xs rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:bg-white transition-all" 
-                                  />
-                                  {hasApptDate && hasApptTime && (
-                                      <button 
-                                          onClick={handleCalendar}
-                                          className="bg-blue-50 hover:bg-blue-100 text-blue-600 border border-blue-200 p-1.5 rounded-lg transition-colors flex items-center gap-1 shrink-0"
-                                          title="Sync to Google Calendar"
-                                      >
-                                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
-                                      </button>
-                                  )}
-                              </div>
-                          </div>
-                      </div>
-                      
-                      <div className="grid grid-cols-2 gap-4">
-                          <EditableField label="Next Follow Up (Task)" value={client.followUp?.nextFollowUpDate} onChange={(v:any) => handleUpdateField('nextFollowUpDate', v)} type="date" />
-                          <EditableField label="Status" value={client.contactStatus} onChange={(v:any) => handleUpdateField('contactStatus', v)} type="select" options={['Uncontacted', 'Attempted', 'Active']} />
-                      </div>
+                  <div className="grid grid-cols-2 gap-4">
+                      <EditableField label="Next Appt (Firm)" value={client.firstApptDate} onChange={(v:any) => handleUpdateField('firstApptDate', v)} type="datetime-local" />
+                      <EditableField label="Next Follow Up (Task)" value={client.followUp?.nextFollowUpDate} onChange={(v:any) => handleUpdateField('nextFollowUpDate', v)} type="date" />
                   </div>
                   
                   {/* Contact Info */}
                   <div className="border-t border-slate-100 my-2"></div>
                   <div className="grid grid-cols-2 gap-4">
+                      <EditableField label="Status" value={client.contactStatus} onChange={(v:any) => handleUpdateField('contactStatus', v)} type="select" options={['Uncontacted', 'Attempted', 'Active']} />
                       <EditableField label="Phone" value={client.phone} onChange={(v:any) => handleUpdateField('phone', v)} type="text" />
                       <EditableField label="Email" value={client.email} onChange={(v:any) => handleUpdateField('email', v)} type="text" />
                       <EditableField label="DOB" value={client.profile?.dob} onChange={(v:any) => handleUpdateField('dob', v)} type="date" />
@@ -585,7 +524,7 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
                           <div className="space-y-1">
                               <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Est. Monthly Income</label>
                               <div className="text-xs font-bold text-slate-700 px-2 py-1.5 bg-slate-100 rounded-lg border border-slate-200">
-                                  {fmtSGD(toNum(client.profile?.monthlyIncome) || toNum(client.profile?.grossSalary))}
+                                  {fmtSGD(toNum(client.profile.monthlyIncome) || toNum(client.profile.grossSalary))}
                               </div>
                           </div>
                       </div>
@@ -629,15 +568,6 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
       </div>
       
       {/* Modals */}
-      {showWhatsApp && (
-          <WhatsAppModal 
-              client={client} 
-              templates={templates} 
-              onClose={() => setShowWhatsApp(false)}
-              onTemplatesUpdate={loadTemplates}
-          />
-      )}
-
       {reportModalOpen && (
           <div className="absolute inset-0 z-50 bg-white flex flex-col p-4 animate-fade-in" onClick={e => e.stopPropagation()}>
               <div className="flex justify-between items-center mb-4 border-b border-slate-100 pb-2"><h3 className="font-bold text-sm text-slate-800">Generated Report</h3><button onClick={() => setReportModalOpen(false)} className="text-slate-400 hover:text-slate-600">✕</button></div>

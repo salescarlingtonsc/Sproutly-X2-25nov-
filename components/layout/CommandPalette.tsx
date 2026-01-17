@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef } from 'react';
 import { TAB_DEFINITIONS } from '../../lib/config';
 import { Client } from '../../types';
@@ -38,11 +39,10 @@ const CommandPalette: React.FC<CommandPaletteProps> = ({ clients, onNavigate, on
     t.label.toLowerCase().includes(query.toLowerCase()) && t.id !== 'admin'
   ).slice(0, 4);
   
-  const filteredClients = clients.filter(c => {
-    const name = c.profile?.name || c.name || '';
-    const ref = c.referenceCode || '';
-    return name.toLowerCase().includes(query.toLowerCase()) || ref.toLowerCase().includes(query.toLowerCase());
-  }).slice(0, 5);
+  const filteredClients = clients.filter(c => 
+    c.profile.name.toLowerCase().includes(query.toLowerCase()) || 
+    (c.referenceCode || '').toLowerCase().includes(query.toLowerCase())
+  ).slice(0, 5);
 
   const allResults = [
     ...filteredTabs.map(t => ({ type: 'tab', data: t })),
@@ -122,8 +122,8 @@ const CommandPalette: React.FC<CommandPaletteProps> = ({ clients, onNavigate, on
                       {isTab ? d.icon : '👤'}
                     </span>
                     <div className="flex-1 min-w-0">
-                       <div className="font-bold text-sm truncate">{isTab ? d.label : (d.profile?.name || d.name || 'Unnamed')}</div>
-                       {!isTab && <div className={`text-[10px] uppercase font-black tracking-tighter opacity-50`}>{d.profile?.phone || d.profile?.email || '-'}</div>}
+                       <div className="font-bold text-sm truncate">{isTab ? d.label : d.profile.name}</div>
+                       {!isTab && <div className={`text-[10px] uppercase font-black tracking-tighter opacity-50`}>{d.profile.phone || d.profile.email}</div>}
                     </div>
                     {isActive && <span className="text-[10px] font-black opacity-30 tracking-widest uppercase pr-2">Return ↵</span>}
                   </button>

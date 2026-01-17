@@ -1,22 +1,16 @@
 
 import React, { useState, useEffect } from 'react';
 import { Client, WhatsAppTemplate } from '../../../types';
-import { dbTemplates } from '../../../lib/db/templates';
-import { useToast } from '../../../contexts/ToastContext';
-import { interpolateTemplate } from '../../../lib/templates';
 
 interface WhatsAppModalProps {
   client: Client;
   templates: WhatsAppTemplate[]; // Receive templates as prop
   onClose: () => void;
-  onTemplatesUpdate?: () => void; // Optional callback to refresh templates
 }
 
-export const WhatsAppModal: React.FC<WhatsAppModalProps> = ({ client, templates, onClose, onTemplatesUpdate }) => {
-  const toast = useToast();
+export const WhatsAppModal: React.FC<WhatsAppModalProps> = ({ client, templates, onClose }) => {
   const [selectedTemplateId, setSelectedTemplateId] = useState(templates[0]?.id || 'custom');
   const [message, setMessage] = useState('');
-  const [isSaving, setIsSaving] = useState(false);
 
   // Update message when template or client changes
   useEffect(() => {
@@ -27,17 +21,26 @@ export const WhatsAppModal: React.FC<WhatsAppModalProps> = ({ client, templates,
 
     const template = templates.find(t => t.id === selectedTemplateId);
     if (template) {
-      // Pull strictly from the "Next Appt (Firm)" field and "Time" field
-      const dateVal = client.firstApptDate || '';
-      const timeVal = client.appointments?.apptTime || '';
+      // Use existing content property
+      let text = template.content || ''; 
       
-      // Use the centralized interpolation logic to handle {formatted_appt}
-      const text = interpolateTemplate(template.content || '', client.name, dateVal, timeVal);
+      // Use full name as requested
+      text = text.replace('{{name}}', client.name).replace('{name}', client.name);
       
-      // Legacy support for {{advisor}} if needed
-      const finalText = text.replace('{{advisor}}', 'Advisor').replace('{advisor}', 'Advisor');
+      // Handle time replacement if relevant
+      if (text.includes('{{time}}') || text.includes('{time}')) {
+          const time = client.firstApptDate 
+            ? new Date(client.firstApptDate).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})
+            : 'our scheduled time';
+          text = text.replace('{{time}}', time).replace('{time}', time);
+      }
       
-      setMessage(finalText);
+      // Handle advisor replacement if relevant
+      if (text.includes('{{advisor}}')) {
+          text = text.replace('{{advisor}}', 'Advisor'); // Default placeholder
+      }
+      
+      setMessage(text);
     }
   }, [selectedTemplateId, client, templates]);
 
@@ -47,25 +50,6 @@ export const WhatsAppModal: React.FC<WhatsAppModalProps> = ({ client, templates,
     const url = `https://wa.me/${phoneNumber}?text=${encodeURIComponent(message)}`;
     window.open(url, '_blank');
     onClose();
-  };
-
-  const handleSaveTemplate = async () => {
-      const name = prompt("Enter a name for this new template:");
-      if (!name) return;
-      
-      setIsSaving(true);
-      try {
-          await dbTemplates.saveTemplate({
-              label: name,
-              content: message
-          });
-          toast.success("Template saved!");
-          if (onTemplatesUpdate) onTemplatesUpdate();
-      } catch (e: any) {
-          toast.error("Failed to save template: " + e.message);
-      } finally {
-          setIsSaving(false);
-      }
   };
 
   return (
@@ -87,7 +71,7 @@ export const WhatsAppModal: React.FC<WhatsAppModalProps> = ({ client, templates,
         <div className="p-6">
             <div className="mb-4">
                 <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Select Template</label>
-                <div className="grid grid-cols-2 gap-2 max-h-40 overflow-y-auto custom-scrollbar">
+                <div className="grid grid-cols-2 gap-2 max-h-40 overflow-y-auto">
                     {templates.map(t => (
                         <button
                             key={t.id}
@@ -106,24 +90,15 @@ export const WhatsAppModal: React.FC<WhatsAppModalProps> = ({ client, templates,
                 </div>
             </div>
 
-            <div className="mb-4">
-                 <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Message Content</label>
+            <div className="mb-6">
+                 <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Message Preview</label>
                  <textarea
                     value={message}
                     onChange={(e) => setMessage(e.target.value)}
                     placeholder="Type your message here..."
                     className="w-full h-32 p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#25D366]/50 resize-none"
                  />
-                 <div className="flex justify-between items-center mt-2">
-                    <p className="text-[10px] text-slate-400">To: {client.name} ({client.phone})</p>
-                    <button 
-                        onClick={handleSaveTemplate} 
-                        disabled={isSaving || !message}
-                        className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-1 bg-indigo-50 px-2 py-1 rounded border border-indigo-100 disabled:opacity-50"
-                    >
-                        {isSaving ? 'Saving...' : '💾 Save as Template'}
-                    </button>
-                 </div>
+                 <p className="text-[10px] text-slate-400 mt-2 text-right">To: {client.name} ({client.phone})</p>
             </div>
 
             <button 

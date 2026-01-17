@@ -1,3 +1,4 @@
+
 import React, { memo, useState, useRef, useEffect } from 'react';
 import { Client } from '../../../types';
 import EditableCell from './EditableCell';
@@ -83,7 +84,7 @@ const CrmRow: React.FC<CrmRowProps> = memo(({
   };
 
   const handleTemplateSelect = (template: DBTemplate) => {
-    const rawPhone = String(client.profile?.phone || '');
+    const rawPhone = String(client.profile.phone || '');
     let cleanPhone = rawPhone.replace(/\D/g, ''); 
     if (cleanPhone.length === 8) cleanPhone = '65' + cleanPhone;
     
@@ -92,7 +93,7 @@ const CrmRow: React.FC<CrmRowProps> = memo(({
       return;
     }
 
-    const name = client.profile?.name || 'there';
+    const name = client.profile.name || 'there';
     const date = String(client.appointments?.firstApptDate || '').split('T')[0];
     const time = client.appointments?.apptTime || '12pm';
     
