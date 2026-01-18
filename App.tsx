@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from './contexts/AuthContext';
 import { ClientProvider, useClient } from './contexts/ClientContext';
@@ -433,6 +434,7 @@ const AppInner: React.FC = () => {
       lastSavedTime={lastSaved}
       clients={clients}
       onLoadClient={handleLoadClient}
+      onSystemRefresh={() => window.location.reload()}
     >
       {activeTab === 'disclaimer' && <DisclaimerTab />}
       {activeTab === 'dashboard' && <DashboardTab user={user} clients={clients} setActiveTab={setActiveTab} onLoadClient={handleLoadClient} onNewClient={handleNewClient} />}

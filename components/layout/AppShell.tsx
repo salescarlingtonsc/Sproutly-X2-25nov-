@@ -1,3 +1,4 @@
+
 import React, { useState, useRef, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { canAccessTab, TAB_DEFINITIONS } from '../../lib/config';
@@ -24,6 +25,7 @@ interface AppShellProps {
   // New Props for Navigation/Search
   clients?: Client[];
   onLoadClient?: (client: Client) => void;
+  onSystemRefresh?: () => void;
 }
 
 const AppShell: React.FC<AppShellProps> = ({ 
@@ -37,7 +39,8 @@ const AppShell: React.FC<AppShellProps> = ({
   saveStatus = 'idle',
   lastSavedTime,
   clients = [],
-  onLoadClient
+  onLoadClient,
+  onSystemRefresh
 }) => {
   const { user, signOut, refreshProfile } = useAuth();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -45,6 +48,7 @@ const AppShell: React.FC<AppShellProps> = ({
   const [isEditProfileOpen, setIsEditProfileOpen] = useState(false); // Edit Profile State
   const [editName, setEditName] = useState('');
   const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [showRefreshBtn, setShowRefreshBtn] = useState(false);
 
   const profileRef = useRef<HTMLDivElement>(null);
 
@@ -60,6 +64,19 @@ const AppShell: React.FC<AppShellProps> = ({
       document.removeEventListener("mousedown", handleClickOutside);
     };
   }, [profileRef]);
+
+  // Monitor Sync Duration
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout>;
+    if (saveStatus === 'saving') {
+      timer = setTimeout(() => {
+        setShowRefreshBtn(true);
+      }, 1000); // 1 second threshold
+    } else {
+      setShowRefreshBtn(false);
+    }
+    return () => clearTimeout(timer);
+  }, [saveStatus]);
 
   const handleTabChange = (tabId: string) => {
     if (canAccessTab(user, tabId)) {
@@ -175,9 +192,19 @@ const AppShell: React.FC<AppShellProps> = ({
                {!isReadOnly && (
                   <div className="flex flex-col items-end mr-1 md:mr-2 min-w-[80px]">
                      {saveStatus === 'saving' && (
-                        <span className="text-[10px] text-indigo-600 font-bold flex items-center gap-1 bg-indigo-50/80 backdrop-blur-sm px-2 py-1 rounded-full border border-indigo-100 transition-all animate-pulse">
-                           <span className="animate-spin">↻</span> <span className="hidden sm:inline">Syncing...</span>
-                        </span>
+                        <>
+                           <span className="text-[10px] text-indigo-600 font-bold flex items-center gap-1 bg-indigo-50/80 backdrop-blur-sm px-2 py-1 rounded-full border border-indigo-100 transition-all animate-pulse">
+                              <span className="animate-spin">↻</span> <span className="hidden sm:inline">Syncing...</span>
+                           </span>
+                           {showRefreshBtn && onSystemRefresh && (
+                              <button 
+                                 onClick={onSystemRefresh}
+                                 className="mt-1 flex items-center justify-center gap-1 px-2 py-0.5 bg-blue-50 text-blue-600 hover:bg-blue-100 border border-blue-100 rounded text-[9px] font-bold transition-colors shadow-sm animate-in fade-in"
+                              >
+                                 Refresh
+                              </button>
+                           )}
+                        </>
                      )}
                      {saveStatus === 'saved' && (
                         <span className="text-[10px] text-emerald-600 font-bold flex items-center gap-1 bg-emerald-50/80 backdrop-blur-sm px-2 py-1 rounded-full border border-emerald-100 transition-all animate-in zoom-in-95 duration-200">
