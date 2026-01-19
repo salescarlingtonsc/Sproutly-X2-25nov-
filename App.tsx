@@ -159,6 +159,7 @@ export default function App() {
       {activeTab === 'property' && <PropertyCalculatorTab />}
       {activeTab === 'vision' && <VisionBoardTab />}
       {activeTab === 'analytics' && <AnalyticsTab clients={clients} />}
+      {activeTab === 'report' && <ReportTab clients={clients} />}
       {activeTab === 'admin' && <AdminTab />}
       {activeTab === 'disclaimer' && <DisclaimerTab />}
     </AppShell>
