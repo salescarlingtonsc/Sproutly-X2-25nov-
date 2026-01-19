@@ -3,16 +3,19 @@ import { db } from '../../lib/db';
 import { Client, Product, Sale, ContactStatus } from '../../types';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
+import { useClient } from '../../contexts/ClientContext';
 import { logActivity } from '../../lib/db/activities';
 import { adminDb } from '../../lib/db/admin';
-import { supabase } from '../../lib/supabase'; // Import Supabase
+import { supabase } from '../../lib/supabase';
+import { ClientCard } from '../crm/components/ClientCard';
 
 const RemindersTab: React.FC = () => {
   const { user } = useAuth();
+  const { loadClient } = useClient(); // Sync with global context for AI
   const toast = useToast();
   const [clients, setClients] = useState<Client[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
-  const [advisorMap, setAdvisorMap] = useState<Record<string, string>>({}); // New state for advisor names/emails
+  const [advisorMap, setAdvisorMap] = useState<Record<string, string>>({});
   
   // Filter State
   const [advisorFilter, setAdvisorFilter] = useState<string>('All');
@@ -25,7 +28,6 @@ const RemindersTab: React.FC = () => {
     refreshData();
     // Load products for the ClientCard dropdowns
     const fetchConfig = async () => {
-        // Pass organization ID to fetch specific products
         const settings = await adminDb.getSystemSettings(user?.organizationId);
         if (settings?.products) setProducts(settings.products);
     };
@@ -35,6 +37,25 @@ const RemindersTab: React.FC = () => {
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
   }, [user]);
+
+  // Sync selectedClient with latest data from list (e.g. after background refresh)
+  useEffect(() => {
+      if (selectedClient && clients.length > 0) {
+          const fresh = clients.find(c => c.id === selectedClient.id);
+          if (fresh) {
+              // Only overwrite if the DB version is newer or equal, OR if they are different content
+              // We want to avoid overwriting optimistic updates with stale DB data
+              const freshTime = new Date(fresh.lastUpdated || 0).getTime();
+              const currTime = new Date(selectedClient.lastUpdated || 0).getTime();
+              
+              if (freshTime >= currTime && JSON.stringify(fresh) !== JSON.stringify(selectedClient)) {
+                  setSelectedClient(fresh);
+                  // Ensure global context stays in sync too
+                  loadClient(fresh);
+              }
+          }
+      }
+  }, [clients]);
 
   // Fetch Advisor Profiles to resolve IDs to Emails/Names
   useEffect(() => {
@@ -57,7 +78,6 @@ const RemindersTab: React.FC = () => {
             if (data) {
                 const newMap: Record<string, string> = {};
                 data.forEach(p => {
-                    // Prefer: Name (Email) > Email > Name
                     let displayLabel = p.email || 'Unknown';
                     if (p.name && p.name.trim() !== '' && p.email) {
                         displayLabel = `${p.name} (${p.email})`;
@@ -87,7 +107,6 @@ const RemindersTab: React.FC = () => {
       const map = new Map<string, string>();
       clients.forEach(c => {
           if (c._ownerId) {
-              // Priority: Resolved Map > Client stored email > Fallback ID
               let name = advisorMap[c._ownerId];
               if (!name) {
                   name = c._ownerEmail || `Advisor ${c._ownerId.slice(0,4)}`;
@@ -107,38 +126,20 @@ const RemindersTab: React.FC = () => {
   // Open the full ClientCard modal
   const handleOpenClient = (client: Client) => {
     setSelectedClient(client);
+    loadClient(client); // Activate for AI context
   };
 
-  const handleAddSale = async (sale: Sale) => {
-      if (!saleClient) return;
-      
-      const updatedClient = {
-          ...saleClient,
-          sales: [...(saleClient.sales || []), sale],
-          stage: 'Client',
-          followUp: { ...saleClient.followUp, status: 'client' as ContactStatus },
-          momentumScore: 100,
-          lastUpdated: new Date().toISOString(),
-          stageHistory: [...(saleClient.stageHistory || []), { stage: 'Client', date: new Date().toISOString() }],
-          notes: [{ id: `sale_${Date.now()}`, content: `Sale Closed: ${sale.productName} ($${sale.premiumAmount})`, date: new Date().toISOString(), author: 'System' }, ...(saleClient.notes || [])]
-      };
-
-      setClients(prev => prev.map(c => c.id === updatedClient.id ? updatedClient : c));
-      
-      // If we are currently viewing this client, update the modal too
-      if (selectedClient?.id === updatedClient.id) setSelectedClient(updatedClient);
-      
-      try {
-          await db.saveClient(updatedClient);
-          logActivity(updatedClient.id, 'sale_recorded', `Sale recorded via Reminders: ${sale.productName}`);
-          toast.success("Sale recorded!");
-      } catch (e) {
-          toast.error("Failed to save sale.");
-      }
+  const handleUpdateClient = (updatedC: Client) => {
+      // 1. Optimistic Update of List
+      setClients(prev => prev.map(old => old.id === updatedC.id ? updatedC : old));
+      // 2. Update Modal
+      setSelectedClient(updatedC);
+      // 3. Update Global Context
+      loadClient(updatedC);
+      // 4. Persist (Debounced in DB layer, but good to trigger)
+      db.saveClient(updatedC);
   };
 
-  // --- WISHED / WHATSAPP LOGIC ---
-  
   const isContactedToday = (client: Client) => {
       if (!client.lastContact) return false;
       const contact = new Date(client.lastContact);
@@ -148,7 +149,6 @@ const RemindersTab: React.FC = () => {
              contact.getFullYear() === today.getFullYear();
   };
 
-  // Just mark as wished without opening WhatsApp
   const handleMarkWished = async (e: React.MouseEvent, client: Client) => {
       e.stopPropagation();
       const now = new Date().toISOString();
@@ -164,10 +164,7 @@ const RemindersTab: React.FC = () => {
           }, ...(client.notes || [])]
       };
 
-      setClients(prev => prev.map(c => c.id === client.id ? updatedClient : c));
-      if (selectedClient?.id === client.id) setSelectedClient(updatedClient);
-
-      await db.saveClient(updatedClient);
+      handleUpdateClient(updatedClient);
       toast.success("Checked off!");
   };
 
@@ -180,7 +177,6 @@ const RemindersTab: React.FC = () => {
         return;
     }
 
-    // 1. Construct Message
     let text = '';
     if (isBirthday) {
         text = `Happy Birthday ${client.profile.name.split(' ')[0]}! 🎂 Wishing you a fantastic year ahead!`;
@@ -188,7 +184,6 @@ const RemindersTab: React.FC = () => {
     
     const url = `https://wa.me/${phone}${text ? `?text=${encodeURIComponent(text)}` : ''}`;
 
-    // 2. Mark as "Wished" (Update lastContact) - SAVE FIRST
     if (isBirthday) {
         const now = new Date().toISOString();
         const updatedClient = {
@@ -203,15 +198,11 @@ const RemindersTab: React.FC = () => {
             }, ...(client.notes || [])]
         };
 
-        // Optimistic UI Update (Unhighlights immediately)
-        setClients(prev => prev.map(c => c.id === client.id ? updatedClient : c));
-        if (selectedClient?.id === client.id) setSelectedClient(updatedClient);
-
-        // Don't await the DB save to block UI, but fire it
-        db.saveClient(updatedClient).catch(() => toast.error("Background sync failed"));
+        // Explicit save before window open
+        await db.saveClient(updatedClient);
+        handleUpdateClient(updatedClient);
     }
 
-    // 3. Open WhatsApp with Delay to allow state propagation
     setTimeout(() => {
         window.open(url, '_blank');
         if (isBirthday) toast.success("Marked as wished!");
@@ -221,10 +212,7 @@ const RemindersTab: React.FC = () => {
   const now = new Date();
   const currentMonth = now.getMonth();
 
-  // --- FILTERS ---
-
   const birthdayReminders = filteredClients.filter(c => {
-    // Show ALL clients with a birthday this month (Removed stage filter)
     const checkBirthday = (dobStr?: string) => {
         if (!dobStr) return false;
         const d = new Date(dobStr);
@@ -234,11 +222,8 @@ const RemindersTab: React.FC = () => {
   }).sort((a, b) => {
       const dayA = new Date(a.profile.dob || '').getDate() || 32;
       const dayB = new Date(b.profile.dob || '').getDate() || 32;
-      
-      // Move "Wished" (contacted today) clients to the bottom
       const wishedA = isContactedToday(a) ? 1 : 0;
       const wishedB = isContactedToday(b) ? 1 : 0;
-      
       if (wishedA !== wishedB) return wishedA - wishedB;
       return dayA - dayB;
   });
@@ -246,20 +231,13 @@ const RemindersTab: React.FC = () => {
   const untouchedLeads = filteredClients.filter(c => {
     const s = c.followUp.status;
     const isTargetStage = s === 'new' || (s && s.startsWith('npu'));
-    
     if (!isTargetStage) return false;
-
-    // Check last interaction (either manual log or system update)
     const lastActivity = c.followUp.lastContactedAt || c.lastUpdated;
-    // Default to epoch if no date, ensuring it shows up as untouched
     const lastDate = lastActivity ? new Date(lastActivity) : new Date(0); 
-    
     const diffTime = now.getTime() - lastDate.getTime();
     const diffDays = diffTime / (1000 * 3600 * 24);
-    
     return diffDays > 2;
   }).sort((a,b) => {
-      // Sort by oldest activity first (most neglected)
       const dateA = new Date(a.followUp.lastContactedAt || a.lastUpdated).getTime();
       const dateB = new Date(b.followUp.lastContactedAt || b.lastUpdated).getTime();
       return dateA - dateB; 
@@ -289,7 +267,6 @@ const RemindersTab: React.FC = () => {
       return diffDays <= 14;
   }).sort((a, b) => new Date(a.followUp.nextFollowUpDate).getTime() - new Date(b.followUp.nextFollowUpDate).getTime());
 
-  // --- CARD COMPONENT ---
   const ReminderCard = ({ title, items, colorClass, icon, badgeColor, isBirthdayCard }: any) => (
     <div className={`bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col h-[calc(100vh-220px)] min-h-[500px]`}>
         <div className={`px-4 py-3 border-b border-slate-100 flex items-center gap-3 ${colorClass} shrink-0`}>
@@ -309,9 +286,7 @@ const RemindersTab: React.FC = () => {
             ) : (
                 <div className="space-y-1">
                     {items.map((c: Client) => {
-                        // Check if wished today (only for birthday card logic visual)
                         const wished = isBirthdayCard && isContactedToday(c);
-                        
                         return (
                             <div 
                                 key={c.id} 
@@ -326,7 +301,6 @@ const RemindersTab: React.FC = () => {
                                             {c.profile.name || c.name}
                                         </p>
                                         
-                                        {/* Dynamic Date Badge */}
                                         {isBirthdayCard ? (
                                             c.profile.dob && (
                                                 <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${wished ? 'bg-slate-100 text-slate-400 border-slate-200' : 'bg-emerald-50 text-emerald-600 border-emerald-100'}`}>
@@ -361,7 +335,6 @@ const RemindersTab: React.FC = () => {
                                         </span>
                                     </div>
                                     
-                                    {/* Advisor Name if viewing All - UPDATED to show Email if available */}
                                     {advisorFilter === 'All' && c._ownerEmail && (
                                         <div className="mt-1 flex items-center gap-1">
                                             <span className="text-[8px] uppercase font-bold text-slate-300 bg-slate-50 px-1 rounded truncate max-w-[120px]">
@@ -405,6 +378,29 @@ const RemindersTab: React.FC = () => {
                 </div>
             )}
         </div>
+
+        {selectedClient && (
+            <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[100] flex items-center justify-center p-4 animate-fade-in" onClick={() => setSelectedClient(null)}>
+                <div className="w-full max-w-2xl h-[85vh] animate-scale-in flex flex-col" onClick={e => e.stopPropagation()}>
+                    <div className="bg-white rounded-2xl shadow-2xl h-full overflow-hidden flex flex-col border border-slate-200">
+                        <ClientCard 
+                            client={selectedClient} 
+                            products={products}
+                            onUpdate={handleUpdateClient}
+                            currentUser={user}
+                            onDelete={async (id) => {
+                                await db.deleteClient(id);
+                                setClients(prev => prev.filter(c => c.id !== id));
+                                setSelectedClient(null);
+                                toast.success("Client deleted");
+                            }}
+                            onAddSale={() => setSaleClient(selectedClient)}
+                            onClose={() => setSelectedClient(null)}
+                        />
+                    </div>
+                </div>
+            </div>
+        )}
     </div>
   );
 };

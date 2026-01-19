@@ -190,6 +190,18 @@ const CrmTab: React.FC<CrmTabProps> = ({
     }
   }, [selectedClientId, clients]);
 
+  // --- SYNC ACTIVE DETAIL CLIENT WITH UPDATED LIST ---
+  // This ensures that when background refresh happens, the modal stays open with fresh data
+  useEffect(() => {
+      if (activeDetailClient && clients.length > 0) {
+          const fresh = clients.find(c => c.id === activeDetailClient.id);
+          // Only update if data has changed to prevent unnecessary re-renders
+          if (fresh && JSON.stringify(fresh) !== JSON.stringify(activeDetailClient)) {
+              setActiveDetailClient(fresh);
+          }
+      }
+  }, [clients]);
+
   const handleSort = (key: string) => {
     setSortConfig(current => {
       if (current.key === key) {

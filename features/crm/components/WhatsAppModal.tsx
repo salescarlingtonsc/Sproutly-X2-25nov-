@@ -6,7 +6,7 @@ interface WhatsAppModalProps {
   client: Client;
   templates: WhatsAppTemplate[]; // Receive templates as prop
   onClose: () => void;
-  onSend?: (templateLabel: string, messageBody: string) => void;
+  onSend?: (templateLabel: string, messageBody: string) => void | Promise<void>;
 }
 
 export const WhatsAppModal: React.FC<WhatsAppModalProps> = ({ client, templates, onClose, onSend }) => {
@@ -36,14 +36,14 @@ export const WhatsAppModal: React.FC<WhatsAppModalProps> = ({ client, templates,
     }
   }, [selectedTemplateId, client, templates]);
 
-  const handleSend = () => {
+  const handleSend = async () => {
     const phoneProp = client.phone || client.profile?.phone || '';
     const phoneNumber = phoneProp.replace(/[^0-9]/g, '');
     const url = `https://wa.me/${phoneNumber}?text=${encodeURIComponent(message)}`;
     
     if (onSend) {
         const tpl = templates.find(t => t.id === selectedTemplateId);
-        onSend(tpl ? tpl.label : 'Custom Message', message);
+        await onSend(tpl ? tpl.label : 'Custom Message', message);
     }
 
     // Delay to allow state propagation before tab switch
