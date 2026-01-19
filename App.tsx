@@ -7,12 +7,14 @@ import { db } from './lib/db';
 import { supabase } from './lib/supabase';
 import { Diagnostics } from './lib/diagnostics';
 import { Client } from './types';
+import { canAccessTab } from './lib/config';
 
 import AppShell from './components/layout/AppShell';
 import LandingPage from './features/auth/LandingPage';
 import AuthModal from './features/auth/AuthModal';
 import PricingModal from './features/subscription/PricingModal';
 import DbRepairModal from './features/admin/components/DbRepairModal';
+import Button from './components/ui/Button';
 
 import DashboardTab from './features/dashboard/DashboardTab';
 import CrmTab from './features/crm/CrmTab';
@@ -44,7 +46,8 @@ export default function App() {
   const toast = useToast();
   const { confirm } = useDialog();
 
-  const [activeTab, setActiveTab] = useState(() => localStorage.getItem(LAST_TAB_KEY) || 'crm');
+  // Initialize with disclaimer as default if no previous tab is found
+  const [activeTab, setActiveTab] = useState(() => localStorage.getItem(LAST_TAB_KEY) || 'disclaimer');
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [isPricingModalOpen, setIsPricingModalOpen] = useState(false);
   const [showEmergencyRepair, setShowEmergencyRepair] = useState(false);
@@ -55,6 +58,26 @@ export default function App() {
   const isSavingRef = useRef(false);
 
   useEffect(() => { localStorage.setItem(LAST_TAB_KEY, activeTab); }, [activeTab]);
+
+  // DEFAULT TAB LOGIC: Upon login, if no previous tab is stored, decide based on permissions
+  useEffect(() => {
+    if (user) {
+        const storedTab = localStorage.getItem(LAST_TAB_KEY);
+        if (!storedTab) {
+            // Default is Disclaimer if allowed, otherwise CRM
+            if (canAccessTab(user, 'disclaimer')) {
+                setActiveTab('disclaimer');
+            } else {
+                setActiveTab('crm');
+            }
+        } else {
+            // Fallback for returning users who might have lost access to their last active tab
+            if (!canAccessTab(user, storedTab)) {
+                setActiveTab(canAccessTab(user, 'disclaimer') ? 'disclaimer' : 'crm');
+            }
+        }
+    }
+  }, [user]);
 
   const loadClientsList = useCallback(async () => {
      try {
@@ -73,30 +96,6 @@ export default function App() {
       return () => { if(unsub) unsub(); };
     }
   }, [user, loadClientsList]);
-
-  // WAKE UP LOGIC: Perfect Refresh
-  useEffect(() => {
-    const handleWakeUp = async () => {
-        if (!user) return;
-        setSaveStatus('saving'); // Visual indicator
-        const freshList = await loadClientsList();
-        
-        // Re-sync active context if a client is open
-        if (clientId) {
-            const freshActive = freshList.find(c => c.id === clientId);
-            if (freshActive) loadClient(freshActive);
-        }
-        setTimeout(() => setSaveStatus('idle'), 500);
-    };
-
-    const handleVisibility = () => { if (document.visibilityState === 'visible') handleWakeUp(); };
-    window.addEventListener('focus', handleWakeUp);
-    document.addEventListener('visibilitychange', handleVisibility);
-    return () => {
-        window.removeEventListener('focus', handleWakeUp);
-        document.removeEventListener('visibilitychange', handleVisibility);
-    };
-  }, [user, clientId, loadClientsList, loadClient]);
 
   const handleLoadClient = (client: Client, redirect = true) => {
      localStorage.setItem(LAST_CLIENT_ID_KEY, client.id);
@@ -136,32 +135,34 @@ export default function App() {
   };
 
   return (
-    <AppShell 
-      activeTab={activeTab} setActiveTab={setActiveTab} 
-      onLoginClick={() => setIsAuthModalOpen(true)} onPricingClick={() => setIsPricingModalOpen(true)}
-      onSaveClick={() => handleSaveClient(true)}
-      clientName={profile.name} saveStatus={saveStatus} lastSavedTime={lastSaved}
-      clients={clients} onLoadClient={handleLoadClient}
-      onSystemRefresh={loadClientsList}
-    >
-      {activeTab === 'dashboard' && <DashboardTab user={user} clients={clients} onNewClient={resetClient} onLoadClient={handleLoadClient} setActiveTab={setActiveTab} />}
-      {activeTab === 'crm' && <CrmTab clients={clients} profile={profile} selectedClientId={clientId} newClient={resetClient} saveClient={() => handleSaveClient()} loadClient={handleLoadClient} deleteClient={db.deleteClient} onRefresh={loadClientsList} onUpdateGlobalClient={handleUpdateGlobalClient} />}
-      {activeTab === 'profile' && <ProfileTab clients={clients} onLoadClient={handleLoadClient} onNewProfile={resetClient} />}
-      {activeTab === 'reminders' && <RemindersTab />}
-      {activeTab === 'market' && <MarketNewsTab />}
-      {activeTab === 'portfolio' && <PortfolioTab clients={clients} onUpdateClient={handleUpdateGlobalClient} />}
-      {activeTab === 'cpf' && <CpfTab />}
-      {activeTab === 'cashflow' && <CashflowTab />}
-      {activeTab === 'insurance' && <InsuranceTab />}
-      {activeTab === 'retirement' && <RetirementTab />}
-      {activeTab === 'investor' && <InvestorTab />}
-      {activeTab === 'wealth' && <WealthToolTab />}
-      {activeTab === 'property' && <PropertyCalculatorTab />}
-      {activeTab === 'vision' && <VisionBoardTab />}
-      {activeTab === 'analytics' && <AnalyticsTab clients={clients} />}
-      {activeTab === 'report' && <ReportTab clients={clients} />}
-      {activeTab === 'admin' && <AdminTab />}
-      {activeTab === 'disclaimer' && <DisclaimerTab />}
-    </AppShell>
+    <div className="relative h-screen overflow-hidden">
+      <AppShell 
+        activeTab={activeTab} setActiveTab={setActiveTab} 
+        onLoginClick={() => setIsAuthModalOpen(true)} onPricingClick={() => setIsPricingModalOpen(true)}
+        onSaveClick={() => handleSaveClient(true)}
+        clientName={profile.name} saveStatus={saveStatus} lastSavedTime={lastSaved}
+        clients={clients} onLoadClient={handleLoadClient}
+        onSystemRefresh={loadClientsList}
+      >
+        {activeTab === 'dashboard' && <DashboardTab user={user} clients={clients} onNewClient={resetClient} onLoadClient={handleLoadClient} setActiveTab={setActiveTab} />}
+        {activeTab === 'crm' && <CrmTab clients={clients} profile={profile} selectedClientId={clientId} newClient={resetClient} saveClient={() => handleSaveClient()} loadClient={handleLoadClient} deleteClient={db.deleteClient} onRefresh={loadClientsList} onUpdateGlobalClient={handleUpdateGlobalClient} />}
+        {activeTab === 'profile' && <ProfileTab clients={clients} onLoadClient={handleLoadClient} onNewProfile={resetClient} />}
+        {activeTab === 'reminders' && <RemindersTab />}
+        {activeTab === 'market' && <MarketNewsTab />}
+        {activeTab === 'portfolio' && <PortfolioTab clients={clients} onUpdateClient={handleUpdateGlobalClient} />}
+        {activeTab === 'cpf' && <CpfTab />}
+        {activeTab === 'cashflow' && <CashflowTab />}
+        {activeTab === 'insurance' && <InsuranceTab />}
+        {activeTab === 'retirement' && <RetirementTab />}
+        {activeTab === 'investor' && <InvestorTab />}
+        {activeTab === 'wealth' && <WealthToolTab />}
+        {activeTab === 'property' && <PropertyCalculatorTab />}
+        {activeTab === 'vision' && <VisionBoardTab />}
+        {activeTab === 'analytics' && <AnalyticsTab clients={clients} />}
+        {activeTab === 'report' && <ReportTab clients={clients} />}
+        {activeTab === 'admin' && <AdminTab />}
+        {activeTab === 'disclaimer' && <DisclaimerTab />}
+      </AppShell>
+    </div>
   );
 }

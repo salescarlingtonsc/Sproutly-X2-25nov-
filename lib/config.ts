@@ -1,4 +1,3 @@
-
 import { UserProfile, SubscriptionTier } from "../types";
 
 export const DEFAULT_SETTINGS = {
@@ -69,7 +68,6 @@ export const ALL_AVAILABLE_TABS = TAB_DEFINITIONS;
 
 export const canAccessTab = (user: UserProfile | null, tabId: string): boolean => {
   if (!user) return false;
-  if (tabId === 'disclaimer') return true;
   
   // Super Admin / Director has access to everything by default
   if (user.role === 'admin' || user.role === 'director' || user.isAgencyAdmin) return true;
@@ -78,6 +76,9 @@ export const canAccessTab = (user: UserProfile | null, tabId: string): boolean =
   if (user.modules && Array.isArray(user.modules) && user.modules.length > 0) {
       return user.modules.includes(tabId);
   }
+
+  // If no specific module override, Disclaimer is usually open
+  if (tabId === 'disclaimer') return true;
 
   // Fallback to Tier config
   const tier = user.subscriptionTier || 'free';

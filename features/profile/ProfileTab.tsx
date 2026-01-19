@@ -635,7 +635,7 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
                                     <button
                                        key={s}
                                        onClick={() => setSelectedStrategy(s as any)}
-                                       className={`w-6 h-6 rounded flex items-center justify-center text-[10px] font-bold uppercase transition-all ${selectedStrategy === s ? 'bg-indigo-500 text-white' : 'bg-slate-700 text-slate-400 hover:text-white'}`}
+                                       className={`w-6 h-6 rounded flex items-center justify-center text-[10px] font-bold uppercase transition-all ${selectedStrategy === s ? 'bg-indigo-50 text-white' : 'bg-slate-700 text-slate-400 hover:text-white'}`}
                                        title={s}
                                     >
                                        {s[0].toUpperCase()}
@@ -762,6 +762,11 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
                            {!showCostOfWaiting && <div className="absolute inset-0 flex items-center justify-center bg-slate-800/90 text-[10px] text-white font-bold rounded cursor-pointer" onClick={() => setShowCostOfWaiting(true)}>Tap to Reveal</div>}
                         </div>
                      </div>
+                     
+                     {/* DISCLAIMER TEXT */}
+                     <p className="mt-4 text-[9px] text-indigo-400/60 text-center font-medium leading-relaxed italic">
+                        Illustration purpose only to demonstrate compounding interest. Actual investment returns fluctuate and capital is not protected.
+                     </p>
                   </div>
                ) : (
                   <div className="h-full flex items-center justify-center text-slate-600 italic">
