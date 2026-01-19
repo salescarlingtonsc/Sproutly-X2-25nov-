@@ -2,8 +2,6 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { db } from '../../lib/db';
 import { Client, Product, Sale, ContactStatus } from '../../types';
 import { useAuth } from '../../contexts/AuthContext';
-import { ClientCard } from '../crm/components/ClientCard';
-import { AddSaleModal } from '../crm/components/AddSaleModal';
 import { useToast } from '../../contexts/ToastContext';
 import { logActivity } from '../../lib/db/activities';
 import { adminDb } from '../../lib/db/admin';
@@ -32,6 +30,10 @@ const RemindersTab: React.FC = () => {
         if (settings?.products) setProducts(settings.products);
     };
     fetchConfig();
+
+    const onFocus = () => refreshData();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
   }, [user]);
 
   // Fetch Advisor Profiles to resolve IDs to Emails/Names
@@ -105,33 +107,6 @@ const RemindersTab: React.FC = () => {
   // Open the full ClientCard modal
   const handleOpenClient = (client: Client) => {
     setSelectedClient(client);
-  };
-
-  // Handle updates from within the ClientCard
-  const handleFullUpdate = async (updatedClient: Client) => {
-      // Optimistic update
-      setSelectedClient(updatedClient); 
-      setClients(prev => prev.map(c => c.id === updatedClient.id ? updatedClient : c)); 
-      
-      try {
-          await db.saveClient(updatedClient);
-      } catch (e) {
-          toast.error("Failed to save changes");
-          refreshData(); // Revert on error
-      }
-  };
-
-  const handleDeleteClient = async () => {
-      if (!selectedClient) return;
-      try {
-          await db.deleteClient(selectedClient.id);
-          setClients(prev => prev.filter(c => c.id !== selectedClient!.id));
-          setSelectedClient(null);
-          toast.success("Client deleted successfully.");
-      } catch (e: any) {
-          console.error("Delete Failed:", e);
-          toast.error(`Delete Failed: ${e.message}`);
-      }
   };
 
   const handleAddSale = async (sale: Sale) => {
@@ -268,7 +243,6 @@ const RemindersTab: React.FC = () => {
       return dayA - dayB;
   });
 
-  // UNTOUCHED LEADS LOGIC (New Lead or NPU, >2 Days Inactive)
   const untouchedLeads = filteredClients.filter(c => {
     const s = c.followUp.status;
     const isTargetStage = s === 'new' || (s && s.startsWith('npu'));
@@ -431,108 +405,6 @@ const RemindersTab: React.FC = () => {
                 </div>
             )}
         </div>
-    </div>
-  );
-
-  return (
-    <div className="p-4 md:p-6 max-w-[1800px] mx-auto space-y-4 h-full flex flex-col">
-      <div className="flex flex-col md:flex-row justify-between items-end mb-2 shrink-0 gap-4">
-        <div>
-            <h1 className="text-2xl font-black text-slate-900 flex items-center gap-2">
-                <span>🔔</span> Action Center
-            </h1>
-            <p className="text-slate-500 text-xs font-medium">Daily prioritized bird's eye view.</p>
-        </div>
-        
-        <div className="flex items-center gap-2">
-            {availableAdvisors.length > 1 && (
-                <div className="relative">
-                    <select 
-                        value={advisorFilter}
-                        onChange={(e) => setAdvisorFilter(e.target.value)}
-                        className="appearance-none bg-white border border-indigo-100 text-slate-700 text-xs font-bold py-1.5 pl-3 pr-8 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 hover:border-indigo-300 transition-all cursor-pointer shadow-sm"
-                    >
-                        <option value="All">All Advisors</option>
-                        {availableAdvisors.map(adv => (
-                            <option key={adv.id} value={adv.id}>{adv.name}</option>
-                        ))}
-                    </select>
-                    <div className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 text-[8px]">▼</div>
-                </div>
-            )}
-            
-            <button onClick={refreshData} className="text-[10px] font-bold text-indigo-600 hover:bg-indigo-50 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1 border border-indigo-100 bg-white shadow-sm">
-                <span>↻</span> Refresh
-            </button>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4 flex-1 min-h-0">
-        <ReminderCard 
-          title="Appointments (48h)" 
-          items={appointments} 
-          icon="📅" 
-          colorClass="bg-indigo-50 border-indigo-100 text-indigo-800"
-          badgeColor="text-indigo-600 bg-indigo-50 border border-indigo-100"
-        />
-        <ReminderCard 
-          title="Scheduled Tasks" 
-          items={followUpTasks} 
-          icon="📝" 
-          colorClass="bg-blue-50 border-blue-100 text-blue-800"
-          badgeColor="text-blue-600 bg-blue-50 border border-blue-100"
-        />
-        <ReminderCard 
-          title="Untouched Leads (>2 Days)" 
-          items={untouchedLeads} 
-          icon="💤" 
-          colorClass="bg-amber-50 border-amber-100 text-amber-800"
-          badgeColor="text-amber-600 bg-amber-50 border border-amber-100"
-        />
-        <ReminderCard 
-          title="Stalled Closures" 
-          items={pendingOverdue} 
-          icon="⏳" 
-          colorClass="bg-rose-50 border-rose-100 text-rose-800"
-          badgeColor="text-rose-600 bg-rose-50 border border-rose-100"
-        />
-        <ReminderCard 
-          title="Birthdays (Month)" 
-          items={birthdayReminders} 
-          icon="🎂" 
-          colorClass="bg-emerald-50 border-emerald-100 text-emerald-800"
-          badgeColor="text-emerald-600 bg-emerald-50 border border-emerald-100"
-          isBirthdayCard={true} 
-        />
-      </div>
-
-      {selectedClient && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[100] flex items-center justify-center p-4 animate-fade-in" onClick={() => setSelectedClient(null)}>
-            <div className="w-full max-w-2xl h-[85vh] animate-scale-in flex flex-col" onClick={e => e.stopPropagation()}>
-                 <div className="bg-white rounded-xl shadow-2xl h-full overflow-hidden flex flex-col">
-                    <ClientCard 
-                        client={selectedClient} 
-                        products={products}
-                        onUpdate={handleFullUpdate} 
-                        currentUser={user}
-                        onDelete={() => { handleDeleteClient(); setSelectedClient(null); }}
-                        onAddSale={() => setSaleClient(selectedClient)}
-                        onClose={() => setSelectedClient(null)} // Added
-                    />
-                 </div>
-            </div>
-        </div>
-      )}
-
-      {saleClient && (
-          <AddSaleModal 
-              clientName={saleClient.name}
-              products={products} 
-              advisorBanding={user?.bandingPercentage || 50} 
-              onClose={() => setSaleClient(null)}
-              onSave={handleAddSale}
-          />
-      )}
     </div>
   );
 };

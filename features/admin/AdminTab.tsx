@@ -34,16 +34,23 @@ const AdminTab: React.FC = () => {
 
   useEffect(() => {
     loadAdminData();
+
+    // Auto-refresh on window focus
+    const handleFocus = () => {
+        loadAdminData(true); // true = silent refresh
+    };
+    window.addEventListener('focus', handleFocus);
+    return () => window.removeEventListener('focus', handleFocus);
   }, [user]);
 
-  const loadAdminData = async () => {
+  const loadAdminData = async (silent = false) => {
     if (!user) return;
-    setLoading(true);
+    if (!silent) setLoading(true);
 
     // UX: Warn if slow, but DO NOT CRASH.
     const slowTimer = setTimeout(() => {
-        toast.info("Database is waking up... this may take a moment.");
-    }, 12000); // Increased wait time before warning
+        if (!silent) toast.info("Database is waking up... this may take a moment.");
+    }, 12000); 
 
     try {
         // 1. Fetch System Settings (Products, Teams, Config)
@@ -114,10 +121,10 @@ const AdminTab: React.FC = () => {
 
     } catch (e: any) {
         console.error("Admin load error", e);
-        toast.error("Failed to load some admin data. Check connection.");
+        if (!silent) toast.error("Failed to load some admin data. Check connection.");
     } finally {
         clearTimeout(slowTimer);
-        setLoading(false);
+        if (!silent) setLoading(false);
     }
   };
 
@@ -247,7 +254,7 @@ const AdminTab: React.FC = () => {
                             currentUser={currentAdvisor}
                             activities={activities}
                             products={products}
-                            onUpdateClient={async (c) => { await db.saveClient(c); loadAdminData(); }}
+                            onUpdateClient={async (c) => { await db.saveClient(c); loadAdminData(true); }}
                             onImport={handleClientImport}
                             onUpdateAdvisor={handleUpdateAdvisor}
                         />
@@ -272,7 +279,7 @@ const AdminTab: React.FC = () => {
                             advisors={advisors}
                             onUpdateProducts={(p) => handleUpdateSettings({ products: p })}
                             onUpdateSettings={(s) => handleUpdateSettings({ appSettings: s })}
-                            onUpdateAdvisors={(advs) => { loadAdminData(); }}
+                            onUpdateAdvisors={() => { loadAdminData(true); }}
                         />
                     )}
                     {activeView === 'billing' && (

@@ -65,4 +65,44 @@ export const WhatsAppModal: React.FC<WhatsAppModalProps> = ({ client, templates,
             </h3>
             <button onClick={onClose} className="text-white/80 hover:text-white transition-colors">
                 <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
-            
+            </button>
+        </div>
+        
+        <div className="p-6 space-y-4">
+            <div>
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Select Protocol</label>
+                <select 
+                    value={selectedTemplateId}
+                    onChange={(e) => setSelectedTemplateId(e.target.value)}
+                    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-700 focus:ring-2 focus:ring-emerald-500 outline-none"
+                >
+                    {templates.map(t => (
+                        <option key={t.id} value={t.id}>{t.label}</option>
+                    ))}
+                    <option value="custom">Custom Message</option>
+                </select>
+            </div>
+
+            <div>
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Message Preview</label>
+                <textarea 
+                    value={message}
+                    onChange={(e) => { setMessage(e.target.value); setSelectedTemplateId('custom'); }}
+                    className="w-full h-40 p-4 bg-slate-50 border border-slate-200 rounded-xl text-sm leading-relaxed focus:ring-2 focus:ring-emerald-500 outline-none resize-none"
+                    placeholder="Type your message here..."
+                />
+            </div>
+
+            <button 
+                onClick={handleSend}
+                className="w-full py-3 bg-[#25D366] hover:bg-[#20b858] text-white font-bold rounded-xl shadow-lg shadow-emerald-100 transition-all flex items-center justify-center gap-2"
+            >
+                <span>🚀</span> Launch WhatsApp
+            </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default WhatsAppModal;

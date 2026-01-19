@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useMemo } from 'react';
 import PageHeader from '../../components/layout/PageHeader';
 import Modal from '../../components/ui/Modal';
@@ -85,6 +84,9 @@ const MarketNewsTab: React.FC = () => {
 
   useEffect(() => {
     loadNews();
+    const onFocus = () => loadNews();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
   }, []);
 
   const loadNews = async () => {
