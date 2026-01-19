@@ -8,25 +8,22 @@ import { logActivity } from '../../lib/db/activities';
 import { adminDb } from '../../lib/db/admin';
 import { supabase } from '../../lib/supabase';
 import { ClientCard } from '../crm/components/ClientCard';
+import PageHeader from '../../components/layout/PageHeader';
 
 const RemindersTab: React.FC = () => {
   const { user } = useAuth();
-  const { loadClient } = useClient(); // Sync with global context for AI
+  const { loadClient } = useClient(); 
   const toast = useToast();
   const [clients, setClients] = useState<Client[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [advisorMap, setAdvisorMap] = useState<Record<string, string>>({});
   
-  // Filter State
   const [advisorFilter, setAdvisorFilter] = useState<string>('All');
-  
-  // Modal States
   const [selectedClient, setSelectedClient] = useState<Client | null>(null);
   const [saleClient, setSaleClient] = useState<Client | null>(null);
 
   useEffect(() => {
     refreshData();
-    // Load products for the ClientCard dropdowns
     const fetchConfig = async () => {
         const settings = await adminDb.getSystemSettings(user?.organizationId);
         if (settings?.products) setProducts(settings.products);
@@ -38,61 +35,39 @@ const RemindersTab: React.FC = () => {
     return () => window.removeEventListener('focus', onFocus);
   }, [user]);
 
-  // Sync selectedClient with latest data from list (e.g. after background refresh)
   useEffect(() => {
       if (selectedClient && clients.length > 0) {
           const fresh = clients.find(c => c.id === selectedClient.id);
           if (fresh) {
-              // Only overwrite if the DB version is newer or equal, OR if they are different content
-              // We want to avoid overwriting optimistic updates with stale DB data
               const freshTime = new Date(fresh.lastUpdated || 0).getTime();
               const currTime = new Date(selectedClient.lastUpdated || 0).getTime();
-              
               if (freshTime >= currTime && JSON.stringify(fresh) !== JSON.stringify(selectedClient)) {
                   setSelectedClient(fresh);
-                  // Ensure global context stays in sync too
                   loadClient(fresh);
               }
           }
       }
   }, [clients]);
 
-  // Fetch Advisor Profiles to resolve IDs to Emails/Names
   useEffect(() => {
     const resolveAdvisorProfiles = async () => {
         if (!supabase || clients.length === 0) return;
-        
         const uniqueIds = new Set<string>();
-        clients.forEach(c => {
-            if (c._ownerId) uniqueIds.add(c._ownerId);
-        });
-
+        clients.forEach(c => { if (c._ownerId) uniqueIds.add(c._ownerId); });
         if (uniqueIds.size === 0) return;
-
         try {
-            const { data } = await supabase
-                .from('profiles')
-                .select('id, name, email')
-                .in('id', Array.from(uniqueIds));
-
+            const { data } = await supabase.from('profiles').select('id, name, email').in('id', Array.from(uniqueIds));
             if (data) {
                 const newMap: Record<string, string> = {};
                 data.forEach(p => {
                     let displayLabel = p.email || 'Unknown';
-                    if (p.name && p.name.trim() !== '' && p.email) {
-                        displayLabel = `${p.name} (${p.email})`;
-                    } else if (p.name) {
-                        displayLabel = p.name;
-                    }
+                    if (p.name && p.name.trim() !== '') displayLabel = p.name;
                     newMap[p.id] = displayLabel;
                 });
                 setAdvisorMap(newMap);
             }
-        } catch (e) {
-            console.debug('Failed to fetch advisor profiles for filter.');
-        }
+        } catch (e) {}
     };
-    
     resolveAdvisorProfiles();
   }, [clients]);
 
@@ -102,41 +77,31 @@ const RemindersTab: React.FC = () => {
     }
   };
 
-  // Derive unique advisors from the loaded clients, using the resolved Map
   const availableAdvisors = useMemo(() => {
       const map = new Map<string, string>();
       clients.forEach(c => {
           if (c._ownerId) {
-              let name = advisorMap[c._ownerId];
-              if (!name) {
-                  name = c._ownerEmail || `Advisor ${c._ownerId.slice(0,4)}`;
-              }
+              let name = advisorMap[c._ownerId] || c._ownerEmail || `Advisor ${c._ownerId.slice(0,4)}`;
               map.set(c._ownerId, name);
           }
       });
       return Array.from(map.entries()).map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
   }, [clients, advisorMap]);
 
-  // Filter clients based on selection
   const filteredClients = useMemo(() => {
       if (advisorFilter === 'All') return clients;
       return clients.filter(c => c._ownerId === advisorFilter);
   }, [clients, advisorFilter]);
 
-  // Open the full ClientCard modal
   const handleOpenClient = (client: Client) => {
     setSelectedClient(client);
-    loadClient(client); // Activate for AI context
+    loadClient(client); 
   };
 
   const handleUpdateClient = (updatedC: Client) => {
-      // 1. Optimistic Update of List
       setClients(prev => prev.map(old => old.id === updatedC.id ? updatedC : old));
-      // 2. Update Modal
       setSelectedClient(updatedC);
-      // 3. Update Global Context
       loadClient(updatedC);
-      // 4. Persist (Debounced in DB layer, but good to trigger)
       db.saveClient(updatedC);
   };
 
@@ -151,68 +116,52 @@ const RemindersTab: React.FC = () => {
 
   const handleMarkWished = async (e: React.MouseEvent, client: Client) => {
       e.stopPropagation();
+      const isAlreadyWished = isContactedToday(client);
       const now = new Date().toISOString();
+      
       const updatedClient = {
           ...client,
-          lastContact: now,
+          lastContact: isAlreadyWished ? "" : now,
           lastUpdated: now,
-          notes: [{
-              id: `wish_manual_${Date.now()}`,
-              content: 'Marked as Birthday Wished (Manual)',
-              date: now,
-              author: 'System'
+          notes: [{ 
+            id: `wish_manual_${Date.now()}`, 
+            content: isAlreadyWished ? 'Unmarked Birthday Wish' : 'Marked as Birthday Wished (Manual)', 
+            date: now, 
+            author: 'System' 
           }, ...(client.notes || [])]
       };
-
       handleUpdateClient(updatedClient);
-      toast.success("Checked off!");
+      toast.success(isAlreadyWished ? "Unchecked!" : "Checked off!");
   };
 
   const handleWhatsApp = async (e: React.MouseEvent, client: Client, isBirthday: boolean = false) => {
     e.stopPropagation();
     const phone = client.profile.phone?.replace(/\D/g, '') || '';
+    if (!phone) { toast.error("No phone number found"); return; }
     
-    if (!phone) {
-        toast.error("No phone number found");
-        return;
-    }
-
-    let text = '';
-    if (isBirthday) {
-        text = `Happy Birthday ${client.profile.name.split(' ')[0]}! 🎂 Wishing you a fantastic year ahead!`;
-    }
-    
+    // Casual Friendly Template
+    let text = isBirthday ? `Happy Birthday ${client.profile.name.split(' ')[0]}! 🎂 Wishing you a fantastic year ahead!` : '';
     const url = `https://wa.me/${phone}${text ? `?text=${encodeURIComponent(text)}` : ''}`;
-
+    
     if (isBirthday) {
         const now = new Date().toISOString();
         const updatedClient = {
             ...client,
             lastContact: now,
             lastUpdated: now,
-            notes: [{
-                id: `wish_${Date.now()}`,
-                content: 'Sent Birthday Wish 🎂',
-                date: now,
-                author: 'System'
-            }, ...(client.notes || [])]
+            notes: [{ id: `wish_${Date.now()}`, content: 'Sent Birthday Wish 🎂', date: now, author: 'System' }, ...(client.notes || [])]
         };
-
-        // Explicit save before window open
         await db.saveClient(updatedClient);
         handleUpdateClient(updatedClient);
     }
-
-    setTimeout(() => {
-        window.open(url, '_blank');
-        if (isBirthday) toast.success("Marked as wished!");
-    }, 200);
+    
+    setTimeout(() => { window.open(url, '_blank'); }, 200);
   };
 
   const now = new Date();
   const currentMonth = now.getMonth();
 
-  const birthdayReminders = filteredClients.filter(c => {
+  const birthdayReminders = useMemo(() => filteredClients.filter(c => {
     const checkBirthday = (dobStr?: string) => {
         if (!dobStr) return false;
         const d = new Date(dobStr);
@@ -222,13 +171,10 @@ const RemindersTab: React.FC = () => {
   }).sort((a, b) => {
       const dayA = new Date(a.profile.dob || '').getDate() || 32;
       const dayB = new Date(b.profile.dob || '').getDate() || 32;
-      const wishedA = isContactedToday(a) ? 1 : 0;
-      const wishedB = isContactedToday(b) ? 1 : 0;
-      if (wishedA !== wishedB) return wishedA - wishedB;
-      return dayA - dayB;
-  });
+      return dayA - dayB; // Simple chronological sort by day
+  }), [filteredClients, currentMonth]);
 
-  const untouchedLeads = filteredClients.filter(c => {
+  const untouchedLeads = useMemo(() => filteredClients.filter(c => {
     const s = c.followUp.status;
     const isTargetStage = s === 'new' || (s && s.startsWith('npu'));
     if (!isTargetStage) return false;
@@ -241,23 +187,23 @@ const RemindersTab: React.FC = () => {
       const dateA = new Date(a.followUp.lastContactedAt || a.lastUpdated).getTime();
       const dateB = new Date(b.followUp.lastContactedAt || b.lastUpdated).getTime();
       return dateA - dateB; 
-  });
+  }), [filteredClients, now]);
 
-  const pendingOverdue = filteredClients.filter(c => {
+  const pendingOverdue = useMemo(() => filteredClients.filter(c => {
     if (c.followUp.status !== 'pending_decision') return false;
     const lastDate = c.followUp.lastContactedAt || c.lastUpdated;
     const daysSince = (now.getTime() - new Date(lastDate).getTime()) / (1000 * 3600 * 24);
     return daysSince > 3; 
-  });
+  }), [filteredClients, now]);
 
-  const appointments = filteredClients.filter(c => {
+  const appointments = useMemo(() => filteredClients.filter(c => {
       if (!c.appointments?.firstApptDate) return false;
       const apptDate = new Date(c.appointments.firstApptDate);
       const diff = (apptDate.getTime() - now.getTime()) / (1000 * 3600 * 24);
       return diff >= 0 && diff <= 2; 
-  }).sort((a,b) => new Date(a.appointments.firstApptDate).getTime() - new Date(b.appointments.firstApptDate).getTime());
+  }).sort((a,b) => new Date(a.appointments.firstApptDate).getTime() - new Date(b.appointments.firstApptDate).getTime()), [filteredClients, now]);
 
-  const followUpTasks = filteredClients.filter(c => {
+  const followUpTasks = useMemo(() => filteredClients.filter(c => {
       if (!c.followUp?.nextFollowUpDate) return false;
       const target = new Date(c.followUp.nextFollowUpDate);
       target.setHours(0,0,0,0);
@@ -265,14 +211,14 @@ const RemindersTab: React.FC = () => {
       const diffTime = target.getTime() - today.getTime();
       const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
       return diffDays <= 14;
-  }).sort((a, b) => new Date(a.followUp.nextFollowUpDate).getTime() - new Date(b.followUp.nextFollowUpDate).getTime());
+  }).sort((a, b) => new Date(a.followUp.nextFollowUpDate).getTime() - new Date(b.followUp.nextFollowUpDate).getTime()), [filteredClients]);
 
   const ReminderCard = ({ title, items, colorClass, icon, badgeColor, isBirthdayCard }: any) => (
-    <div className={`bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col h-[calc(100vh-220px)] min-h-[500px]`}>
+    <div className={`bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col h-[calc(100vh-280px)] min-h-[500px]`}>
         <div className={`px-4 py-3 border-b border-slate-100 flex items-center gap-3 ${colorClass} shrink-0`}>
             <div className={`p-1.5 rounded-lg bg-white/40 shadow-sm border border-black/5`}>{icon}</div>
             <div className="flex-1">
-                <h3 className="font-bold text-xs text-slate-800 uppercase tracking-wide">{title}</h3>
+                <h3 className="font-bold text-[11px] text-slate-800 uppercase tracking-wider">{title}</h3>
             </div>
             <span className="bg-white text-slate-900 px-2 py-0.5 rounded-md text-[10px] font-black shadow-sm border border-slate-100">{items.length}</span>
         </div>
@@ -290,14 +236,19 @@ const RemindersTab: React.FC = () => {
                         return (
                             <div 
                                 key={c.id} 
-                                onClick={() => handleOpenClient(c)}
-                                className={`bg-white p-2.5 rounded-lg border transition-all cursor-pointer group flex items-start gap-2
-                                    ${wished ? 'opacity-50 border-slate-100 grayscale' : 'border-slate-100 hover:border-indigo-300 hover:shadow-sm'}
+                                className={`p-2.5 rounded-lg border transition-all flex items-start gap-2
+                                    ${wished 
+                                        ? 'bg-slate-50 border-slate-200 opacity-60 grayscale' 
+                                        : 'bg-white border-slate-100 hover:border-indigo-300 hover:shadow-sm'}
                                 `}
                             >
-                                <div className="flex-1 min-w-0">
+                                {/* INFO AREA: CLICKABLE TO OPEN CARD */}
+                                <div 
+                                    className="flex-1 min-w-0 cursor-pointer"
+                                    onClick={() => handleOpenClient(c)}
+                                >
                                     <div className="flex items-center justify-between gap-2 mb-1">
-                                        <p className={`text-xs font-bold truncate ${wished ? 'text-slate-500 line-through' : 'text-slate-800'}`}>
+                                        <p className={`text-xs font-bold truncate ${wished ? 'text-slate-400 line-through' : 'text-slate-800'}`}>
                                             {c.profile.name || c.name}
                                         </p>
                                         
@@ -334,40 +285,26 @@ const RemindersTab: React.FC = () => {
                                             {c.profile.phone || '-'}
                                         </span>
                                     </div>
-                                    
-                                    {advisorFilter === 'All' && c._ownerEmail && (
-                                        <div className="mt-1 flex items-center gap-1">
-                                            <span className="text-[8px] uppercase font-bold text-slate-300 bg-slate-50 px-1 rounded truncate max-w-[120px]">
-                                                {c._ownerEmail}
-                                            </span>
-                                        </div>
-                                    )}
                                 </div>
                                 
+                                {/* ACTIONS AREA: BUTTONS DO NOT POP CARD */}
                                 <div className="flex flex-col gap-1 items-center justify-center shrink-0 self-center">
                                     {isBirthdayCard && (
                                         <button 
                                             onClick={(e) => handleMarkWished(e, c)}
                                             className={`w-6 h-6 flex items-center justify-center rounded transition-all shadow-sm
                                                 ${wished 
-                                                    ? 'bg-emerald-100 text-emerald-600 border border-emerald-200' 
+                                                    ? 'bg-emerald-100 text-emerald-700 border border-emerald-200' 
                                                     : 'bg-white border border-slate-200 text-slate-300 hover:border-emerald-400 hover:text-emerald-500'
                                                 }`}
-                                            title="Mark as Wished (No Message)"
-                                            disabled={wished}
+                                            title={wished ? "Unmark Wished" : "Mark as Wished"}
                                         >
                                             {wished ? "✓" : "○"}
                                         </button>
                                     )}
                                     <button 
                                         onClick={(e) => handleWhatsApp(e, c, isBirthdayCard)}
-                                        className={`w-6 h-6 flex items-center justify-center rounded transition-all shadow-sm 
-                                            ${wished 
-                                                ? 'bg-slate-50 text-slate-300 cursor-default' 
-                                                : 'bg-slate-50 text-slate-400 hover:bg-[#25D366] hover:text-white group-hover:opacity-100'
-                                            }`}
-                                        title={wished ? "Already Wished" : "Quick WhatsApp"}
-                                        disabled={wished}
+                                        className="w-6 h-6 flex items-center justify-center rounded transition-all shadow-sm bg-slate-50 text-slate-400 hover:bg-[#25D366] hover:text-white group-hover:opacity-100 border-slate-100"
                                     >
                                         <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path d="M12.031 6.172c-3.181 0-5.767 2.586-5.768 5.766-.001 1.298.38 2.27 1.025 3.312l-.542 2.01 2.036-.53c.96.514 1.95.787 3.25.788h.003c3.181 0 5.767-2.586 5.768-5.766 0-3.18-2.587-5.766-5.768-5.766h-.004zm3.003 8.3c-.12.33-.7.63-1.01.69-.24.05-.55.08-1.53-.33-1.3-.54-2.12-1.85-2.19-1.94-.06-.09-.54-.72-.54-1.37s.34-.97.46-1.1c.12-.13.27-.16.36-.16s.18.01.26.01.21-.04.33.25c.12.29.41 1.01.45 1.09.04.08.07.17.01.28-.06.11-.09.18-.18.29-.06.11-.09.18-.18.29-.09.11-.18.23-.26.3-.09.08-.18.17-.08.34.1.17.44.73.94 1.18.64.57 1.18.75 1.35.83.17.08.27.07.37-.04.1-.11.43-.51.55-.68.12-.17.23-.15.39-.09.16.06 1.03.49 1.2.58.17.09.28.14.32.2.04.06.04.35-.08.68z"/></svg>
                                     </button>
@@ -378,29 +315,62 @@ const RemindersTab: React.FC = () => {
                 </div>
             )}
         </div>
+    </div>
+  );
 
-        {selectedClient && (
-            <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[100] flex items-center justify-center p-4 animate-fade-in" onClick={() => setSelectedClient(null)}>
-                <div className="w-full max-w-2xl h-[85vh] animate-scale-in flex flex-col" onClick={e => e.stopPropagation()}>
-                    <div className="bg-white rounded-2xl shadow-2xl h-full overflow-hidden flex flex-col border border-slate-200">
-                        <ClientCard 
-                            client={selectedClient} 
-                            products={products}
-                            onUpdate={handleUpdateClient}
-                            currentUser={user}
-                            onDelete={async (id) => {
-                                await db.deleteClient(id);
-                                setClients(prev => prev.filter(c => c.id !== id));
-                                setSelectedClient(null);
-                                toast.success("Client deleted");
-                            }}
-                            onAddSale={() => setSaleClient(selectedClient)}
-                            onClose={() => setSelectedClient(null)}
-                        />
-                    </div>
+  return (
+    <div className="p-6 md:p-8 animate-fade-in pb-24 md:pb-8">
+      <PageHeader 
+        title="Action Center" 
+        icon="🔔" 
+        subtitle="Priority daily tasks and client engagement reminders." 
+        action={
+            availableAdvisors.length > 1 && (
+                <div className="relative group">
+                    <select 
+                        value={advisorFilter}
+                        onChange={(e) => setAdvisorFilter(e.target.value)}
+                        className="appearance-none bg-white border border-slate-200 text-slate-700 text-xs font-bold py-2 pl-4 pr-10 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 hover:border-indigo-300 transition-all cursor-pointer shadow-sm"
+                    >
+                        <option value="All">All My Advisors</option>
+                        {availableAdvisors.map(adv => <option key={adv.id} value={adv.id}>{adv.name}</option>)}
+                    </select>
+                    <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 text-[10px]">▼</div>
                 </div>
-            </div>
-        )}
+            )
+        }
+      />
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6">
+          <ReminderCard title="Appointments" items={appointments} colorClass="bg-indigo-50" icon="📅" badgeColor="bg-indigo-100 text-indigo-700" />
+          <ReminderCard title="Follow-up Tasks" items={followUpTasks} colorClass="bg-blue-50" icon="✅" badgeColor="bg-blue-100 text-blue-700" />
+          <ReminderCard title="Untouched Leads" items={untouchedLeads} colorClass="bg-rose-50" icon="❄️" badgeColor="bg-rose-100 text-rose-700" />
+          <ReminderCard title="Pending Review" items={pendingOverdue} colorClass="bg-amber-50" icon="⏳" badgeColor="bg-amber-100 text-amber-700" />
+          <ReminderCard title="Birthdays" items={birthdayReminders} colorClass="bg-emerald-50" icon="🎂" badgeColor="bg-emerald-100 text-emerald-700" isBirthdayCard />
+      </div>
+
+      {selectedClient && (
+          <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[100] flex items-center justify-center p-4 animate-fade-in" onClick={() => setSelectedClient(null)}>
+              <div className="w-full max-w-2xl h-[85vh] animate-scale-in flex flex-col" onClick={e => e.stopPropagation()}>
+                  <div className="bg-white rounded-2xl shadow-2xl h-full overflow-hidden flex flex-col border border-slate-200">
+                      <ClientCard 
+                          client={selectedClient} 
+                          products={products}
+                          onUpdate={handleUpdateClient}
+                          currentUser={user}
+                          onDelete={async (id) => {
+                              await db.deleteClient(id);
+                              setClients(prev => prev.filter(c => c.id !== id));
+                              setSelectedClient(null);
+                              toast.success("Client deleted");
+                          }}
+                          onAddSale={() => setSaleClient(selectedClient)}
+                          onClose={() => setSelectedClient(null)}
+                      />
+                  </div>
+              </div>
+          </div>
+      )}
     </div>
   );
 };
