@@ -211,11 +211,9 @@ const RemindersTab: React.FC = () => {
         text = `Happy Birthday ${client.profile.name.split(' ')[0]}! 🎂 Wishing you a fantastic year ahead!`;
     }
     
-    // 2. Open WhatsApp
     const url = `https://wa.me/${phone}${text ? `?text=${encodeURIComponent(text)}` : ''}`;
-    window.open(url, '_blank');
 
-    // 3. Mark as "Wished" (Update lastContact)
+    // 2. Mark as "Wished" (Update lastContact) - SAVE FIRST
     if (isBirthday) {
         const now = new Date().toISOString();
         const updatedClient = {
@@ -234,9 +232,15 @@ const RemindersTab: React.FC = () => {
         setClients(prev => prev.map(c => c.id === client.id ? updatedClient : c));
         if (selectedClient?.id === client.id) setSelectedClient(updatedClient);
 
-        await db.saveClient(updatedClient);
-        toast.success("Marked as wished!");
+        // Don't await the DB save to block UI, but fire it
+        db.saveClient(updatedClient).catch(() => toast.error("Background sync failed"));
     }
+
+    // 3. Open WhatsApp with Delay to allow state propagation
+    setTimeout(() => {
+        window.open(url, '_blank');
+        if (isBirthday) toast.success("Marked as wished!");
+    }, 200);
   };
 
   const now = new Date();

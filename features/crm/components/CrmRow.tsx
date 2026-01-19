@@ -1,4 +1,3 @@
-
 import React, { memo, useState, useRef, useEffect } from 'react';
 import { Client } from '../../../types';
 import EditableCell from './EditableCell';
@@ -107,8 +106,12 @@ const CrmRow: React.FC<CrmRowProps> = memo(({
     });
 
     onUpdate(client.id, 'lastContactedAt', new Date().toISOString(), 'followUp');
-    window.open(`https://wa.me/${cleanPhone}?text=${encoded}`, '_blank');
     setShowWhatsAppMenu(false);
+
+    // Apply micro-delay before opening to ensure state update commits
+    setTimeout(() => {
+        window.open(`https://wa.me/${cleanPhone}?text=${encoded}`, '_blank');
+    }, 200);
   };
 
   return (

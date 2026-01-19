@@ -46,8 +46,11 @@ export const WhatsAppModal: React.FC<WhatsAppModalProps> = ({ client, templates,
         onSend(tpl ? tpl.label : 'Custom Message', message);
     }
 
-    window.open(url, '_blank');
-    onClose();
+    // Delay to allow state propagation before tab switch
+    setTimeout(() => {
+        window.open(url, '_blank');
+        onClose();
+    }, 200);
   };
 
   return (
@@ -62,52 +65,4 @@ export const WhatsAppModal: React.FC<WhatsAppModalProps> = ({ client, templates,
             </h3>
             <button onClick={onClose} className="text-white/80 hover:text-white transition-colors">
                 <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
-            </button>
-        </div>
-
-        {/* Body */}
-        <div className="p-6">
-            <div className="mb-4">
-                <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Select Template</label>
-                <div className="grid grid-cols-2 gap-2 max-h-40 overflow-y-auto custom-scrollbar">
-                    {templates.map(t => (
-                        <button
-                            key={t.id}
-                            onClick={() => setSelectedTemplateId(t.id)}
-                            className={`px-3 py-2 text-xs font-medium rounded-lg border text-left transition-all ${selectedTemplateId === t.id ? 'bg-emerald-50 border-emerald-500 text-emerald-700 shadow-sm' : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'}`}
-                        >
-                            {t.label}
-                        </button>
-                    ))}
-                    <button
-                        onClick={() => setSelectedTemplateId('custom')}
-                        className={`px-3 py-2 text-xs font-medium rounded-lg border text-left transition-all ${selectedTemplateId === 'custom' ? 'bg-slate-800 border-slate-900 text-white shadow-sm' : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'}`}
-                    >
-                        Custom Message
-                    </button>
-                </div>
-            </div>
-
-            <div className="mb-6">
-                 <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Message Preview</label>
-                 <textarea
-                    value={message}
-                    onChange={(e) => setMessage(e.target.value)}
-                    placeholder="Type your message here..."
-                    className="w-full h-32 p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#25D366]/50 resize-none"
-                 />
-                 <p className="text-[10px] text-slate-400 mt-2 text-right">To: {client.name} ({client.phone})</p>
-            </div>
-
-            <button 
-                onClick={handleSend}
-                className="w-full py-3 bg-[#25D366] hover:bg-[#128C7E] text-white font-bold rounded-xl shadow-lg shadow-emerald-500/30 transition-all flex items-center justify-center gap-2 transform active:scale-[0.98]"
-            >
-                <span>Open WhatsApp</span>
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" /></svg>
-            </button>
-        </div>
-      </div>
-    </div>
-  );
-};
+            

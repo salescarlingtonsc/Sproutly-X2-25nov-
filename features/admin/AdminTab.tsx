@@ -11,6 +11,7 @@ import { AdminSettings } from './components/AdminSettings';
 import { SubscriptionManager } from './components/SubscriptionManager';
 import { AiKnowledgeManager } from './components/AiKnowledgeManager';
 import DbRepairModal from './components/DbRepairModal';
+import SaveDiagnosticsModal from './components/SaveDiagnosticsModal';
 import { Client, Advisor, Team, Product, AppSettings, Subscription } from '../../types';
 import { DEFAULT_SETTINGS } from '../../lib/config';
 
@@ -20,6 +21,7 @@ const AdminTab: React.FC = () => {
   const [activeView, setActiveView] = useState<'dashboard' | 'users' | 'settings' | 'billing' | 'ai'>('dashboard');
   const [loading, setLoading] = useState(true);
   const [showDbRepair, setShowDbRepair] = useState(false);
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
 
   // Data
   const [clients, setClients] = useState<Client[]>([]);
@@ -37,6 +39,12 @@ const AdminTab: React.FC = () => {
   const loadAdminData = async () => {
     if (!user) return;
     setLoading(true);
+
+    // UX: Warn if slow, but DO NOT CRASH.
+    const slowTimer = setTimeout(() => {
+        toast.info("Database is waking up... this may take a moment.");
+    }, 12000); // Increased wait time before warning
+
     try {
         // 1. Fetch System Settings (Products, Teams, Config)
         const sys = await adminDb.getSystemSettings(user.organizationId);
@@ -56,12 +64,10 @@ const AdminTab: React.FC = () => {
             const { data: profiles } = await query;
             if (profiles) {
                 setAdvisors(profiles.map((p: any) => {
-                    // Normalization Logic to prevent invisible users
                     let status = p.status;
                     if (status === 'active') status = 'approved';
                     if (!status || (status !== 'approved' && status !== 'rejected')) status = 'pending';
 
-                    // Name Fallback Logic
                     let displayName = p.name;
                     if (!displayName || displayName.trim() === '') {
                         const safeEmail = p.email || 'unknown';
@@ -78,7 +84,7 @@ const AdminTab: React.FC = () => {
                         bandingPercentage: p.banding_percentage || 0,
                         annualGoal: p.annual_goal || 0,
                         subscriptionTier: p.subscription_tier,
-                        organizationId: p.organization_id || 'org_default', // Fallback to default
+                        organizationId: p.organization_id || 'org_default',
                         teamId: p.reporting_to,
                         avatar: (displayName || p.email || '?')[0].toUpperCase(),
                         joinedAt: p.created_at,
@@ -91,30 +97,36 @@ const AdminTab: React.FC = () => {
             }
         }
 
-        // 3. Fetch Clients (Global or Org scoped)
-        const allClients = await db.getClients(); // db.getClients already handles scoping via RLS/Logic
+        // 3. Fetch Clients
+        const allClients = await db.getClients();
         setClients(allClients);
 
-        // 4. Fetch Activities
-        const recentActivity = await fetchGlobalActivity(100);
-        setActivities(recentActivity);
+        // 4. Fetch Activities (Safe wrapper to prevent timeout crash)
+        try {
+            const recentActivity = await Promise.race([
+                fetchGlobalActivity(100),
+                new Promise((resolve) => setTimeout(() => resolve([]), 5000)) // 5s timeout fallback
+            ]);
+            setActivities(recentActivity as any[]);
+        } catch (e) {
+            console.warn("Activity fetch failed or timed out (non-critical)");
+        }
 
-    } catch (e) {
+    } catch (e: any) {
         console.error("Admin load error", e);
-        toast.error("Failed to load admin data");
+        toast.error("Failed to load some admin data. Check connection.");
     } finally {
+        clearTimeout(slowTimer);
         setLoading(false);
     }
   };
 
   const handleUpdateSettings = async (newSettings: any) => {
-      // Optimistic update
       if (newSettings.products) setProducts(newSettings.products);
       if (newSettings.teams) setTeams(newSettings.teams);
       if (newSettings.appSettings) setSettings(newSettings.appSettings);
       if (newSettings.subscription) setSubscription(newSettings.subscription);
 
-      // Persist
       await adminDb.saveSystemSettings({
           products: newSettings.products || products,
           teams: newSettings.teams || teams,
@@ -126,10 +138,8 @@ const AdminTab: React.FC = () => {
 
   const handleUpdateAdvisor = async (advisor: Advisor) => {
       if (!supabase) return;
-      
-      // FIXED: Added 'name' to the update payload so edits persist
       const { error } = await supabase.from('profiles').update({
-          name: advisor.name, // CRITICAL FIX: Ensure name is saved
+          name: advisor.name,
           role: advisor.role,
           status: advisor.status === 'approved' ? 'active' : advisor.status,
           banding_percentage: advisor.bandingPercentage,
@@ -150,13 +160,10 @@ const AdminTab: React.FC = () => {
 
   const handleAddAdvisor = async (advisor: Advisor) => {
       if (!supabase) return;
-      // Check if profile exists
       const { data } = await supabase.from('profiles').select('id').eq('email', advisor.email).single();
-      
       if (data) {
           await handleUpdateAdvisor({ ...advisor, id: data.id });
       } else {
-          // Invite logic omitted for brevity
           toast.info("Invite sent (Simulated)");
       }
       loadAdminData();
@@ -185,19 +192,19 @@ const AdminTab: React.FC = () => {
       }
   };
 
-  if (!user || loading) return <div className="p-10 text-center text-slate-400">Loading Agency Control...</div>;
-
-  const currentAdvisor: Advisor = {
+  // Safe Fallback for User Object
+  const currentAdvisor: Advisor = user ? {
       ...user,
-      name: user.email?.split('@')[0] || 'Admin',
+      name: user.name || user.email?.split('@')[0] || 'Admin',
       joinedAt: new Date().toISOString(),
       avatar: (user.email?.[0] || 'A').toUpperCase(),
       teamId: user.reporting_to
-  };
+  } : {} as any;
 
   return (
     <div className="flex flex-col h-full bg-slate-50">
-        <div className="bg-white border-b border-slate-200 px-6 py-2 flex items-center justify-between shadow-sm shrink-0">
+        {/* HEADER ALWAYS VISIBLE */}
+        <div className="bg-white border-b border-slate-200 px-6 py-2 flex items-center justify-between shadow-sm shrink-0 z-20">
             <div className="flex items-center gap-1 overflow-x-auto">
                 <NavButton active={activeView === 'dashboard'} onClick={() => setActiveView('dashboard')} icon="📊" label="Dashboard" />
                 <NavButton active={activeView === 'users'} onClick={() => setActiveView('users')} icon="👥" label="Team Roster" />
@@ -206,66 +213,83 @@ const AdminTab: React.FC = () => {
                 <NavButton active={activeView === 'ai'} onClick={() => setActiveView('ai')} icon="🧠" label="AI Brain" />
             </div>
             
-            {/* DB REPAIR BUTTON */}
-            <button 
-                onClick={() => setShowDbRepair(true)} 
-                className="bg-red-50 text-red-600 px-3 py-1.5 rounded-lg text-xs font-bold border border-red-200 hover:bg-red-100 transition-colors flex items-center gap-1 ml-4"
-            >
-                <span>🛠️</span> DB Repair
-            </button>
+            <div className="flex gap-2">
+                <button 
+                    onClick={() => setShowDiagnostics(true)} 
+                    className="bg-indigo-50 text-indigo-600 px-3 py-1.5 rounded-lg text-xs font-bold border border-indigo-200 hover:bg-indigo-100 transition-colors flex items-center gap-1"
+                >
+                    <span>🩺</span> Save Logs
+                </button>
+
+                <button 
+                    onClick={() => setShowDbRepair(true)} 
+                    className="bg-red-50 text-red-600 px-3 py-1.5 rounded-lg text-xs font-bold border border-red-200 hover:bg-red-100 transition-colors flex items-center gap-1 shadow-sm"
+                >
+                    <span>🛠️</span> DB Repair
+                </button>
+            </div>
         </div>
 
         <div className="flex-1 overflow-y-auto">
-            {activeView === 'dashboard' && (
-                <DirectorDashboard 
-                    clients={clients} 
-                    advisors={advisors}
-                    teams={teams}
-                    currentUser={currentAdvisor}
-                    activities={activities}
-                    products={products}
-                    onUpdateClient={async (c) => { await db.saveClient(c); loadAdminData(); }}
-                    onImport={handleClientImport}
-                    onUpdateAdvisor={handleUpdateAdvisor}
-                />
-            )}
-            {activeView === 'users' && (
-                <div className="p-6">
-                    <UserManagement 
-                        advisors={advisors}
-                        teams={teams}
-                        currentUser={currentAdvisor}
-                        onUpdateAdvisor={handleUpdateAdvisor}
-                        onDeleteAdvisor={handleDeleteAdvisor}
-                        onUpdateTeams={(newTeams) => handleUpdateSettings({ teams: newTeams })}
-                        onAddAdvisor={handleAddAdvisor}
-                    />
+            {loading ? (
+                <div className="flex flex-col items-center justify-center h-full text-slate-400 gap-4">
+                    <div className="w-8 h-8 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin"></div>
+                    <div>Loading Agency Control...</div>
+                    <div className="text-xs bg-slate-100 px-3 py-1 rounded">If data is large, this may take 10-20 seconds.</div>
                 </div>
+            ) : (
+                <>
+                    {activeView === 'dashboard' && (
+                        <DirectorDashboard 
+                            clients={clients} 
+                            advisors={advisors}
+                            teams={teams}
+                            currentUser={currentAdvisor}
+                            activities={activities}
+                            products={products}
+                            onUpdateClient={async (c) => { await db.saveClient(c); loadAdminData(); }}
+                            onImport={handleClientImport}
+                            onUpdateAdvisor={handleUpdateAdvisor}
+                        />
+                    )}
+                    {activeView === 'users' && (
+                        <div className="p-6">
+                            <UserManagement 
+                                advisors={advisors}
+                                teams={teams}
+                                currentUser={currentAdvisor}
+                                onUpdateAdvisor={handleUpdateAdvisor}
+                                onDeleteAdvisor={handleDeleteAdvisor}
+                                onUpdateTeams={(newTeams) => handleUpdateSettings({ teams: newTeams })}
+                                onAddAdvisor={handleAddAdvisor}
+                            />
+                        </div>
+                    )}
+                    {activeView === 'settings' && (
+                        <AdminSettings 
+                            products={products}
+                            settings={settings}
+                            advisors={advisors}
+                            onUpdateProducts={(p) => handleUpdateSettings({ products: p })}
+                            onUpdateSettings={(s) => handleUpdateSettings({ appSettings: s })}
+                            onUpdateAdvisors={(advs) => { loadAdminData(); }}
+                        />
+                    )}
+                    {activeView === 'billing' && (
+                        <SubscriptionManager 
+                            subscription={subscription}
+                            onUpdateSubscription={(s) => handleUpdateSettings({ subscription: s })}
+                            currentUser={currentAdvisor}
+                            onUpdateUser={handleUpdateAdvisor}
+                        />
+                    )}
+                    {activeView === 'ai' && <AiKnowledgeManager />}
+                </>
             )}
-            {activeView === 'settings' && (
-                <AdminSettings 
-                    products={products}
-                    settings={settings}
-                    advisors={advisors}
-                    onUpdateProducts={(p) => handleUpdateSettings({ products: p })}
-                    onUpdateSettings={(s) => handleUpdateSettings({ appSettings: s })}
-                    onUpdateAdvisors={(advs) => { 
-                        loadAdminData();
-                    }}
-                />
-            )}
-            {activeView === 'billing' && (
-                <SubscriptionManager 
-                    subscription={subscription}
-                    onUpdateSubscription={(s) => handleUpdateSettings({ subscription: s })}
-                    currentUser={currentAdvisor}
-                    onUpdateUser={handleUpdateAdvisor}
-                />
-            )}
-            {activeView === 'ai' && <AiKnowledgeManager />}
         </div>
 
         <DbRepairModal isOpen={showDbRepair} onClose={() => setShowDbRepair(false)} />
+        <SaveDiagnosticsModal isOpen={showDiagnostics} onClose={() => setShowDiagnostics(false)} />
     </div>
   );
 };

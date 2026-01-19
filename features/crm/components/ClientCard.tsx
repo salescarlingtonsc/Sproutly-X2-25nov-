@@ -394,7 +394,12 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
         notes: [logEntry, ...(client.notes || [])]
     });
     logActivity(client.id, 'call', 'Outgoing call initiated');
-    window.location.href = `tel:${rawPhone}`;
+    
+    // Add micro-delay to allow state to propagate to context before app switch
+    // This ensures the visibility watchdog in App.tsx catches the update when the tab hides
+    setTimeout(() => {
+        window.location.href = `tel:${rawPhone}`;
+    }, 200);
   };
 
   const handleWhatsApp = (e: React.MouseEvent) => {
@@ -457,7 +462,11 @@ ${context}`.trim();
     } else {
         url = `https://calendar.google.com/calendar/u/0/r/eventedit?text=${encodeURIComponent(title)}&details=${encodeURIComponent(description)}`;
     }
-    window.open(url, '_blank');
+    
+    // DELAY ADDED HERE for consistency with Call/WhatsApp refresh protocol
+    setTimeout(() => {
+        window.open(url, '_blank');
+    }, 200);
   };
 
   const getMomentumColor = (score: number) => {

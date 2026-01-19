@@ -9,6 +9,7 @@ import { fmtTime } from '../../lib/helpers';
 import Modal from '../ui/Modal'; 
 import Button from '../ui/Button'; 
 import { supabase } from '../../lib/supabase'; 
+import SyncInspectorModal from '../sync/SyncInspectorModal'; // Import Inspector
 
 interface AppShellProps {
   activeTab: string;
@@ -49,6 +50,9 @@ const AppShell: React.FC<AppShellProps> = ({
   const [editName, setEditName] = useState('');
   const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [showRefreshBtn, setShowRefreshBtn] = useState(false);
+  
+  // Sync Inspector State
+  const [showSyncInspector, setShowSyncInspector] = useState(false);
 
   const profileRef = useRef<HTMLDivElement>(null);
 
@@ -188,6 +192,14 @@ const AppShell: React.FC<AppShellProps> = ({
             {/* Right Actions */}
             <div className="flex items-center gap-2 md:gap-3">
                
+               {/* Sync Inspector Button */}
+               <button 
+                  onClick={() => setShowSyncInspector(true)}
+                  className="hidden md:flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-[10px] font-bold text-slate-500 transition-colors"
+               >
+                  <span>☁️</span> Sync
+               </button>
+
                {/* Save Status - Always visible now */}
                {!isReadOnly && (
                   <div className="flex flex-col items-end mr-1 md:mr-2 min-w-[80px]">
@@ -337,6 +349,12 @@ const AppShell: React.FC<AppShellProps> = ({
               </div>
           </div>
       </Modal>
+
+      {/* Sync Inspector Modal */}
+      <SyncInspectorModal 
+         isOpen={showSyncInspector} 
+         onClose={() => setShowSyncInspector(false)} 
+      />
 
     </div>
   );
