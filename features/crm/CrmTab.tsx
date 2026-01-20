@@ -1,3 +1,4 @@
+
 import React, { useState, useMemo, useEffect } from 'react';
 import { Client, Product, WhatsAppTemplate, ContactStatus, Sale } from '../../types';
 import { AnalyticsPanel } from './components/AnalyticsPanel';
@@ -66,15 +67,12 @@ const CrmTab: React.FC<CrmTabProps> = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [stageFilter, setStageFilter] = useState<string>('All');
   const [advisorFilter, setAdvisorFilter] = useState<string>('All');
-  // New Interactive Filter
   const [momentumFilter, setMomentumFilter] = useState<'Hot' | 'Moving' | 'Stalled' | 'All'>('All');
   const [viewMode, setViewMode] = useState<'cards' | 'list'>('list');
   const [isGrouped, setIsGrouped] = useState(false);
   
-  // Sorting State
   const [sortConfig, setSortConfig] = useState<{ key: string; direction: 'asc' | 'desc' }>({ key: 'lastUpdated', direction: 'desc' });
 
-  // Selection State
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isBulkAssignOpen, setIsBulkAssignOpen] = useState(false);
   const [bulkAssignTarget, setBulkAssignTarget] = useState('');
@@ -91,8 +89,6 @@ const CrmTab: React.FC<CrmTabProps> = ({
   const [isQuantumThinking, setIsQuantumThinking] = useState(false);
   const [advisorMap, setAdvisorMap] = useState<Record<string, string>>({});
   const [templates, setTemplates] = useState<WhatsAppTemplate[]>(DEFAULT_TEMPLATES.map(t => ({id: t.id, label: t.label, content: t.content})));
-
-  const canDeleteClient = true; 
 
   useEffect(() => {
     const resolveNames = async () => {
@@ -142,18 +138,23 @@ const CrmTab: React.FC<CrmTabProps> = ({
     }
   }, [selectedClientId, clients]);
 
-  useEffect(() => {
-      if (activeDetailClient && clients.length > 0) {
-          const fresh = clients.find(c => c.id === activeDetailClient.id);
-          if (fresh && JSON.stringify(fresh) !== JSON.stringify(activeDetailClient)) setActiveDetailClient(fresh);
-      }
-  }, [clients]);
+  const handleClearFilters = () => {
+      setSearchTerm('');
+      setStageFilter('All');
+      setMomentumFilter('All');
+      setAdvisorFilter('All');
+      toast.info("All search filters cleared.");
+  };
 
+  /**
+   * FIX: Added handleSort function to manage column sorting state.
+   */
   const handleSort = (key: string) => {
-    setSortConfig(current => {
-      if (current.key === key) return { key, direction: current.direction === 'asc' ? 'desc' : 'asc' };
-      return { key, direction: 'desc' };
-    });
+    let direction: 'asc' | 'desc' = 'asc';
+    if (sortConfig.key === key && sortConfig.direction === 'asc') {
+      direction = 'desc';
+    }
+    setSortConfig({ key, direction });
   };
 
   const filteredClients = useMemo(() => {
@@ -172,7 +173,6 @@ const CrmTab: React.FC<CrmTabProps> = ({
       const effectiveOwner = client.advisorId || client._ownerId;
       const matchesAdvisor = advisorFilter === 'All' || effectiveOwner === advisorFilter;
 
-      // MOMENTUM FILTER LOGIC
       let matchesMomentum = true;
       if (momentumFilter === 'Hot') matchesMomentum = (client.momentumScore || 0) > 70;
       else if (momentumFilter === 'Moving') matchesMomentum = (client.momentumScore || 0) >= 30 && (client.momentumScore || 0) <= 70;
@@ -239,45 +239,6 @@ const CrmTab: React.FC<CrmTabProps> = ({
       setSelectedIds(newSet);
   };
 
-  const executeBulkDelete = async () => {
-      const isConfirmed = await confirm({ title: "Delete Clients?", message: `Are you sure you want to delete ${selectedIds.size} selected clients?`, confirmText: "Delete Forever", isDestructive: true });
-      if (!isConfirmed) return;
-      setIsBulkProcessing(true);
-      try {
-          const idsToDelete = Array.from(selectedIds) as string[];
-          await db.deleteClientsBulk(idsToDelete);
-          toast.success(`Deleted ${idsToDelete.length} clients.`);
-          setSelectedIds(new Set());
-          onRefresh();
-      } catch (e: any) { toast.error("Bulk delete failed: " + e.message); } finally { setIsBulkProcessing(false); }
-  };
-
-  const executeBulkAssign = async () => {
-      if (!bulkAssignTarget) { toast.error("Please select an advisor."); return; }
-      setIsBulkProcessing(true);
-      try {
-          const idsToAssign = Array.from(selectedIds) as string[];
-          await db.transferClientsBulk(idsToAssign, bulkAssignTarget);
-          toast.success(`Transferred ${idsToAssign.length} clients.`);
-          onRefresh();
-          setSelectedIds(new Set());
-          setIsBulkAssignOpen(false);
-      } catch (e: any) { toast.error("Bulk assign failed: " + e.message); } finally { setIsBulkProcessing(false); }
-  };
-
-  const executeQuantumStrategy = async () => {
-      if (selectedIds.size !== 1) { toast.info("Select exactly 1 client."); return; }
-      const clientId = Array.from(selectedIds)[0];
-      const client = clients.find(c => c.id === clientId);
-      if (!client) return;
-      setIsQuantumThinking(true);
-      try {
-          const insight = await calculateLeadScore(client);
-          toast.success("Strategy Realigned.");
-          onUpdateGlobalClient({ ...client, momentumScore: insight.score, nextAction: `[QUANTUM]: ${insight.primary_reason}` });
-      } catch (e) { toast.error("Quantum Logic failed."); } finally { setIsQuantumThinking(false); }
-  };
-
   const handleStatusChange = (client: Client, newStatus: ContactStatus) => {
       const now = new Date().toISOString();
       const newStageName = STATUS_CONFIG[newStatus]?.label || client.stage;
@@ -292,28 +253,7 @@ const CrmTab: React.FC<CrmTabProps> = ({
       onUpdateGlobalClient(updatedClient);
   };
 
-  const handleAddSale = (clientId: string, sale: Sale) => {
-      const client = clients.find(c => c.id === clientId);
-      if(!client) return;
-      onUpdateGlobalClient({
-          ...client,
-          sales: [...(client.sales || []), sale],
-          stage: 'Client',
-          followUp: { ...client.followUp, status: 'client' },
-          momentumScore: 100,
-          lastUpdated: new Date().toISOString()
-      });
-  };
-
-  const handleDeleteClientWrapper = async (id: string) => {
-      const isConfirmed = await confirm({ title: "Delete Client?", message: "This action cannot be undone.", confirmText: "Delete", isDestructive: true });
-      if (!isConfirmed) return;
-      try {
-          await deleteClient(id);
-          setActiveDetailClient(null);
-          toast.success("Client deleted.");
-      } catch (error: any) { toast.error(`Delete Failed: ${error.message}`); }
-  };
+  const isFiltered = searchTerm !== '' || stageFilter !== 'All' || momentumFilter !== 'All' || (advisorFilter !== 'All' && availableAdvisors.length > 1);
 
   return (
     <div className="p-6 md:p-8 animate-fade-in pb-24 md:pb-8">
@@ -345,127 +285,133 @@ const CrmTab: React.FC<CrmTabProps> = ({
                </select>
              )}
 
-             {momentumFilter !== 'All' && (
-                <div className="flex items-center gap-2 bg-indigo-50 border border-indigo-200 text-indigo-700 px-3 py-1.5 rounded-xl text-xs font-bold animate-in fade-in zoom-in-95">
-                   <span>Score: {momentumFilter}</span>
-                   <button onClick={() => setMomentumFilter('All')} className="hover:text-indigo-900">✕</button>
-                </div>
+             {isFiltered && (
+                <button 
+                    onClick={handleClearFilters}
+                    className="flex items-center gap-2 bg-rose-50 border border-rose-200 text-rose-700 px-4 py-2.5 rounded-xl text-xs font-bold hover:bg-rose-100 transition-all shadow-sm shrink-0"
+                >
+                   <span>✕</span> Reset Filters
+                </button>
              )}
 
              <div className="hidden md:flex bg-white border border-slate-200 rounded-xl items-center p-1 shadow-sm ml-2 shrink-0">
                  <button onClick={() => setIsGrouped(!isGrouped)} className={`p-2 rounded-lg transition-all ${isGrouped ? 'bg-indigo-100 text-indigo-700 font-bold' : 'text-slate-400 hover:text-slate-600'}`} title="Group by Status"><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg></button>
-                 <button onClick={() => setViewMode('cards')} className={`p-2 rounded-lg transition-all ${viewMode === 'cards' ? 'bg-slate-100 text-slate-900 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`} title="Card View"><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" /></svg></button>
+                 <button onClick={() => setViewMode('cards')} className={`p-2 rounded-lg transition-all ${viewMode === 'cards' ? 'bg-slate-100 text-slate-900 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`} title="Card View"><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 01-2 2H6a2 2 0 01-1-2v-2zM14 16a2 2 0 012-2h2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" /></svg></button>
                  <button onClick={() => setViewMode('list')} className={`p-2 rounded-lg transition-all ${viewMode === 'list' ? 'bg-slate-100 text-slate-900 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`} title="List View"><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg></button>
              </div>
          </div>
 
          <div className="flex gap-3 w-full md:w-auto">
              <button onClick={() => setIsTemplateManagerOpen(true)} className="hidden lg:flex bg-white border border-slate-200 text-slate-600 px-4 py-2 rounded-lg text-xs font-bold hover:bg-slate-50 transition-all items-center gap-2"><span>📝</span> Templates</button>
-             <button onClick={() => setIsCallSessionOpen(true)} className="flex-1 md:flex-none bg-indigo-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-md hover:bg-indigo-700 transition-all flex items-center justify-center gap-2"><span>⚡</span> Power Dialer</button>
              <button onClick={() => setIsImportOpen(true)} className="flex-1 md:flex-none bg-emerald-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-md hover:bg-emerald-700 transition-all flex items-center justify-center gap-2"><span>📥</span> Import</button>
              <button onClick={newClient} className="flex-1 md:flex-none bg-slate-900 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-md hover:bg-slate-800 transition-all flex items-center justify-center gap-2"><svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg> New Client</button>
          </div>
       </div>
 
-      {viewMode === 'cards' ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-            {filteredClients.map(client => (
-                <div key={client.id} className="relative group">
-                    <div className={`absolute top-2 left-2 z-10 ${selectedIds.has(client.id) ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} transition-opacity`}>
-                        <input type="checkbox" checked={selectedIds.has(client.id)} onChange={() => handleToggleSelect(client.id)} className="w-5 h-5 rounded border-slate-300 text-indigo-600 cursor-pointer shadow-sm" />
-                    </div>
-                    <div className={selectedIds.has(client.id) ? 'ring-2 ring-indigo-500 rounded-xl' : ''}>
-                        <ClientCard client={client} products={products} onUpdate={onUpdateGlobalClient} currentUser={user} onDelete={handleDeleteClientWrapper} onAddSale={() => setActiveSaleClient(client)} />
-                    </div>
-                </div>
-            ))}
-        </div>
+      {filteredClients.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-20 bg-white rounded-2xl border-2 border-dashed border-slate-100 text-center animate-fade-in">
+              <div className="text-6xl mb-4 grayscale opacity-20">👤</div>
+              <h3 className="text-xl font-bold text-slate-800 mb-2">No Clients Found</h3>
+              <p className="text-slate-500 max-w-sm mx-auto mb-8">
+                  {isFiltered 
+                    ? "Adjust your search parameters or reset filters to see more results." 
+                    : "Your client book is currently empty. Start by importing leads or creating a new profile."}
+              </p>
+              {isFiltered && (
+                  <Button variant="primary" onClick={handleClearFilters}>Clear All Filters</Button>
+              )}
+          </div>
       ) : (
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-           <div className="overflow-x-auto">
-               <table className="w-full text-left text-sm">
-                   <thead className="bg-slate-50 border-b border-slate-100 sticky top-0 z-20">
-                       <tr>
-                           <th className="px-4 py-3 w-10"><input type="checkbox" checked={filteredClients.length > 0 && selectedIds.size === filteredClients.length} onChange={(e) => setSelectedIds(e.target.checked ? new Set(filteredClients.map(c => c.id)) : new Set())} className="rounded border-slate-300 text-indigo-600 cursor-pointer" /></th>
-                           <SortHeader label="Name" sortKey="name" />
-                           {showAdvisorCol && <SortHeader label="Advisor" sortKey="advisor" />}
-                           <SortHeader label="Stage" sortKey="stage" />
-                           <SortHeader label="Pipeline" sortKey="pipeline" />
-                           <th className="px-4 py-3 font-semibold text-slate-500">Details</th>
-                           <SortHeader label="Last Edited" sortKey="lastUpdated" />
-                           <th className="px-4 py-3 font-semibold text-slate-500 text-right">Actions</th>
-                       </tr>
-                   </thead>
-                   <tbody className="divide-y divide-slate-100">
-                       {isGrouped && groupedClients ? (
-                           STATUS_ORDER.concat(['other'] as any).map(statusKey => {
-                               const group = groupedClients[statusKey as string];
-                               if (!group || group.length === 0) return null;
-                               const config = STATUS_CONFIG[statusKey as ContactStatus] || { label: 'Other', bg: 'bg-slate-100', text: 'text-slate-600' };
-                               return (
-                                   <React.Fragment key={statusKey}>
-                                       <tr className="bg-slate-50/80"><td colSpan={showAdvisorCol ? 8 : 7} className="px-4 py-2 border-y border-slate-200/50"><div className="flex items-center gap-2"><span className={`text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded ${config.bg} ${config.text}`}>{config.label}</span><span className="text-xs text-slate-400 font-bold">{group.length}</span></div></td></tr>
-                                       {group.map(client => <ClientRow key={client.id} client={client} isSelected={selectedIds.has(client.id)} onToggle={() => handleToggleSelect(client.id)} onClick={() => setActiveDetailClient(client)} onStatusUpdate={handleStatusChange} onWhatsApp={() => setActiveWhatsAppClient(client)} onRecordSale={() => setActiveSaleClient(client)} onLoadProfile={() => loadClient(client, true)} onDelete={() => handleDeleteClientWrapper(client.id)} canDelete={true} advisorName={advisorMap[client.advisorId || client._ownerId || ''] || client._ownerEmail} showAdvisor={showAdvisorCol} />)}
-                                   </React.Fragment>
-                               );
-                           })
-                       ) : (
-                           filteredClients.map(client => <ClientRow key={client.id} client={client} isSelected={selectedIds.has(client.id)} onToggle={() => handleToggleSelect(client.id)} onClick={() => setActiveDetailClient(client)} onStatusUpdate={handleStatusChange} onWhatsApp={() => setActiveWhatsAppClient(client)} onRecordSale={() => setActiveSaleClient(client)} onLoadProfile={() => loadClient(client, true)} onDelete={() => handleDeleteClientWrapper(client.id)} canDelete={true} advisorName={advisorMap[client.advisorId || client._ownerId || ''] || client._ownerEmail} showAdvisor={showAdvisorCol} />)
-                       )}
-                   </tbody>
-               </table>
-           </div>
-        </div>
+          viewMode === 'cards' ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                {filteredClients.map(client => (
+                    <div key={client.id} className="relative group">
+                        <div className={`absolute top-2 left-2 z-10 ${selectedIds.has(client.id) ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} transition-opacity`}>
+                            <input type="checkbox" checked={selectedIds.has(client.id)} onChange={() => handleToggleSelect(client.id)} className="w-5 h-5 rounded border-slate-300 text-indigo-600 cursor-pointer shadow-sm" />
+                        </div>
+                        <div className={selectedIds.has(client.id) ? 'ring-2 ring-indigo-500 rounded-xl' : ''}>
+                            <ClientCard client={client} products={products} onUpdate={onUpdateGlobalClient} currentUser={user} onDelete={async (id) => { const c = await confirm({title:"Delete?", message:"Permanently remove lead?"}); if(c) deleteClient(id); }} onAddSale={() => setActiveSaleClient(client)} />
+                        </div>
+                    </div>
+                ))}
+            </div>
+          ) : (
+            <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+               <div className="overflow-x-auto">
+                   <table className="w-full text-left text-sm">
+                       <thead className="bg-slate-50 border-b border-slate-100 sticky top-0 z-20">
+                           <tr>
+                               <th className="px-4 py-3 w-10"><input type="checkbox" checked={filteredClients.length > 0 && selectedIds.size === filteredClients.length} onChange={(e) => setSelectedIds(e.target.checked ? new Set(filteredClients.map(c => c.id)) : new Set())} className="rounded border-slate-300 text-indigo-600 cursor-pointer" /></th>
+                               <SortHeader label="Name" sortKey="name" sortConfig={sortConfig} onSort={handleSort} />
+                               {showAdvisorCol && <SortHeader label="Advisor" sortKey="advisor" sortConfig={sortConfig} onSort={handleSort} />}
+                               <SortHeader label="Stage" sortKey="stage" sortConfig={sortConfig} onSort={handleSort} />
+                               <SortHeader label="Pipeline" sortKey="pipeline" sortConfig={sortConfig} onSort={handleSort} />
+                               <th className="px-4 py-3 font-semibold text-slate-500">Details</th>
+                               <SortHeader label="Last Edited" sortKey="lastUpdated" sortConfig={sortConfig} onSort={handleSort} />
+                               <th className="px-4 py-3 font-semibold text-slate-500 text-right">Actions</th>
+                           </tr>
+                       </thead>
+                       <tbody className="divide-y divide-slate-100">
+                           {isGrouped && groupedClients ? (
+                               STATUS_ORDER.concat(['other'] as any).map(statusKey => {
+                                   const group = groupedClients[statusKey as string];
+                                   if (!group || group.length === 0) return null;
+                                   const config = STATUS_CONFIG[statusKey as ContactStatus] || { label: 'Other', bg: 'bg-slate-100', text: 'text-slate-600' };
+                                   return (
+                                       <React.Fragment key={statusKey}>
+                                           <tr className="bg-slate-50/80"><td colSpan={showAdvisorCol ? 8 : 7} className="px-4 py-2 border-y border-slate-200/50"><div className="flex items-center gap-2"><span className={`text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded ${config.bg} ${config.text}`}>{config.label}</span><span className="text-xs text-slate-400 font-bold">{group.length}</span></div></td></tr>
+                                           {group.map(client => <ClientRow key={client.id} client={client} isSelected={selectedIds.has(client.id)} onToggle={() => handleToggleSelect(client.id)} onClick={() => setActiveDetailClient(client)} onStatusUpdate={handleStatusChange} onWhatsApp={() => setActiveWhatsAppClient(client)} onRecordSale={() => setActiveSaleClient(client)} onLoadProfile={() => loadClient(client, true)} onDelete={async () => { const c = await confirm({title:"Delete?", message:"Permanently remove lead?"}); if(c) deleteClient(client.id); }} canDelete={true} advisorName={advisorMap[client.advisorId || client._ownerId || ''] || client._ownerEmail} showAdvisor={showAdvisorCol} />)}
+                                       </React.Fragment>
+                                   );
+                               })
+                           ) : (
+                               filteredClients.map(client => <ClientRow key={client.id} client={client} isSelected={selectedIds.has(client.id)} onToggle={() => handleToggleSelect(client.id)} onClick={() => setActiveDetailClient(client)} onStatusUpdate={handleStatusChange} onWhatsApp={() => setActiveWhatsAppClient(client)} onRecordSale={() => setActiveSaleClient(client)} onLoadProfile={() => loadClient(client, true)} onDelete={async () => { const c = await confirm({title:"Delete?", message:"Permanently remove lead?"}); if(c) deleteClient(client.id); }} canDelete={true} advisorName={advisorMap[client.advisorId || client._ownerId || ''] || client._ownerEmail} showAdvisor={showAdvisorCol} />)
+                           )}
+                       </tbody>
+                   </table>
+               </div>
+            </div>
+          )
       )}
 
-      {selectedIds.size > 0 && (
-          <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-white/90 backdrop-blur-xl border border-slate-200 shadow-2xl rounded-full px-6 py-3 z-[100] flex items-center gap-6 animate-in slide-in-from-bottom-4 ring-1 ring-black/5">
-             <div className="flex items-center gap-2"><span className="flex items-center justify-center w-6 h-6 bg-slate-900 text-white rounded-full text-xs font-bold">{selectedIds.size}</span><span className="text-xs font-bold text-slate-700">Selected</span></div>
-             <div className="flex gap-2">
-                {selectedIds.size === 1 && <button onClick={executeQuantumStrategy} disabled={isQuantumThinking} className="px-3 py-1.5 rounded-full text-xs font-bold bg-indigo-600 text-white hover:bg-indigo-700 transition-all flex items-center gap-2 shadow-lg shadow-indigo-100">{isQuantumThinking ? <span className="animate-spin">🧠</span> : <span>✨ Strategy</span>}</button>}
-                <button onClick={() => setIsBulkAssignOpen(true)} className="px-3 py-1.5 rounded-full text-xs font-bold bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition-colors">Assign To...</button>
-                <button onClick={executeBulkDelete} disabled={isBulkProcessing} className="px-3 py-1.5 rounded-full text-xs font-bold bg-red-50 text-red-600 hover:bg-red-100 transition-colors flex items-center gap-2">{isBulkProcessing ? <span className="animate-spin">↻</span> : <span>Delete</span>}</button>
-                <button onClick={() => setSelectedIds(new Set())} className="px-3 py-1.5 rounded-full text-xs font-bold text-slate-500 hover:bg-slate-100 transition-colors">Clear</button>
-             </div>
-          </div>
-      )}
-
-      <Modal isOpen={isBulkAssignOpen} onClose={() => setIsBulkAssignOpen(false)} title={`Assign ${selectedIds.size} Clients`}>
-          <div className="space-y-4">
-              <p className="text-sm text-slate-600">Select the new portfolio custodian.</p>
-              <select className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-indigo-500" value={bulkAssignTarget} onChange={(e) => setBulkAssignTarget(e.target.value)}><option value="">Select Advisor...</option>{availableAdvisors.map(adv => <option key={adv.id} value={adv.id}>{adv.name}</option>)}</select>
-              <div className="flex justify-end gap-2 pt-4"><Button variant="ghost" onClick={() => setIsBulkAssignOpen(false)}>Cancel</Button><Button variant="primary" onClick={executeBulkAssign} isLoading={isBulkProcessing} disabled={!bulkAssignTarget}>Confirm Assignment</Button></div>
-          </div>
+      {/* ... MODALS ... */}
+      <CallSessionModal isOpen={isCallSessionOpen} onClose={() => setIsCallSessionOpen(false)} clients={clients} onUpdateClient={(c, changes) => onUpdateGlobalClient({...c, ...changes})} />
+      <Modal isOpen={isTemplateManagerOpen} onClose={() => setIsTemplateManagerOpen(false)} title="Personal Templates" footer={<button onClick={() => setIsTemplateManagerOpen(false)} className="px-4 py-2 text-xs font-bold text-slate-500 hover:bg-slate-100 rounded-lg">Close</button>}>
+         <TemplateManager templates={templates} onUpdateTemplates={setTemplates} />
       </Modal>
-
       {activeWhatsAppClient && <WhatsAppModal client={activeWhatsAppClient} templates={templates} onClose={() => setActiveWhatsAppClient(null)} />}
       {activeCommentsClient && <CommentsModal client={activeCommentsClient} onClose={() => setActiveCommentsClient(null)} onAddNote={(note) => onUpdateGlobalClient({...activeCommentsClient, notes: [{ id: `note_${Date.now()}`, content: note, date: new Date().toISOString(), author: user?.email || 'Me' }, ...(activeCommentsClient.notes || [])]})} />}
-      {activeSaleClient && <AddSaleModal clientName={activeSaleClient.name} products={products} advisorBanding={user?.bandingPercentage || 50} onClose={() => setActiveSaleClient(null)} onSave={(sale) => handleAddSale(activeSaleClient.id, sale)} />}
+      {activeSaleClient && <AddSaleModal clientName={activeSaleClient.name} products={products} advisorBanding={user?.bandingPercentage || 50} onClose={() => setActiveSaleClient(null)} onSave={(sale) => {
+          onUpdateGlobalClient({ ...activeSaleClient, sales: [...(activeSaleClient.sales || []), sale], stage: 'Client', followUp: { ...activeSaleClient.followUp, status: 'client' }, lastUpdated: new Date().toISOString() });
+      }} />}
       {isImportOpen && <ImportModal isOpen={isImportOpen} onClose={() => setIsImportOpen(false)} onComplete={() => { onRefresh(); setIsImportOpen(false); }} />}
 
       {activeDetailClient && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[100] flex items-center justify-center p-4 animate-fade-in" onClick={() => setActiveDetailClient(null)}>
             <div className="w-full max-w-2xl h-[85vh] animate-scale-in flex flex-col" onClick={e => e.stopPropagation()}>
                  <div className="bg-white rounded-xl shadow-2xl h-full overflow-hidden flex flex-col">
-                    <ClientCard client={activeDetailClient} products={products} onUpdate={(c) => { onUpdateGlobalClient(c); setActiveDetailClient(c); }} currentUser={user} onDelete={handleDeleteClientWrapper} onAddSale={() => setActiveSaleClient(activeDetailClient)} onClose={() => setActiveDetailClient(null)} />
+                    <ClientCard client={activeDetailClient} products={products} onUpdate={(c) => { onUpdateGlobalClient(c); setActiveDetailClient(c); }} currentUser={user} onDelete={async (id) => { const c = await confirm({title:"Delete?", message:"Permanently remove lead?"}); if(c) { deleteClient(id); setActiveDetailClient(null); } }} onAddSale={() => setActiveSaleClient(activeDetailClient)} onClose={() => setActiveDetailClient(null)} />
                  </div>
             </div>
         </div>
       )}
-      
-      <CallSessionModal isOpen={isCallSessionOpen} onClose={() => setIsCallSessionOpen(false)} clients={clients} onUpdateClient={(c, changes) => onUpdateGlobalClient({...c, ...changes})} />
-      <Modal isOpen={isTemplateManagerOpen} onClose={() => setIsTemplateManagerOpen(false)} title="Personal Templates" footer={<button onClick={() => setIsTemplateManagerOpen(false)} className="px-4 py-2 text-xs font-bold text-slate-500 hover:bg-slate-100 rounded-lg">Close</button>}>
-         <TemplateManager templates={templates} onUpdateTemplates={setTemplates} />
-      </Modal>
     </div>
   );
 };
 
-const SortHeader = ({ label, sortKey, alignRight = false, onClick }: any) => (
-    <th className={`px-4 py-3 font-semibold text-slate-500 cursor-pointer hover:bg-slate-100 transition-colors select-none ${alignRight ? 'text-right' : 'text-left'}`} onClick={onClick}>
-        <div className={`flex items-center gap-1 ${alignRight ? 'justify-end' : 'justify-start'}`}>{label}</div>
-    </th>
-);
+const SortHeader = ({ label, sortKey, sortConfig, onSort }: any) => {
+    const isSorted = sortConfig.key === sortKey;
+    return (
+        <th className={`px-4 py-3 font-semibold text-slate-500 cursor-pointer hover:bg-slate-100 transition-colors select-none`} onClick={() => onSort(sortKey)}>
+            <div className={`flex items-center gap-1`}>
+                {label}
+                {isSorted && (
+                    <span className="text-indigo-500 font-bold">{sortConfig.direction === 'asc' ? '↑' : '↓'}</span>
+                )}
+            </div>
+        </th>
+    );
+};
 
 const ClientRow: React.FC<{ 
     client: Client, isSelected: boolean, onToggle: () => void, onClick: () => void, onStatusUpdate: (c: Client, s: ContactStatus) => void, onWhatsApp: () => void, onRecordSale: () => void, onLoadProfile: () => void, onDelete: () => void, canDelete: boolean, advisorName?: string, showAdvisor?: boolean
@@ -479,7 +425,35 @@ const ClientRow: React.FC<{
             <td className="px-4 py-3"><div className="text-sm font-bold text-slate-700">{client.momentumScore || 50}/100</div><div className="text-xs text-slate-400">${(client.value || 0).toLocaleString()}</div></td>
             <td className="px-4 py-3 text-xs text-slate-500"><div>📞 {client.phone || '-'}</div><div>✉️ {client.email || '-'}</div></td>
             <td className="px-4 py-3 text-xs text-slate-500 font-medium">{client.lastUpdated ? fmtDateTime(client.lastUpdated) : '-'}</td>
-            <td className="px-4 py-3 text-right"><div className="flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity"><button onClick={(e) => { e.stopPropagation(); onWhatsApp(); }} className="p-1.5 text-[#25D366] hover:bg-emerald-50 rounded-lg transition-colors">W</button><button onClick={(e) => { e.stopPropagation(); onRecordSale(); }} className="p-1.5 text-emerald-500 hover:text-white hover:bg-emerald-500 rounded-lg transition-colors">$</button><button onClick={(e) => { e.stopPropagation(); onLoadProfile(); }} className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors">P</button></div></td>
+            <td className="px-4 py-3 text-right">
+                <div className="flex justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity items-center">
+                    <button 
+                        onClick={(e) => { e.stopPropagation(); onWhatsApp(); }} 
+                        className="p-2 text-[#25D366] hover:bg-green-50 rounded-lg transition-colors" 
+                        title="WhatsApp"
+                    >
+                        <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M12.031 6.172c-3.181 0-5.767 2.586-5.768 5.766-.001 1.298.38 2.27 1.025 3.312l-.542 2.01 2.036-.53c.96.514 1.95.787 3.25.788h.003c3.181 0 5.767-2.586 5.768-5.766 0-3.18-2.587-5.766-5.768-5.766h-.004zm3.003 8.3c-.12.33-.7.63-1.01.69-.24.05-.55.08-1.53-.33-1.3-.54-2.12-1.85-2.19-1.94-.06-.09-.54-.72-.54-1.37s.34-.97.46-1.1c.12-.13.27-.16.36-.16s.18.01.26.01.21-.04.33.25c.12.29.41 1.01.45 1.09.04.08.07.17.01.28-.06.11-.09.18-.18.29-.06.11-.09.18-.18.29-.09.11-.18.23-.26.3-.09.08-.18.17-.08.34.1.17.44.73.94 1.18.64.57 1.18.75 1.35.83.17.08.27.07.37-.04.1-.11.43-.51.55-.68.12-.17.23-.15.39-.09.16.06 1.03.49 1.2.58.17.09.28.14.32.2.04.06.04.35-.08.68z"/></svg>
+                    </button>
+                    <button 
+                        onClick={(e) => { e.stopPropagation(); onRecordSale(); }} 
+                        className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors" 
+                        title="Record Sale"
+                    >
+                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                    </button>
+                    <button 
+                        onClick={(e) => { e.stopPropagation(); onLoadProfile(); }} 
+                        className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors" 
+                        title="Open Profile"
+                    >
+                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                        </svg>
+                    </button>
+                </div>
+            </td>
         </tr>
     );
 };

@@ -1,7 +1,8 @@
 
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
-import { isSupabaseConfigured } from '../../lib/supabase';
+import { isSupabaseConfigured, supabase } from '../../lib/supabase';
+import Button from '../../components/ui/Button';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -21,8 +22,24 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialError }) 
   
   const [status, setStatus] = useState<'idle' | 'loading' | 'sent' | 'error' | 'success'>('idle');
   const [message, setMessage] = useState('');
+  const [isHealthy, setIsHealthy] = useState<boolean | null>(null);
 
-  // Sync initial error
+  // Connection Ping
+  useEffect(() => {
+    if (isOpen) {
+      const checkPing = async () => {
+        try {
+          const { error } = await supabase!.from('profiles').select('id').limit(1);
+          // We ignore "Auth session missing" errors as health is just API reachability
+          setIsHealthy(!error || error.code !== 'PGRST116');
+        } catch (e) {
+          setIsHealthy(false);
+        }
+      };
+      checkPing();
+    }
+  }, [isOpen]);
+
   useEffect(() => {
     if (initialError) {
       setStatus('error');
@@ -30,17 +47,14 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialError }) 
     }
   }, [initialError, isOpen]);
 
-  // Reset state when modal opens or view changes
   useEffect(() => {
     if (!isOpen) {
-      // Reset everything on close
       setEmail('');
       setPassword('');
       setView('login');
       setStatus('idle');
       setMessage('');
     } else {
-      // Clear messages when switching views inside an open modal
       setStatus('idle');
       setMessage('');
     }
@@ -50,18 +64,14 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialError }) 
 
   if (!isSupabaseConfigured()) {
     return (
-      <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-        <div className="bg-white rounded-xl p-6 max-w-md w-full">
-          <div className="text-center">
-            <div className="text-4xl mb-3">🛠️</div>
-            <h2 className="text-xl font-bold text-gray-800 mb-2">Backend Not Configured</h2>
-            <p className="text-gray-600 mb-4 text-sm">
-              To enable Cloud features, you must add your Supabase credentials to <code>src/lib/supabase.ts</code>.
+      <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={onClose}>
+        <div className="bg-white rounded-xl p-8 max-w-md w-full text-center" onClick={e => e.stopPropagation()}>
+            <div className="text-5xl mb-4">🛠️</div>
+            <h2 className="text-2xl font-bold text-slate-800 mb-2">Supabase Missing</h2>
+            <p className="text-slate-600 mb-6 text-sm">
+              Quantum environment requires a cloud backend. Add your keys to <code className="bg-slate-100 px-1 rounded">src/lib/supabase.ts</code> to initialize the portal.
             </p>
-            <button onClick={onClose} className="px-4 py-2 bg-gray-800 text-white rounded-lg">
-              Close
-            </button>
-          </div>
+            <Button variant="primary" onClick={onClose} className="w-full">Dismiss</Button>
         </div>
       </div>
     );
@@ -70,11 +80,36 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialError }) 
   const handleGoogleLogin = async () => {
     setStatus('loading');
     setMessage('');
-    const { error } = await signInWithGoogle();
-    if (error) {
-      setStatus('error');
-      setMessage(error.message);
+    try {
+        const { error } = await signInWithGoogle();
+        if (error) throw error;
+    } catch (err: any) {
+        setStatus('error');
+        setMessage(err.message || "Google Authentication Aborted.");
     }
+  };
+
+  const handleDiagnostic = async () => {
+      setStatus('loading');
+      setMessage("Running system diagnostic...");
+      try {
+          const { error } = await supabase!.from('profiles').select('count', { count: 'exact', head: true });
+          if (error) {
+              if (error.message.includes('recursion') || error.message.includes('stack depth')) {
+                  setMessage("SYSTEM ERROR: Database Recursion Loop. You need to run the Repair SQL in Supabase SQL Editor.");
+                  setStatus('error');
+              } else {
+                  setMessage(`API ERROR: ${error.message}`);
+                  setStatus('error');
+              }
+          } else {
+              setMessage("System path clear. Credentials invalid or network flicker.");
+              setStatus('error');
+          }
+      } catch (e: any) {
+          setMessage("NETWORK ERROR: Blocked or no connection.");
+          setStatus('error');
+      }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -82,271 +117,153 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialError }) 
     setStatus('loading');
     setMessage('');
 
-    // --- FORGOT PASSWORD FLOW ---
-    if (view === 'forgot_password') {
-      const { error } = await resetPassword(email);
-      if (error) {
-        setStatus('error');
-        setMessage(error.message);
-      } else {
-        setStatus('sent');
-        setMessage(`Password reset instructions have been sent to ${email}.`);
-      }
-      return;
-    }
-    
-    // --- MAGIC LINK FLOW ---
-    if (useMagicLink) {
-      const { error } = await signInWithEmail(email);
-      if (error) {
-        setStatus('error');
-        setMessage(error.message);
-      } else {
-        setStatus('sent');
-        setMessage(`We've sent a magic login link to ${email}.`);
-      }
-      return;
-    }
-
-    // --- PASSWORD LOGIN/SIGNUP FLOW ---
-    if (view === 'signup') {
-      const { data, error } = await signUpWithPassword(email, password);
-      if (error) {
-        setStatus('error');
-        // Handle specific Supabase "Rate Limit" error for email
-        if (error.message && (error.message.includes('Error sending confirmation email') || error.status === 429)) {
-             setMessage('High traffic detected. The email service is currently busy (Rate Limit). Please try again in 15 minutes.');
-        } else {
-             setMessage(error.message);
+    try {
+        if (view === 'forgot_password') {
+            const { error } = await resetPassword(email);
+            if (error) throw error;
+            setStatus('sent');
+            setMessage(`Instructions sent to ${email}.`);
+            return;
         }
-      } else {
-        if (data?.user && !data.session) {
-          setStatus('sent');
-          setMessage('Account created! Please check your email to confirm your account.');
-        } else {
-           onClose();
+        
+        if (useMagicLink) {
+            const { error } = await signInWithEmail(email);
+            if (error) throw error;
+            setStatus('sent');
+            setMessage(`Magic link dispatched to ${email}.`);
+            return;
         }
-      }
-    } else {
-      // Login
-      const { error } = await signInWithPassword(email, password);
-      if (error) {
+
+        if (view === 'signup') {
+            const { data, error } = await signUpWithPassword(email, password);
+            if (error) throw error;
+            if (data?.user && !data.session) {
+                setStatus('sent');
+                setMessage('Verification email sent! Check your inbox.');
+            } else {
+                onClose();
+            }
+        } else {
+            const { error } = await signInWithPassword(email, password);
+            if (error) throw error;
+            onClose();
+        }
+    } catch (err: any) {
         setStatus('error');
-        setMessage(error.message);
-      } else {
-        onClose();
-      }
-    }
-  };
-
-  const renderHeader = () => {
-    switch(view) {
-      case 'signup': return 'Create Account';
-      case 'forgot_password': return 'Reset Password';
-      default: return 'Welcome Back';
-    }
-  };
-
-  const renderSubHeader = () => {
-    switch(view) {
-      case 'signup': return 'Get started with your financial planning';
-      case 'forgot_password': return 'Enter your email to receive instructions';
-      default: return 'Login to your advisor dashboard';
+        if (err.status === 400 && err.message?.includes('Invalid login credentials')) {
+            setMessage("Login failed. Check your email or password.");
+        } else if (err.message?.includes('stack depth')) {
+            setMessage("CRITICAL: Database Loop Detected. Contact Administrator.");
+        } else {
+            setMessage(err.message || "An unexpected error occurred.");
+        }
     }
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
-      <div className="bg-white rounded-xl shadow-2xl max-w-sm w-full overflow-hidden">
-        {status === 'sent' ? (
-          <div className="p-8 text-center">
-            <div className="text-5xl mb-4">✉️</div>
-            <h3 className="text-xl font-bold text-gray-800 mb-2">
-               Check your inbox
-            </h3>
-            <p className="text-sm text-gray-600 mb-6">
-              {message}
-            </p>
-            {useMagicLink && (
-              <div className="p-3 bg-blue-50 text-blue-800 text-xs rounded-lg mb-6 text-left">
-                <strong>Tip:</strong> If clicking the link gives an error, check that your browser URL is added to the Supabase "Redirect URLs" allowlist.
-              </div>
-            )}
-            <button 
-              onClick={() => {
-                setStatus('idle');
-                setView('login');
-              }}
-              className="w-full py-2.5 bg-gray-100 text-gray-800 rounded-lg font-semibold hover:bg-gray-200"
-            >
-              Back to Login
-            </button>
-          </div>
-        ) : (
-          <div className="p-6">
-            <div className="flex justify-between items-center mb-6">
-               {/* Mode Toggle Tabs (Only show for login/signup) */}
-               {view !== 'forgot_password' ? (
-                 <div className="flex bg-gray-100 p-1 rounded-lg">
-                  <button 
-                    type="button"
-                    onClick={() => setView('login')}
-                    className={`px-4 py-1.5 rounded-md text-xs font-bold transition-all ${view === 'login' ? 'bg-white text-indigo-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
-                  >
-                    Log In
-                  </button>
-                  <button 
-                    type="button"
-                    onClick={() => {
-                      setView('signup');
-                      setUseMagicLink(false); // Sign up usually forces password
-                    }}
-                    className={`px-4 py-1.5 rounded-md text-xs font-bold transition-all ${view === 'signup' ? 'bg-white text-indigo-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
-                  >
-                    Sign Up
-                  </button>
+    <div className="fixed inset-0 bg-slate-900/60 z-50 flex items-center justify-center p-4 backdrop-blur-md animate-fade-in" onClick={onClose}>
+      <div 
+        className="bg-white rounded-[2rem] shadow-2xl max-w-sm w-full overflow-hidden flex flex-col relative"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="p-8">
+            <div className="flex justify-between items-start mb-8">
+                <div>
+                   <h2 className="text-2xl font-black text-slate-800 tracking-tight">{view === 'signup' ? 'Create Account' : view === 'forgot_password' ? 'Reset Portal' : 'Advisor Login'}</h2>
+                   <p className="text-xs text-slate-400 font-medium mt-1">Sproutly Quantum v3.0 Secured Entrance</p>
                 </div>
-               ) : (
-                 <button 
-                  onClick={() => setView('login')}
-                  className="flex items-center text-gray-500 hover:text-gray-800 text-sm font-semibold"
-                 >
-                   ← Back
-                 </button>
-               )}
-              <button type="button" onClick={onClose} className="text-gray-400 hover:text-gray-600">✕</button>
+                <button onClick={onClose} className="p-2 text-slate-300 hover:text-slate-900 transition-colors">✕</button>
             </div>
             
-            <div className="mb-6">
-              <h2 className="text-xl font-bold text-gray-800">{renderHeader()}</h2>
-              <p className="text-sm text-gray-500">{renderSubHeader()}</p>
-            </div>
-            
-            <form onSubmit={handleSubmit}>
-              <div className="mb-4">
-                <label className="block text-xs font-bold text-gray-700 mb-2 uppercase">Email Address</label>
-                <input 
-                  type="email" 
-                  required
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg outline-none focus:border-indigo-500 transition-colors bg-white text-gray-900"
-                  placeholder="you@agency.com"
-                />
-              </div>
+            {status === 'sent' ? (
+                <div className="text-center py-10 animate-fade-in">
+                    <div className="text-5xl mb-6">✉️</div>
+                    <h3 className="text-xl font-bold text-slate-800 mb-2">Check Inbound Signal</h3>
+                    <p className="text-sm text-slate-500 mb-8">{message}</p>
+                    <Button variant="secondary" onClick={() => { setView('login'); setStatus('idle'); }} className="w-full">Return to Login</Button>
+                </div>
+            ) : (
+                <form onSubmit={handleSubmit} className="space-y-5">
+                    <div className="space-y-1">
+                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Email Node</label>
+                        <input 
+                            type="email" required value={email} onChange={e => setEmail(e.target.value)}
+                            className="w-full bg-slate-50 border-2 border-transparent focus:bg-white focus:border-indigo-500 rounded-xl px-4 py-3 text-sm font-bold outline-none transition-all placeholder-slate-300"
+                            placeholder="you@agency.com"
+                        />
+                    </div>
 
-              {!useMagicLink && view !== 'forgot_password' && (
-                <div className="mb-5">
-                  <div className="flex justify-between items-center mb-2">
-                    <label className="text-xs font-bold text-gray-700 uppercase">Password</label>
-                    {view === 'login' && (
-                      <button 
-                        type="button"
-                        onClick={() => setView('forgot_password')}
-                        className="text-[10px] text-indigo-600 font-bold hover:underline"
-                      >
-                        Forgot Password?
-                      </button>
+                    {!useMagicLink && view !== 'forgot_password' && (
+                        <div className="space-y-1">
+                            <div className="flex justify-between px-1">
+                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Access Key</label>
+                                {view === 'login' && <button type="button" onClick={() => setView('forgot_password')} className="text-[10px] font-black text-indigo-600 uppercase hover:underline">Forgot?</button>}
+                            </div>
+                            <input 
+                                type="password" required value={password} onChange={e => setPassword(e.target.value)}
+                                className="w-full bg-slate-50 border-2 border-transparent focus:bg-white focus:border-indigo-500 rounded-xl px-4 py-3 text-sm font-bold outline-none transition-all placeholder-slate-300"
+                                placeholder="••••••••"
+                            />
+                        </div>
                     )}
-                  </div>
-                  <input 
-                    type="password" 
-                    required
-                    minLength={6}
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg outline-none focus:border-indigo-500 transition-colors bg-white text-gray-900"
-                    placeholder="••••••••"
-                  />
-                  {view === 'signup' && (
-                    <p className="text-[10px] text-gray-400 mt-1">Must be at least 6 characters</p>
-                  )}
-                </div>
-              )}
 
-              {status === 'error' && (
-                <div className="mb-4 p-3 bg-red-50 text-red-600 text-xs rounded-lg border border-red-100">
-                  <strong>Error:</strong> {message}
-                </div>
-              )}
+                    {status === 'error' && (
+                        <div className="p-4 bg-red-50 border border-red-100 rounded-xl">
+                            <p className="text-[11px] font-bold text-red-600 leading-tight">{message}</p>
+                            {message.includes("Login failed") === false && (
+                                <button type="button" onClick={handleDiagnostic} className="text-[9px] font-black uppercase text-red-400 mt-2 hover:underline">Run Diagnostic →</button>
+                            )}
+                        </div>
+                    )}
 
-              <button 
-                type="submit" 
-                disabled={status === 'loading'}
-                className="w-full py-3 bg-indigo-600 text-white rounded-lg font-bold shadow-md hover:bg-indigo-700 transition-colors disabled:opacity-70 flex justify-center"
-              >
-                {status === 'loading' 
-                  ? 'Processing...' 
-                  : (view === 'forgot_password' 
-                      ? 'Send Reset Instructions'
-                      : (useMagicLink 
-                          ? 'Send Magic Link' 
-                          : (view === 'signup' ? 'Create Account' : 'Sign In')
-                        )
-                    )
-                }
-              </button>
-              
-              {/* Toggle Password / Magic Link */}
-              {view !== 'forgot_password' && (
-                <div className="mt-4 text-center text-xs">
-                   <button 
-                      type="button"
-                      onClick={() => {
-                        setUseMagicLink(!useMagicLink);
-                        if (useMagicLink) setView('login'); // Reset view if unchecking magic link
-                      }}
-                      className="text-indigo-600 hover:text-indigo-800 font-semibold underline decoration-indigo-200 underline-offset-2"
-                   >
-                      {useMagicLink ? '← Use Password Login' : 'Use Magic Link (Passwordless)'}
-                   </button>
-                </div>
-              )}
-            </form>
+                    <Button 
+                        type="submit" variant="primary" className="w-full py-4 text-sm" 
+                        isLoading={status === 'loading'}
+                    >
+                        {view === 'signup' ? 'Initiate Account' : view === 'forgot_password' ? 'Send Link' : 'Open Portal'}
+                    </Button>
 
-            {!useMagicLink && view === 'login' && (
-              <div className="relative my-6">
-                <div className="absolute inset-0 flex items-center">
-                  <div className="w-full border-t border-gray-200"></div>
-                </div>
-                <div className="relative flex justify-center text-sm">
-                  <span className="px-2 bg-white text-gray-500">Or use social login</span>
-                </div>
-              </div>
+                    {view === 'login' && !useMagicLink && (
+                        <>
+                            <div className="relative py-2 flex items-center gap-4">
+                                <div className="flex-1 h-px bg-slate-100"></div>
+                                <span className="text-[10px] font-black text-slate-300 uppercase tracking-widest">OR</span>
+                                <div className="flex-1 h-px bg-slate-100"></div>
+                            </div>
+                            <button 
+                                type="button" onClick={handleGoogleLogin} disabled={status === 'loading'}
+                                className="w-full flex items-center justify-center gap-3 bg-white border border-slate-200 hover:bg-slate-50 py-3 rounded-xl shadow-sm transition-all active:scale-95"
+                            >
+                                <img src="https://www.svgrepo.com/show/475656/google-color.svg" className="w-4 h-4" alt="G" />
+                                <span className="text-xs font-bold text-slate-600">Sync with Google</span>
+                            </button>
+                        </>
+                    )}
+
+                    <div className="pt-4 text-center space-y-3">
+                        <button 
+                            type="button" onClick={() => { setView(view === 'signup' ? 'login' : 'signup'); setUseMagicLink(false); }}
+                            className="text-xs font-bold text-slate-500 hover:text-indigo-600 transition-colors"
+                        >
+                            {view === 'signup' ? 'Already an advisor? Login' : 'New to Quantum? Create Account'}
+                        </button>
+                    </div>
+                </form>
             )}
-
-            {/* Google Login */}
-            {!useMagicLink && view === 'login' && (
-              <>
-                <button
-                  onClick={handleGoogleLogin}
-                  disabled={status === 'loading'}
-                  className="w-full py-3 bg-white border border-gray-300 rounded-lg text-gray-700 font-semibold shadow-sm hover:bg-gray-50 transition-colors flex items-center justify-center gap-2"
-                >
-                  <svg className="w-5 h-5" viewBox="0 0 24 24">
-                    <path
-                      fill="#4285F4"
-                      d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-                    />
-                    <path
-                      fill="#34A853"
-                      d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-                    />
-                    <path
-                      fill="#FBBC05"
-                      d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.84z"
-                    />
-                    <path
-                      fill="#EA4335"
-                      d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
-                    />
-                  </svg>
-                  Sign in with Google
-                </button>
-              </>
+        </div>
+        
+        {/* Footer Status Bar */}
+        <div className="bg-slate-50 px-8 py-3 border-t border-slate-100 flex justify-between items-center">
+            <div className="flex items-center gap-2">
+                <div className={`w-2 h-2 rounded-full ${isHealthy ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : isHealthy === false ? 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]' : 'bg-slate-300 animate-pulse'}`}></div>
+                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                    {isHealthy ? 'System Online' : isHealthy === false ? 'Signal Weak' : 'Pinging Core...'}
+                </span>
+            </div>
+            {status === 'error' && (
+                <button onClick={handleDiagnostic} className="text-[9px] font-black text-indigo-400 uppercase tracking-widest hover:text-indigo-600">Troubleshoot ↗</button>
             )}
-          </div>
-        )}
+        </div>
       </div>
     </div>
   );

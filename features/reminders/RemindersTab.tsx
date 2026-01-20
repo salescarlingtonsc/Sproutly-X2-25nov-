@@ -162,6 +162,11 @@ const RemindersTab: React.FC = () => {
   const currentMonth = now.getMonth();
 
   const birthdayReminders = useMemo(() => filteredClients.filter(c => {
+    // 1. FILTER: Exclude cold leads (New, NPU, Not Keen)
+    const s = c.followUp.status || 'new';
+    if (s === 'new' || s.startsWith('npu') || s === 'not_keen') return false;
+
+    // 2. CHECK BIRTHDAY
     const checkBirthday = (dobStr?: string) => {
         if (!dobStr) return false;
         const d = new Date(dobStr);

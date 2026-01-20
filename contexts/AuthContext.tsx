@@ -1,4 +1,5 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+
+import React, { createContext, useContext, useEffect, useState, useRef } from 'react';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { UserProfile, SubscriptionTier } from '../types';
 
@@ -16,36 +17,42 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-// Cache key for instant load
 const USER_CACHE_KEY = 'sproutly.user_cache.v1';
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<UserProfile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const loadingTimeoutRef = useRef<any>(null);
 
   const ADMIN_EMAIL = 'sales.carlingtonsc@gmail.com';
 
   useEffect(() => {
-    // 1. INSTANT HYDRATION: Check local cache first
+    // 1. INSTANT HYDRATION
     const cachedUser = localStorage.getItem(USER_CACHE_KEY);
     let hasCache = false;
 
     if (cachedUser) {
       try {
         const parsed = JSON.parse(cachedUser);
-        console.log("⚡ Instant Login via Cache");
         setUser(parsed);
         setIsLoading(false); 
         hasCache = true;
-      } catch (e) {
-        console.warn("Cache corrupted");
-      }
+      } catch (e) {}
     }
 
     if (!isSupabaseConfigured() || !supabase) {
       setIsLoading(false);
       return;
     }
+
+    // 2. SAFETY BACKSTOP: If Supabase hangs for >5s, unblock the UI
+    // This prevents the "White Screen" if the DB is looping or network is dead.
+    loadingTimeoutRef.current = setTimeout(() => {
+      if (isLoading) {
+        console.warn("🛡️ Auth Backstop: Supabase check timed out. Unblocking UI.");
+        setIsLoading(false);
+      }
+    }, 5000);
 
     const checkSession = async () => {
       try {
@@ -54,15 +61,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (error) throw error;
 
         if (session?.user) {
-          // 2. ZERO-LATENCY FALLBACK
-          // If we have a session but no cache, UNBLOCK UI IMMEDIATELY with a temporary profile
-          // The full profile will lazy-load in the background.
+          // If no cache, unblock with minimal user data immediately
           if (!hasCache) {
              const fallbackUser: UserProfile = {
                 id: session.user.id,
                 email: session.user.email!,
-                role: 'advisor', // Temporary safe role
-                status: 'active', // <--- This is set to 'active' initially
+                role: 'advisor',
+                status: 'approved',
                 subscriptionTier: 'free', 
                 is_admin: false,
                 organizationId: 'org_default',
@@ -71,14 +76,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 name: session.user.user_metadata?.full_name || session.user.email?.split('@')[0]
              };
              setUser(fallbackUser);
-             setIsLoading(false); // <--- CRITICAL: Remove loading screen immediately
+             setIsLoading(false);
           }
 
-          // 3. BACKGROUND SYNC
-          // This will fetch the real roles/permissions and update the UI silently
+          // Fetch full profile in background
           loadUserProfile(session.user.id, session.user.email!);
         } else {
-          // No session
           if (hasCache) {
              localStorage.removeItem(USER_CACHE_KEY);
              setUser(null);
@@ -86,12 +89,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setIsLoading(false);
         }
       } catch (err: any) {
-        // Ignore abort errors which can happen in strict mode or rapid navigation
-        if (err.name === 'AbortError' || err.message?.includes('aborted')) {
-            return;
-        }
-        console.error("Session check failed", err);
-        if (!hasCache) setIsLoading(false);
+        console.error("Session check failed:", err.message);
+        setIsLoading(false);
+      } finally {
+        if (loadingTimeoutRef.current) clearTimeout(loadingTimeoutRef.current);
       }
     };
 
@@ -109,88 +110,53 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     return () => {
       subscription.unsubscribe();
+      if (loadingTimeoutRef.current) clearTimeout(loadingTimeoutRef.current);
     };
   }, []);
 
   const loadUserProfile = async (uid: string, email: string) => {
     try {
       if (!supabase) return;
-      
       const isHardcodedAdmin = email === ADMIN_EMAIL;
       
-      // Attempt to fetch profile with a short timeout mechanism implicitly handled by Supabase
       const { data: profileData, error: fetchError } = await supabase
           .from('profiles')
           .select('subscription_tier, role, is_admin, extra_slots, status, modules, organization_id, name')
           .eq('id', uid)
           .maybeSingle();
 
-      // Check for invite reconciliations if profile is missing
-      let finalProfileData = profileData;
-      
-      if (!finalProfileData) {
-          const { data: inviteData } = await supabase
-              .from('profiles')
-              .select('*')
-              .eq('email', email)
-              .neq('id', uid)
-              .maybeSingle();
-              
-          if (inviteData) {
-              const updates = {
-                  status: inviteData.status === 'active' ? 'approved' : inviteData.status,
-                  role: inviteData.role,
-                  organization_id: inviteData.organization_id,
-                  banding_percentage: inviteData.banding_percentage,
-                  reporting_to: inviteData.reporting_to,
-                  modules: inviteData.modules,
-                  subscription_tier: inviteData.subscription_tier,
-                  annual_goal: inviteData.annual_goal,
-                  is_admin: inviteData.is_admin
-              };
-              await supabase.from('profiles').update(updates).eq('id', uid);
-              await supabase.from('profiles').delete().eq('id', inviteData.id);
-              finalProfileData = { ...inviteData, ...updates };
+      if (fetchError) {
+          if (fetchError.message.includes('stack depth')) {
+              console.error("🚨 CRITICAL: Database Recursion Loop Detected. Run Repair SQL.");
           }
+          throw fetchError;
       }
 
-      // Construct Final Profile
-      const isAdminByData = finalProfileData?.role === 'admin' || finalProfileData?.is_admin === true;
-      const finalRole = (isHardcodedAdmin || isAdminByData) ? 'admin' : (finalProfileData?.role || 'advisor');
+      const isAdminByData = profileData?.role === 'admin' || profileData?.is_admin === true;
+      const finalRole = (isHardcodedAdmin || isAdminByData) ? 'admin' : (profileData?.role || 'advisor');
       const finalIsAdmin = isHardcodedAdmin || isAdminByData;
-      const finalTier = finalRole === 'admin' ? 'diamond' : ((finalProfileData?.subscription_tier as SubscriptionTier) || 'free');
+      const finalTier = finalRole === 'admin' ? 'diamond' : ((profileData?.subscription_tier as SubscriptionTier) || 'free');
       
-      // STATUS RESOLUTION
-      // If profile is found, use its status. If missing (no row), default to 'approved' to allow access.
-      // This prevents "Access Restricted" for users whose profile creation trigger failed.
-      let dbStatus = finalProfileData?.status || 'approved'; 
-      if (dbStatus === 'active') dbStatus = 'approved'; 
-      
-      // Hardcoded admin is always approved
-      const finalStatus = (isHardcodedAdmin || dbStatus === 'approved') ? 'approved' : dbStatus;
-
       const newUserProfile: UserProfile = {
         id: uid,
         email: email,
         subscriptionTier: finalTier,
         role: finalRole,
-        status: finalStatus as 'pending' | 'approved' | 'rejected',
-        extraSlots: finalProfileData?.extra_slots || 0,
-        modules: finalProfileData?.modules || [],
+        status: (profileData?.status || 'approved') as any,
+        extraSlots: profileData?.extra_slots || 0,
+        modules: profileData?.modules || [],
         is_admin: finalIsAdmin,
         isAgencyAdmin: finalIsAdmin,
-        organizationId: finalProfileData?.organization_id,
-        name: finalProfileData?.name
+        organizationId: profileData?.organization_id || 'org_default',
+        name: profileData?.name
       };
 
-      // UPDATE STATE
       setUser(newUserProfile);
       localStorage.setItem(USER_CACHE_KEY, JSON.stringify(newUserProfile));
+      setIsLoading(false);
 
     } catch (e) {
-      console.error('Profile sync error', e);
-      // Don't clear user here, keep the fallback session user to prevent logout
-    } finally {
+      console.error('Profile loading error:', e);
       setIsLoading(false);
     }
   };

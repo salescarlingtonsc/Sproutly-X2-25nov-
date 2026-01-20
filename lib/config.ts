@@ -1,3 +1,4 @@
+
 import { UserProfile, SubscriptionTier } from "../types";
 
 export const DEFAULT_SETTINGS = {
@@ -25,12 +26,12 @@ export const TIER_CONFIG: Record<SubscriptionTier, { label: string; clientLimit:
   'diamond': {
     label: 'Diamond',
     clientLimit: 9999,
-    allowedTabs: ['dashboard', 'profile', 'life_events', 'children', 'cpf', 'cashflow', 'insurance', 'retirement', 'investor', 'wealth', 'property', 'vision', 'analytics', 'crm', 'report', 'reminders', 'admin', 'disclaimer', 'portfolio', 'market']
+    allowedTabs: ['dashboard', 'profile', 'life_events', 'children', 'cpf', 'cashflow', 'insurance', 'retirement', 'investor', 'wealth', 'property', 'nine_box', 'vision', 'analytics', 'crm', 'report', 'reminders', 'admin', 'disclaimer', 'portfolio', 'market']
   },
   'organisation': {
     label: 'Organisation',
     clientLimit: 99999,
-    allowedTabs: ['dashboard', 'profile', 'life_events', 'children', 'cpf', 'cashflow', 'insurance', 'retirement', 'investor', 'wealth', 'property', 'vision', 'analytics', 'crm', 'report', 'reminders', 'admin', 'disclaimer', 'portfolio', 'market']
+    allowedTabs: ['dashboard', 'profile', 'life_events', 'children', 'cpf', 'cashflow', 'insurance', 'retirement', 'investor', 'wealth', 'property', 'nine_box', 'vision', 'analytics', 'crm', 'report', 'reminders', 'admin', 'disclaimer', 'portfolio', 'market']
   }
 };
 
@@ -49,6 +50,7 @@ export const TAB_DEFINITIONS = [
   { id: 'investor', label: 'Investment', icon: '📈' },
   { id: 'wealth', label: 'Wealth Tool', icon: '💎' },
   { id: 'property', label: 'Property', icon: '🏠' },
+  { id: 'nine_box', label: '9 Box Matrix', icon: '▦' },
   { id: 'vision', label: 'Vision Board', icon: '🖼️' },
   { id: 'analytics', label: 'Analytics', icon: '🧠' },
   { id: 'report', label: 'Report', icon: '📄' },
@@ -60,7 +62,7 @@ export const TAB_DEFINITIONS = [
 export const TAB_GROUPS = [
   { title: 'Command', tabs: ['dashboard', 'reminders', 'crm', 'market', 'portfolio'] },
   { title: 'Core Planning', tabs: ['profile', 'children', 'cpf', 'cashflow', 'insurance', 'retirement'] },
-  { title: 'Advanced Tools', tabs: ['investor', 'wealth', 'property', 'life_events', 'analytics', 'vision'] },
+  { title: 'Advanced Tools', tabs: ['investor', 'wealth', 'property', 'nine_box', 'life_events', 'analytics', 'vision'] },
   { title: 'System', tabs: ['report', 'admin', 'disclaimer'] }
 ];
 

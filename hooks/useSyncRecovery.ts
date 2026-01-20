@@ -4,52 +4,55 @@ import { supabase } from '../lib/supabase';
 import { db } from '../lib/db';
 import { syncInspector } from '../lib/syncInspector';
 
-export const useSyncRecovery = (userId?: string) => {
+export const useSyncRecovery = (userId?: string, onRecovery?: () => void) => {
   useEffect(() => {
     const triggerRecovery = async (source: string) => {
-      syncInspector.log('info', 'RECOVERY_TRIGGER', `Recovery started via ${source}`);
+      // 1. Break Zombie Locks Immediately
+      db.resetLocks();
+      
+      syncInspector.log('info', 'RECOVERY_TRIGGER', `Active recovery from ${source}`);
       
       if (!userId) return;
 
-      // 1. Check Auth
-      const { data: { session }, error } = await supabase!.auth.getSession();
-      
-      if (error || !session) {
-        syncInspector.log('error', 'AUTH_STALE', 'Session invalid on recovery check');
-        syncInspector.updateSnapshot({ lastSessionErr: 'Session Invalid' });
-        // Optionally trigger re-login flow here if needed, but for now just log
+      // 2. Refresh Session
+      const { data: { session } } = await supabase!.auth.getSession();
+      if (!session) {
+        syncInspector.log('error', 'AUTH_STALE', 'Session expired during background wait');
         return;
       }
 
-      syncInspector.updateSnapshot({ lastSessionOkAt: Date.now(), lastSessionErr: null });
+      // 3. Trigger External UI Callback
+      if (onRecovery) onRecovery();
 
-      // 2. Flush
+      // 4. Force a Queue Flush
       db.flushCloudQueue(userId);
     };
 
+    // Standard Focus
     const handleFocus = () => triggerRecovery('window_focus');
-    const handleOnline = () => triggerRecovery('network_online');
-    const handleVisibility = () => {
-        if (document.visibilityState === 'visible') triggerRecovery('visibility_visible');
-    };
+    
+    // Nuclear Option: iOS pageshow triggers even if process was frozen
+    const handlePageShow = () => triggerRecovery('pageshow_detected');
 
     window.addEventListener('focus', handleFocus);
-    window.addEventListener('online', handleOnline);
-    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('pageshow', handlePageShow);
+    window.addEventListener('online', () => triggerRecovery('network_online'));
+    
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') triggerRecovery('visibility_visible');
+    });
 
-    // 3. Gentle Interval Loop (Backstop)
+    // Backstop: Check for stuck items every 30s
     const interval = setInterval(() => {
-        const snapshot = syncInspector.getSnapshot();
-        if (snapshot.queueCount > 0 && !snapshot.isFlushing && snapshot.online) {
+        if (db.getQueueCount() > 0 && !db.isFlushing()) {
             triggerRecovery('interval_backstop');
         }
-    }, 20000); // Check every 20s
+    }, 30000);
 
     return () => {
       window.removeEventListener('focus', handleFocus);
-      window.removeEventListener('online', handleOnline);
-      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('pageshow', handlePageShow);
       clearInterval(interval);
     };
-  }, [userId]);
+  }, [userId, onRecovery]);
 };

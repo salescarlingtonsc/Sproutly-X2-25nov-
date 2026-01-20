@@ -1,5 +1,4 @@
 
-
 export interface CashflowState {
   currentSavings: string;
   projectToAge: string;
@@ -234,6 +233,44 @@ export interface PortfolioItem {
   lastUpdated: string;
 }
 
+// --- NINE BOX TYPES ---
+export type BoxCategory = 
+  | 'death' | 'tpd' | 'ci' 
+  | 'accident' | 'disability' | 'hospital' 
+  | 'cash_inv' | 'cpf_inv' | 'all';
+
+export interface NineBoxItem {
+  id: string;
+  category: BoxCategory;
+  name: string;
+  policyNo: string;
+  startDate: string;
+  matureDate: string;
+  sumAssured: string;
+  cpfPremium: string; // Annual
+  cashPremium: string; // Annual
+}
+
+export interface ReplacementPlan {
+  id: string;
+  name: string;
+  type: 'old' | 'new';
+  deathCov: string;
+  tpdCov: string;
+  ciCov: string; // Early/Inter/Late aggregate for simplicity or separate if needed
+  premium: string; // Annual
+  paymentTermAge: string; // Pay until age X
+  surrenderValue?: string; // For old plan only
+}
+
+export interface NineBoxState {
+  items: NineBoxItem[];
+  replacement: {
+    oldPlan: ReplacementPlan;
+    newPlan: ReplacementPlan;
+  };
+}
+
 export type ContactStatus = 'new' | 'contacted' | 'picked_up' | 'npu_1' | 'npu_2' | 'npu_3' | 'npu_4' | 'npu_5' | 'npu_6' | 'appt_set' | 'appt_met' | 'proposal' | 'pending_decision' | 'client' | 'case_closed' | 'not_keen' | 'closing' | 'qualified';
 
 export interface Client {
@@ -249,6 +286,7 @@ export interface Client {
   wealthState: WealthState;
   investorState: InvestorState;
   insuranceState: InsuranceState;
+  nineBoxState?: NineBoxState; // NEW
   lastUpdated: string;
   followUp: {
     status: ContactStatus;

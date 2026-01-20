@@ -1,11 +1,29 @@
 
-import React from 'react';
+import React, { useState, useEffect } from 'react';
+import { supabase } from '../../lib/supabase';
 
 interface LandingPageProps {
   onLogin: () => void;
 }
 
 const LandingPage: React.FC<LandingPageProps> = ({ onLogin }) => {
+  const [isOnline, setIsOnline] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    const checkConn = async () => {
+      try {
+        const { error } = await supabase!.from('profiles').select('id').limit(1);
+        // Error code PGRST116 means connected but unauthorized (which is fine for health)
+        setIsOnline(!error || error.code !== 'ECONNREFUSED');
+      } catch (e) {
+        setIsOnline(false);
+      }
+    };
+    checkConn();
+    const interval = setInterval(checkConn, 10000);
+    return () => clearInterval(interval);
+  }, []);
+
   return (
     <div className="min-h-screen bg-[#0F172A] flex flex-col items-center justify-center p-6 text-white font-sans relative overflow-hidden">
       
@@ -62,10 +80,11 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLogin }) => {
           <div className="flex flex-col sm:flex-row items-center gap-4 pt-4">
             <button
               onClick={onLogin}
-              className="w-full sm:w-auto px-8 py-4 bg-white text-slate-900 hover:bg-slate-50 rounded-xl font-bold text-sm transition-all shadow-[0_0_40px_-10px_rgba(255,255,255,0.3)] flex items-center justify-center gap-2 group"
+              disabled={isOnline === false}
+              className={`w-full sm:w-auto px-8 py-4 rounded-xl font-bold text-sm transition-all shadow-[0_0_40px_-10px_rgba(255,255,255,0.3)] flex items-center justify-center gap-2 group ${isOnline === false ? 'bg-slate-700 text-slate-400 cursor-not-allowed' : 'bg-white text-slate-900 hover:bg-slate-50'}`}
             >
-              <span>🔐</span> 
-              <span>Enter Quantum Portal</span>
+              <span>{isOnline === false ? '📡' : '🔐'}</span> 
+              <span>{isOnline === false ? 'Core Offline' : 'Enter Quantum Portal'}</span>
               <span className="group-hover:translate-x-1 transition-transform">→</span>
             </button>
             <div className="flex items-center gap-[-10px]">
@@ -127,7 +146,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onLogin }) => {
       </div>
 
       <div className="absolute bottom-6 text-xs text-slate-600 font-mono">
-        QUANTUM ENGINE: <span className="text-emerald-500">ONLINE</span> • LATENCY: 12ms
+        QUANTUM ENGINE: <span className={isOnline ? "text-emerald-500" : "text-red-500"}>{isOnline ? 'ONLINE' : 'SIGNAL LOST'}</span> • LATENCY: {isOnline ? '12ms' : '---'}
       </div>
     </div>
   );

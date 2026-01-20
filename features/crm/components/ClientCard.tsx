@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useCallback, memo } from 'react';
 import { Client, FamilyMember, Policy, UserProfile, Sale, Product, ContactStatus } from '../../../types';
 import { analyzeClientMomentum, generateInvestmentReport, polishContent } from '../../../lib/gemini';
@@ -139,6 +140,15 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
       }
       if (field === 'nextFollowUpDate') {
           onUpdate({ ...client, followUp: { ...client.followUp, nextFollowUpDate: val } });
+          return;
+      }
+      // FIX: Ensure firstApptDate is updated in nested appointments object for persistence
+      if (field === 'firstApptDate') {
+          onUpdate({ 
+              ...client, 
+              firstApptDate: val,
+              appointments: { ...client.appointments, firstApptDate: val }
+          });
           return;
       }
       if (field === 'stage' && val !== client.stage) {

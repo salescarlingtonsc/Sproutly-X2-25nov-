@@ -1,8 +1,9 @@
+
 import React, { createContext, useContext, useState, useMemo, useEffect, ReactNode, useRef } from 'react';
 import { 
   Profile, Expenses, CustomExpense, Child, CpfState, CashflowState, 
   InsuranceState, InvestorState, PropertyState, WealthState, Client, 
-  RetirementSettings, CpfData, CashflowData, Sale, FamilyMember, Policy, Note, ChatMessage, ContactStatus, PortfolioItem
+  RetirementSettings, CpfData, CashflowData, Sale, FamilyMember, Policy, Note, ChatMessage, ContactStatus, PortfolioItem, NineBoxState
 } from '../types';
 import { getAge, toNum, generateRefCode } from '../lib/helpers';
 import { computeCpf } from '../lib/calculators';
@@ -23,6 +24,14 @@ export const INITIAL_INVESTOR: InvestorState = { portfolioValue: '', portfolioTy
 export const INITIAL_PROPERTY: PropertyState = { propertyPrice: '', propertyType: 'hdb', annualValue: '', downPaymentPercent: '25', loanTenure: '25', interestRate: '3.5', useCpfOa: false, cpfOaAmount: '' };
 export const INITIAL_WEALTH: WealthState = { annualPremium: '', projectionYears: '20', growthRate: '5' };
 export const INITIAL_RETIREMENT: RetirementSettings = { initialSavings: '', scenario: 'moderate', investmentPercent: '50' };
+
+export const INITIAL_NINE_BOX: NineBoxState = {
+  items: [],
+  replacement: {
+    oldPlan: { id: 'old', name: 'Existing Plan', type: 'old', deathCov: '0', tpdCov: '0', ciCov: '0', premium: '0', paymentTermAge: '75', surrenderValue: '0' },
+    newPlan: { id: 'new', name: 'Proposed Solution', type: 'new', deathCov: '0', tpdCov: '0', ciCov: '0', premium: '0', paymentTermAge: '75' }
+  }
+};
 
 export const INITIAL_CRM_STATE = {
   company: '',
@@ -98,6 +107,7 @@ interface ClientContextType {
   propertyState: PropertyState;
   wealthState: WealthState;
   retirement: RetirementSettings;
+  nineBoxState: NineBoxState;
   crmState: typeof INITIAL_CRM_STATE;
   chatHistory: ChatMessage[];
 
@@ -113,6 +123,7 @@ interface ClientContextType {
   setPropertyState: (s: PropertyState) => void;
   setWealthState: (s: WealthState) => void;
   setRetirement: (r: RetirementSettings) => void;
+  setNineBoxState: (s: NineBoxState) => void;
   setCrmState: (s: typeof INITIAL_CRM_STATE) => void;
   setOwnerId: (id: string | null) => void; // Added for Admin assignment
   setChatHistory: (history: ChatMessage[]) => void;
@@ -159,6 +170,7 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const [propertyState, setPropertyState] = useState<PropertyState>(INITIAL_PROPERTY);
   const [wealthState, setWealthState] = useState<WealthState>(INITIAL_WEALTH);
   const [retirement, setRetirement] = useState<RetirementSettings>(INITIAL_RETIREMENT);
+  const [nineBoxState, setNineBoxState] = useState<NineBoxState>(INITIAL_NINE_BOX);
   const [crmState, setCrmState] = useState(INITIAL_CRM_STATE);
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
 
@@ -218,6 +230,7 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     setPropertyState(c.propertyState || INITIAL_PROPERTY);
     setWealthState(c.wealthState || INITIAL_WEALTH);
     setRetirement(c.retirement || INITIAL_RETIREMENT);
+    setNineBoxState(c.nineBoxState || INITIAL_NINE_BOX);
     setChatHistory(c.chatHistory || []);
 
     // Load CRM specific fields
@@ -273,6 +286,7 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     setPropertyState(INITIAL_PROPERTY);
     setWealthState(INITIAL_WEALTH);
     setRetirement(INITIAL_RETIREMENT);
+    setNineBoxState(INITIAL_NINE_BOX);
     setCrmState(INITIAL_CRM_STATE);
     setChatHistory([]);
   };
@@ -299,6 +313,7 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       wealthState,
       investorState,
       insuranceState,
+      nineBoxState,
       lastUpdated: new Date().toISOString(),
       followUp,
       appointments,
@@ -352,6 +367,7 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       propertyState, setPropertyState,
       wealthState, setWealthState,
       retirement, setRetirement,
+      nineBoxState, setNineBoxState,
       crmState, setCrmState,
       age, cpfData, cashflowData,
       setOwnerId,

@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { Product, Sale } from '../../../types';
 import { toNum, fmtSGD } from '../../../lib/helpers';
@@ -105,12 +104,13 @@ export const AddSaleModal: React.FC<AddSaleModalProps> = ({ clientName, products
 
   return (
     <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[100] flex items-center justify-center p-4 animate-fade-in" onClick={onClose}>
-      <div className="w-full max-w-sm bg-white rounded-2xl shadow-xl overflow-hidden" onClick={e => e.stopPropagation()}>
-        <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-emerald-50">
+      <div className="w-full max-w-sm bg-white rounded-2xl shadow-xl overflow-hidden max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-emerald-50 shrink-0">
            <h3 className="font-bold text-emerald-800">{initialSale ? 'Edit Sale' : 'Record Sale'}: {clientName}</h3>
            <button onClick={onClose} className="text-emerald-400 hover:text-emerald-700">✕</button>
         </div>
-        <div className="p-6 space-y-4">
+        
+        <div className="p-6 space-y-4 overflow-y-auto custom-scrollbar">
            <div>
               <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Select Product</label>
               <select className="w-full p-2 border border-slate-200 rounded-lg text-sm bg-white outline-none focus:border-emerald-500" value={productId} onChange={e => setProductId(e.target.value)}>
