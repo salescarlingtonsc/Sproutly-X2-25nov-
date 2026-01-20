@@ -139,7 +139,6 @@ const RemindersTab: React.FC = () => {
     const phone = client.profile.phone?.replace(/\D/g, '') || '';
     if (!phone) { toast.error("No phone number found"); return; }
     
-    // Casual Friendly Template
     let text = isBirthday ? `Happy Birthday ${client.profile.name.split(' ')[0]}! 🎂 Wishing you a fantastic year ahead!` : '';
     const url = `https://wa.me/${phone}${text ? `?text=${encodeURIComponent(text)}` : ''}`;
     
@@ -162,11 +161,9 @@ const RemindersTab: React.FC = () => {
   const currentMonth = now.getMonth();
 
   const birthdayReminders = useMemo(() => filteredClients.filter(c => {
-    // 1. FILTER: Exclude cold leads (New, NPU, Not Keen)
     const s = c.followUp.status || 'new';
     if (s === 'new' || s.startsWith('npu') || s === 'not_keen') return false;
 
-    // 2. CHECK BIRTHDAY
     const checkBirthday = (dobStr?: string) => {
         if (!dobStr) return false;
         const d = new Date(dobStr);
@@ -176,7 +173,7 @@ const RemindersTab: React.FC = () => {
   }).sort((a, b) => {
       const dayA = new Date(a.profile.dob || '').getDate() || 32;
       const dayB = new Date(b.profile.dob || '').getDate() || 32;
-      return dayA - dayB; // Simple chronological sort by day
+      return dayA - dayB;
   }), [filteredClients, currentMonth]);
 
   const untouchedLeads = useMemo(() => filteredClients.filter(c => {
@@ -247,7 +244,6 @@ const RemindersTab: React.FC = () => {
                                         : 'bg-white border-slate-100 hover:border-indigo-300 hover:shadow-sm'}
                                 `}
                             >
-                                {/* INFO AREA: CLICKABLE TO OPEN CARD */}
                                 <div 
                                     className="flex-1 min-w-0 cursor-pointer"
                                     onClick={() => handleOpenClient(c)}
@@ -292,7 +288,6 @@ const RemindersTab: React.FC = () => {
                                     </div>
                                 </div>
                                 
-                                {/* ACTIONS AREA: BUTTONS DO NOT POP CARD */}
                                 <div className="flex flex-col gap-1 items-center justify-center shrink-0 self-center">
                                     {isBirthdayCard && (
                                         <button 
@@ -355,9 +350,9 @@ const RemindersTab: React.FC = () => {
       </div>
 
       {selectedClient && (
-          <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[100] flex items-center justify-center p-4 animate-fade-in" onClick={() => setSelectedClient(null)}>
-              <div className="w-full max-w-2xl h-[85vh] animate-scale-in flex flex-col" onClick={e => e.stopPropagation()}>
-                  <div className="bg-white rounded-2xl shadow-2xl h-full overflow-hidden flex flex-col border border-slate-200">
+          <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[100] flex justify-center p-4 animate-fade-in overflow-y-auto" onClick={() => setSelectedClient(null)}>
+              <div className="w-full max-w-2xl min-h-0 h-fit my-auto animate-scale-in flex flex-col" onClick={e => e.stopPropagation()}>
+                  <div className="bg-white rounded-2xl shadow-2xl overflow-hidden flex flex-col border border-slate-200 max-h-[90dvh]">
                       <ClientCard 
                           client={selectedClient} 
                           products={products}

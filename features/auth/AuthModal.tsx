@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { isSupabaseConfigured, supabase } from '../../lib/supabase';
@@ -185,7 +184,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialError }) 
             ) : (
                 <form onSubmit={handleSubmit} className="space-y-5">
                     <div className="space-y-1">
-                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Email Node</label>
+                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">email:</label>
                         <input 
                             type="email" required value={email} onChange={e => setEmail(e.target.value)}
                             className="w-full bg-slate-50 border-2 border-transparent focus:bg-white focus:border-indigo-500 rounded-xl px-4 py-3 text-sm font-bold outline-none transition-all placeholder-slate-300"
@@ -196,7 +195,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialError }) 
                     {!useMagicLink && view !== 'forgot_password' && (
                         <div className="space-y-1">
                             <div className="flex justify-between px-1">
-                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Access Key</label>
+                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">password:</label>
                                 {view === 'login' && <button type="button" onClick={() => setView('forgot_password')} className="text-[10px] font-black text-indigo-600 uppercase hover:underline">Forgot?</button>}
                             </div>
                             <input 

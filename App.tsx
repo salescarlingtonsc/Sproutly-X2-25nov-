@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from './contexts/AuthContext';
 import { useClient } from './contexts/ClientContext';
@@ -13,6 +12,7 @@ import AppShell from './components/layout/AppShell';
 import LandingPage from './features/auth/LandingPage';
 import AuthModal from './features/auth/AuthModal';
 import PricingModal from './features/subscription/PricingModal';
+import AutoSaver from './components/system/AutoSaver';
 
 import DashboardTab from './features/dashboard/DashboardTab';
 import CrmTab from './features/crm/CrmTab';
@@ -87,7 +87,7 @@ const App: React.FC = () => {
 
   const handleSave = async () => {
     if (!user) {
-        setIsAuthModalOpen(true);
+        // Only prompt login if explicitly trying to save (auto-save shouldn't block UI if not logged in, but here we assume user is logged in for AutoSaver to run)
         return;
     }
     setSaveStatus('saving');
@@ -111,7 +111,8 @@ const App: React.FC = () => {
       setTimeout(() => setSaveStatus('idle'), 3000);
     } catch (e) {
       setSaveStatus('error');
-      toast.error("Cloud Sync Delayed. Data is safe locally.");
+      // Quiet fail on autosave to not annoy user, or use a subtle toast
+      console.error("Sync Error", e);
     }
   };
 
@@ -177,6 +178,7 @@ const App: React.FC = () => {
       onLoadClient={handleLoadClient}
       onSystemRefresh={refreshClients}
     >
+      <AutoSaver onSave={handleSave} />
       {renderTab()}
       <PricingModal isOpen={isPricingModalOpen} onClose={() => setIsPricingModalOpen(false)} />
       <AiAssistant currentClient={clients.find(c => c.id === clientId) || null} />

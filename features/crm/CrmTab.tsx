@@ -1,4 +1,3 @@
-
 import React, { useState, useMemo, useEffect } from 'react';
 import { Client, Product, WhatsAppTemplate, ContactStatus, Sale } from '../../types';
 import { AnalyticsPanel } from './components/AnalyticsPanel';
@@ -146,9 +145,6 @@ const CrmTab: React.FC<CrmTabProps> = ({
       toast.info("All search filters cleared.");
   };
 
-  /**
-   * FIX: Added handleSort function to manage column sorting state.
-   */
   const handleSort = (key: string) => {
     let direction: 'asc' | 'desc' = 'asc';
     if (sortConfig.key === key && sortConfig.direction === 'asc') {
@@ -387,9 +383,9 @@ const CrmTab: React.FC<CrmTabProps> = ({
       {isImportOpen && <ImportModal isOpen={isImportOpen} onClose={() => setIsImportOpen(false)} onComplete={() => { onRefresh(); setIsImportOpen(false); }} />}
 
       {activeDetailClient && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[100] flex items-center justify-center p-4 animate-fade-in" onClick={() => setActiveDetailClient(null)}>
-            <div className="w-full max-w-2xl h-[85vh] animate-scale-in flex flex-col" onClick={e => e.stopPropagation()}>
-                 <div className="bg-white rounded-xl shadow-2xl h-full overflow-hidden flex flex-col">
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[100] flex justify-center p-4 animate-fade-in overflow-y-auto" onClick={() => setActiveDetailClient(null)}>
+            <div className="w-full max-w-2xl min-h-0 h-fit my-auto animate-scale-in flex flex-col" onClick={e => e.stopPropagation()}>
+                 <div className="bg-white rounded-xl shadow-2xl overflow-hidden flex flex-col max-h-[90dvh]">
                     <ClientCard client={activeDetailClient} products={products} onUpdate={(c) => { onUpdateGlobalClient(c); setActiveDetailClient(c); }} currentUser={user} onDelete={async (id) => { const c = await confirm({title:"Delete?", message:"Permanently remove lead?"}); if(c) { deleteClient(id); setActiveDetailClient(null); } }} onAddSale={() => setActiveSaleClient(activeDetailClient)} onClose={() => setActiveDetailClient(null)} />
                  </div>
             </div>

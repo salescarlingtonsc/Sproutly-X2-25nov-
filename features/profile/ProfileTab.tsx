@@ -1,3 +1,4 @@
+
 import React, { useMemo, useState, useRef, useEffect } from 'react';
 import { useClient } from '../../contexts/ClientContext';
 import { toNum, fmtSGD } from '../../lib/helpers';
@@ -9,33 +10,7 @@ import { supabase } from '../../lib/supabase';
 import PageHeader from '../../components/layout/PageHeader';
 import SectionCard from '../../components/layout/SectionCard';
 import { Client } from '../../types';
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
-
-// --- HELPER COMPONENT FOR INPUTS ---
-const RateInput = ({ value, onChange, className }: { value: number, onChange: (n: number) => void, className?: string }) => {
-  const [display, setDisplay] = useState(value.toString());
-
-  useEffect(() => {
-    const parsed = parseFloat(display);
-    if (display === '' && value === 0) return;
-    if (!isNaN(parsed) && parsed === value) return;
-    setDisplay(value.toString());
-  }, [value]);
-
-  return (
-    <input 
-      type="number" 
-      value={display}
-      onChange={(e) => {
-        setDisplay(e.target.value);
-        const val = parseFloat(e.target.value);
-        if (!isNaN(val)) onChange(val);
-        else onChange(0);
-      }}
-      className={className}
-    />
-  );
-};
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, ReferenceDot } from 'recharts';
 
 interface ProfileTabProps {
   clients?: Client[];
@@ -55,8 +30,9 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
     expenses, setExpenses,
     customExpenses, setCustomExpenses,
     investorState, cashflowState,
-    ownerId, setOwnerId, // Exposed for admin assignment
-    clientRef // Reference code from context
+    ownerId, setOwnerId,
+    clientRef,
+    retirement, setRetirement
   } = useClient();
   
   const { openAiWithPrompt } = useAi();
@@ -70,13 +46,21 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
   const [isPlayingAudio, setIsPlayingAudio] = useState(false);
   const [loadingAudio, setLoadingAudio] = useState(false);
 
-  // Chart State
-  const [showCostOfWaiting, setShowCostOfWaiting] = useState(false);
-  const [selectedStrategy, setSelectedStrategy] = useState<'conservative' | 'moderate' | 'growth'>('moderate');
+  // Chart Presentation State
+  const [chartLockedIndex, setChartLockedIndex] = useState<number | null>(null);
+  const [currHoverIdx, setCurrHoverIdx] = useState<number | null>(null);
+  const [lockedTooltipPos, setLockedTooltipPos] = useState<{x: number, y: number} | null>(null);
   
-  // Dynamic Simulation State
-  const [delayYears, setDelayYears] = useState(5);
-  const [simulationReturn, setSimulationReturn] = useState(6.0);
+  // Dynamic Simulation State - Synced with Global Retirement Settings
+  const [simulationReturn, setSimulationReturn] = useState(toNum(retirement.customReturnRate) || 8.0);
+  const [simulationConservativeReturn, setSimulationConservativeReturn] = useState(4.0);
+  const [simulationBankReturn, setSimulationBankReturn] = useState(0.05);
+
+  // Update Global Return Rate when slider moves
+  const updateSimulationReturn = (val: number) => {
+      setSimulationReturn(val);
+      setRetirement({ ...retirement, customReturnRate: val.toString() });
+  };
 
   // Admin Assignment
   const [adminAdvisors, setAdminAdvisors] = useState<{id: string, email: string}[]>([]);
@@ -132,7 +116,6 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
        const base64Audio = await generateClientAudioBriefing(summaryData);
        setIsPlayingAudio(true);
        await playRawAudio(base64Audio);
-       // Simple timeout
        setTimeout(() => setIsPlayingAudio(false), 20000); 
     } catch (e: any) {
        alert("Audio Gen Failed: " + e.message);
@@ -141,21 +124,6 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
        setLoadingAudio(false);
     }
   };
-
-  // --- PERSISTENT INVESTMENT SETTINGS ---
-  const rate1 = profile.investmentRates?.conservative ?? 3.0; 
-  const rate2 = profile.investmentRates?.moderate ?? 6.0;
-  const rate3 = profile.investmentRates?.growth ?? 9.0;
-
-  const setRate1 = (v: number) => setProfile({...profile, investmentRates: {...(profile.investmentRates || { conservative: 3, moderate: 6, growth: 9 }), conservative: v}});
-  const setRate2 = (v: number) => setProfile({...profile, investmentRates: {...(profile.investmentRates || { conservative: 3, moderate: 6, growth: 9 }), moderate: v}});
-  const setRate3 = (v: number) => setProfile({...profile, investmentRates: {...(profile.investmentRates || { conservative: 3, moderate: 6, growth: 9 }), growth: v}});
-
-  // Sync simulation return when strategy changes
-  useEffect(() => {
-      const rates = { conservative: rate1, moderate: rate2, growth: rate3 };
-      setSimulationReturn(rates[selectedStrategy]);
-  }, [selectedStrategy, rate1, rate2, rate3]);
 
   // --- CALCULATIONS ---
 
@@ -191,18 +159,9 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
   const grossAnnual = toNum(profile.grossSalary || profile.monthlyIncome) * 12;
   const humanCapital = grossAnnual * yearsToRetirement;
 
-  // Required monthly investment
-  const calcRate = rate2 / 100 / 12;
-  const nPer = yearsToRetirement * 12;
-  const requiredMonthlyInvestment = (nPer > 0 && calcRate > 0)
-    ? retirementNestEgg * calcRate / (Math.pow(1 + calcRate, nPer) - 1)
-    : 0;
-
   const currentMonthlySavings = cashflowData ? cashflowData.monthlySavings : 0;
-  const shortfall = Math.max(0, requiredMonthlyInvestment - currentMonthlySavings);
-  const hasSurplus = currentMonthlySavings >= requiredMonthlyInvestment;
 
-  // --- COMPOUNDING PROJECTION (IMPROVED) ---
+  // --- COMPOUNDING PROJECTION (BANK VS CONSERVATIVE VS INVESTMENTS) ---
   const compoundingData = useMemo(() => {
     const monthly = toNum(profile.monthlyInvestmentAmount);
     const currentPortfolio = investorState ? toNum(investorState.portfolioValue) : 0;
@@ -211,72 +170,61 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
 
     if (monthly <= 0 && startingPrincipal <= 0) return null;
 
-    // Use dynamic simulation return
-    const r = simulationReturn / 100;
-    const monthlyRate = r / 12;
+    const rInv = simulationReturn / 100 / 12;
+    const rCons = simulationConservativeReturn / 100 / 12;
+    const rBank = simulationBankReturn / 100 / 12;
     
-    // --- SCENARIO 2: WAIT X YEARS ---
-    // Rules: 
-    // 1. Existing Principal sits in Bank (0.5%) for delayYears.
-    // 2. Monthly Contributions are ZERO for delayYears (delaying the start).
-    // 3. At Year X, Principal moves to Market + Monthly Contributions begin.
-    const delayDuration = delayYears;
-    const bankRate = 0.005 / 12; // 0.5% p.a.
-
     const maxAge = retirementAge;
     const duration = maxAge - age;
     const chartData = [];
     
-    let finalNow = 0;
-    let finalLater = 0;
+    let finalInv = 0;
+    let finalCons = 0;
+    let finalBank = 0;
 
     for (let y = 0; y <= duration + 5; y++) {
         const currentSimAge = age + y;
-        
-        // --- CALC NOW ---
         const months = y * 12;
-        const growthFactor = Math.pow(1 + monthlyRate, months);
-        const pmtFactor = monthlyRate > 0 ? (growthFactor - 1) / monthlyRate : months;
-        const valNow = (startingPrincipal * growthFactor) + (monthly * pmtFactor);
+        
+        // --- CALC INVESTMENT PATH ---
+        const growthFactorInv = Math.pow(1 + rInv, months);
+        const pmtFactorInv = rInv > 0 ? (growthFactorInv - 1) / rInv : months;
+        const valInv = (startingPrincipal * growthFactorInv) + (monthly * pmtFactorInv);
 
-        // --- CALC LATER ---
-        let valLater = 0;
-        if (y < delayDuration) {
-            // Delay Phase: Principal sits in bank. NO monthly contributions.
-            const bankGrowth = Math.pow(1 + bankRate, months);
-            valLater = startingPrincipal * bankGrowth;
-        } else {
-            // Catch Up Phase:
-            // 1. Principal has grown in bank for Delay Period
-            const monthsDelay = delayDuration * 12;
-            const bankGrowthDelayed = Math.pow(1 + bankRate, monthsDelay);
-            const principalAtStart = startingPrincipal * bankGrowthDelayed;
+        // --- CALC CONSERVATIVE PATH ---
+        const growthFactorCons = Math.pow(1 + rCons, months);
+        const pmtFactorCons = rCons > 0 ? (growthFactorCons - 1) / rCons : months;
+        const valCons = (startingPrincipal * growthFactorCons) + (monthly * pmtFactorCons);
 
-            // 2. Grow that new principal for (y - delay) years at Investment Rate
-            // 3. START monthly contributions now
-            const activeMonths = (y - delayDuration) * 12;
-            const growthFactorActive = Math.pow(1 + monthlyRate, activeMonths);
-            const pmtFactorActive = (growthFactorActive - 1) / monthlyRate;
-            
-            valLater = (principalAtStart * growthFactorActive) + (monthly * pmtFactorActive);
-        }
+        // --- CALC BANK PATH ---
+        const growthFactorBank = Math.pow(1 + rBank, months);
+        const pmtFactorBank = rBank > 0 ? (growthFactorBank - 1) / rBank : months;
+        const valBank = (startingPrincipal * growthFactorBank) + (monthly * pmtFactorBank);
 
         if (currentSimAge === maxAge) {
-            finalNow = valNow;
-            finalLater = valLater;
+            finalInv = valInv;
+            finalCons = valCons;
+            finalBank = valBank;
         }
 
         chartData.push({
             age: currentSimAge,
             label: `Age ${currentSimAge}`,
-            now: Math.round(valNow),
-            later: Math.round(valLater),
-            gap: Math.round(valNow - valLater)
+            invested: Math.round(valInv),
+            conservative: Math.round(valCons),
+            bank: Math.round(valBank)
         });
     }
     
-    return { chartData, finalNow, finalLater, opportunityCost: finalNow - finalLater };
-  }, [profile.monthlyInvestmentAmount, simulationReturn, delayYears, age, retirementAge, investorState?.portfolioValue, cashflowState?.currentSavings]);
+    return { 
+      chartData, 
+      finalInv, 
+      finalCons, 
+      finalBank, 
+      alphaVsBank: finalInv - finalBank,
+      alphaVsCons: finalInv - finalCons
+    };
+  }, [profile.monthlyInvestmentAmount, simulationReturn, simulationConservativeReturn, simulationBankReturn, age, retirementAge, investorState?.portfolioValue, cashflowState?.currentSavings]);
 
   const LIFESTYLES = [
     { label: 'Basic', value: '2500', icon: '⛺', desc: 'Simple needs' },
@@ -370,7 +318,7 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
                 <select 
                     value={ownerId || ''} 
                     onChange={(e) => setOwnerId(e.target.value)}
-                    className="appearance-none bg-indigo-800 border border-indigo-700 hover:bg-indigo-700 rounded-lg px-4 py-2 pr-8 text-xs font-bold text-white outline-none cursor-pointer transition-all min-w-[200px]"
+                    className="appearance-none bg-indigo-800 border border-indigo-700 rounded-lg px-4 py-2 pr-8 text-xs font-bold text-white outline-none cursor-pointer transition-all min-w-[200px]"
                 >
                     <option value={user?.id || ''}>Me (Admin)</option>
                     {adminAdvisors.filter(a => a.id !== user?.id).map(adv => (
@@ -404,7 +352,6 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
                
                <div className="space-y-1">
                   <h2 className="text-sm font-medium text-slate-400 uppercase tracking-wider">Your #1 Asset</h2>
-                  {/* FIX: Removed text-transparent bg-clip-text to ensure white text visibility on all browsers */}
                   <h1 className="text-4xl md:text-5xl font-extrabold text-white tracking-tight drop-shadow-sm">
                      {humanCapital > 0 ? fmtSGD(humanCapital).split('.')[0] : '$0'}
                   </h1>
@@ -521,7 +468,7 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
          
          {/* Current Lifestyle */}
-         <SectionCard title="Current Burn Rate" action={<span className="text-red-500 font-bold">{fmtSGD(totalMonthlyExpenses)}/mo</span>}>
+         <SectionCard title="Monthly Expenses" action={<span className="text-red-500 font-bold">{fmtSGD(totalMonthlyExpenses)}/mo</span>}>
             <div className="grid grid-cols-2 gap-3 mb-4">
                {Object.keys(expenses).map((key) => (
                   <div key={key} className="relative group">
@@ -568,25 +515,45 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
                   ))}
                </div>
 
-               <div className="bg-amber-50 p-4 rounded-xl border border-amber-100 mt-auto">
-                  <label className="text-[10px] font-bold text-amber-800 uppercase tracking-widest">Target Monthly Income (Today's Value)</label>
+               <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 mt-2">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Monthly Income Requirement (Today)</label>
                   <input 
                      type="text" 
                      value={profile.customRetirementExpense || ''} 
                      onChange={(e) => setProfile({...profile, customRetirementExpense: e.target.value})}
-                     className="w-full bg-transparent text-2xl font-bold text-amber-900 outline-none border-b border-amber-200 focus:border-amber-500 mt-1"
+                     className="w-full bg-transparent text-xl font-bold text-slate-900 outline-none border-b border-slate-200 focus:border-indigo-500 mt-1"
                      placeholder={fmtSGD(monthlyRetirementExpenses)}
                   />
-                  <div className="text-[10px] text-amber-700 mt-2 flex justify-between">
-                     <span>Inflation Adjusted ({inflationRate*100}%)</span>
-                     <span className="font-bold">{fmtSGD(futureMonthlyRetirementExpenses)}/mo</span>
+                  <div className="text-[10px] text-slate-500 mt-2 flex justify-between">
+                     <span>Inflation Adjusted ({inflationRate*100}%) @ Age {retirementAge}</span>
+                     <span className="font-bold text-indigo-600">{fmtSGD(futureMonthlyRetirementExpenses)}/mo</span>
+                  </div>
+               </div>
+
+               {/* HIGH VALUE IMPACT BOX: TOTAL NEST EGG REQUIRED */}
+               <div className="bg-gradient-to-br from-indigo-600 to-purple-700 p-6 rounded-2xl text-white shadow-xl relative overflow-hidden group">
+                  <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full blur-2xl -mr-10 -mt-10 group-hover:scale-125 transition-transform duration-1000"></div>
+                  
+                  <div className="relative z-10">
+                     <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-indigo-100 opacity-80 mb-3 flex justify-between items-center">
+                        <span>Projected Nest Egg Required</span>
+                        <span className="bg-white/10 px-2 py-0.5 rounded text-[9px] border border-white/20">Target Year: {new Date().getFullYear() + yearsToRetirement}</span>
+                     </h4>
+                     
+                     <div className="text-4xl font-black tracking-tighter mb-2">
+                        {retirementNestEgg > 0 ? fmtSGD(retirementNestEgg).split('.')[0] : '$0'}
+                     </div>
+                     
+                     <p className="text-xs text-indigo-100/70 leading-relaxed font-medium">
+                        Total capital needed to sustain <strong className="text-white">{fmtSGD(monthlyRetirementExpenses)}/mo</strong> (adjusted for inflation) for <strong className="text-white">{retirementYears} years</strong> of retirement.
+                     </p>
                   </div>
                </div>
             </div>
          </SectionCard>
       </div>
 
-      {/* --- 5. WEALTH ACCELERATION (UPDATED NARRATIVE) --- */}
+      {/* --- 5. WEALTH ACCELERATION (3-WAY COMPARISON) --- */}
       {age > 0 && (
          <div className="bg-gradient-to-br from-slate-900 via-[#0B1120] to-indigo-950 rounded-3xl p-8 text-white relative overflow-hidden shadow-2xl">
             <div className="absolute top-0 right-0 w-96 h-96 bg-indigo-600/10 rounded-full blur-[100px] pointer-events-none"></div>
@@ -597,12 +564,13 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
                   <div>
                      <div className="inline-flex items-center gap-2 mb-2">
                         <h3 className="text-xl font-bold text-white">Wealth Acceleration</h3>
-                        {showCostOfWaiting && (
-                           <span className="text-[10px] font-bold uppercase tracking-widest bg-red-500/20 text-red-400 px-2 py-0.5 rounded border border-red-500/30 animate-pulse">Gap Analysis Active</span>
+                        <span className="text-[10px] font-bold uppercase tracking-widest bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded border border-emerald-500/30">Compound Interest</span>
+                        {chartLockedIndex !== null && (
+                            <span className="ml-2 text-[10px] font-black uppercase tracking-widest bg-amber-500/20 text-amber-400 px-2 py-0.5 rounded border border-amber-500/30 animate-pulse">PINNED</span>
                         )}
                      </div>
                      <p className="text-sm text-slate-400 leading-relaxed">
-                        Compound interest is not intuitive. Visualizing the difference between starting now versus waiting reveals the true cost of delay.
+                        Comparing high-growth investments, conservative strategies, and traditional bank savings. <span className="text-white font-bold underline">Click chart to pin specific age</span> for presentation.
                      </p>
                   </div>
 
@@ -624,148 +592,243 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
 
                      <div className="h-px bg-white/10 w-full"></div>
 
-                     {/* Strategy Controls - Presets + Custom Slider */}
-                     <div className="grid grid-cols-2 gap-4">
+                     {/* Strategy Controls - Editable Rates */}
+                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                         <div>
-                           <label className="text-[10px] font-bold text-indigo-300 uppercase tracking-widest mb-1 block">Target Return</label>
+                           <label className="text-[10px] font-bold text-indigo-300 uppercase tracking-widest mb-1 block">Investments</label>
                            <div className="flex items-center gap-2 mb-2">
                               <span className="text-xl font-bold text-white">{simulationReturn.toFixed(1)}%</span>
-                              <div className="flex gap-1">
-                                 {['conservative', 'moderate', 'growth'].map(s => (
-                                    <button
-                                       key={s}
-                                       onClick={() => setSelectedStrategy(s as any)}
-                                       className={`w-6 h-6 rounded flex items-center justify-center text-[10px] font-bold uppercase transition-all ${selectedStrategy === s ? 'bg-indigo-50 text-white' : 'bg-slate-700 text-slate-400 hover:text-white'}`}
-                                       title={s}
-                                    >
-                                       {s[0].toUpperCase()}
-                                    </button>
-                                 ))}
-                              </div>
                            </div>
                            <input 
-                              type="range" min="1" max="15" step="0.5" 
+                              type="range" min="1" max="20" step="0.5" 
                               value={simulationReturn} 
-                              onChange={(e) => setSimulationReturn(Number(e.target.value))}
+                              onChange={(e) => updateSimulationReturn(Number(e.target.value))}
                               className="w-full h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-indigo-500"
                            />
                         </div>
 
                         <div>
-                           <label className="text-[10px] font-bold text-indigo-300 uppercase tracking-widest mb-1 block">Delay Impact</label>
+                           <label className="text-[10px] font-bold text-indigo-300 uppercase tracking-widest mb-1 block">Conservative</label>
                            <div className="flex items-center gap-2 mb-2">
-                              <span className={`text-xl font-bold ${showCostOfWaiting ? 'text-red-400' : 'text-slate-500'}`}>
-                                 {showCostOfWaiting ? `${delayYears} Yrs` : 'None'}
-                              </span>
-                              <button 
-                                 onClick={() => setShowCostOfWaiting(!showCostOfWaiting)}
-                                 className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase transition-all ${showCostOfWaiting ? 'bg-red-500/20 text-red-400 border border-red-500/30' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'}`}
-                              >
-                                 {showCostOfWaiting ? 'Active' : 'Enable'}
-                              </button>
+                              <span className="text-xl font-bold text-teal-400">{simulationConservativeReturn.toFixed(1)}%</span>
                            </div>
-                           {showCostOfWaiting && (
-                              <input 
-                                 type="range" min="1" max="20" step="1" 
-                                 value={delayYears} 
-                                 onChange={(e) => setDelayYears(Number(e.target.value))}
-                                 className="w-full h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-red-500"
-                              />
-                           )}
+                           <input 
+                              type="range" min="1" max="10" step="0.5" 
+                              value={simulationConservativeReturn} 
+                              onChange={(e) => setSimulationConservativeReturn(Number(e.target.value))}
+                              className="w-full h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-teal-500"
+                           />
+                        </div>
+
+                        <div>
+                           <label className="text-[10px] font-bold text-indigo-300 uppercase tracking-widest mb-1 block">Bank (Cash)</label>
+                           <div className="flex items-center gap-2 mb-2">
+                              <span className="text-xl font-bold text-amber-400">
+                                 {simulationBankReturn.toFixed(2)}%
+                              </span>
+                           </div>
+                           <input 
+                              type="range" min="0" max="5" step="0.05" 
+                              value={simulationBankReturn} 
+                              onChange={(e) => setSimulationBankReturn(Number(e.target.value))}
+                              className="w-full h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-amber-500"
+                           />
                         </div>
                      </div>
                   </div>
                </div>
 
-               {/* Impact Card - Only shows when waiting toggled */}
-               <div className={`transition-all duration-500 ${showCostOfWaiting ? 'opacity-100 translate-y-0' : 'opacity-50 translate-y-2 grayscale'}`}>
-                  <div className="bg-red-500/10 border border-red-500/30 p-6 rounded-2xl backdrop-blur-sm text-center min-w-[240px]">
-                     <div className="text-[10px] font-bold text-red-300 uppercase tracking-widest mb-1">Projected Loss ({delayYears} Yrs)</div>
-                     <div className="text-3xl font-black text-red-400 tracking-tighter">
-                        {compoundingData ? fmtSGD(compoundingData.opportunityCost) : '$0'}
+               {/* Impact Card */}
+               <div className="transition-all duration-500">
+                  <div className="bg-indigo-500/10 border border-indigo-500/30 p-6 rounded-2xl backdrop-blur-sm text-center min-w-[240px]">
+                     <div className="text-[10px] font-bold text-indigo-300 uppercase tracking-widest mb-1">Growth Differential</div>
+                     <div className="text-3xl font-black text-white tracking-tighter">
+                        {compoundingData ? fmtSGD(compoundingData.alphaVsBank) : '$0'}
                      </div>
-                     <div className="text-[10px] text-red-300/70 mt-2 font-medium">
-                        Cost of Inaction
+                     <div className="text-[10px] text-indigo-300/70 mt-2 font-medium uppercase">
+                        Compound Effect
                      </div>
                   </div>
                </div>
             </div>
 
-            <div className="relative z-10">
+            <div className={`relative z-10 h-[300px] w-full ${chartLockedIndex !== null ? 'cursor-default' : 'cursor-crosshair'}`}>
                {compoundingData ? (
-                  <div className="h-full flex flex-col">
-                     <div className="h-[300px] w-full">
-                        <ResponsiveContainer width="100%" height="100%">
-                           <AreaChart data={compoundingData.chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-                              <defs>
-                                 <linearGradient id="colorNow" x1="0" y1="0" x2="0" y2="1">
-                                    <stop offset="5%" stopColor="#10b981" stopOpacity={0.8}/>
-                                    <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
-                                 </linearGradient>
-                                 <linearGradient id="colorLater" x1="0" y1="0" x2="0" y2="1">
-                                    <stop offset="5%" stopColor="#94a3b8" stopOpacity={0.8}/>
-                                    <stop offset="95%" stopColor="#94a3b8" stopOpacity={0}/>
-                                 </linearGradient>
-                              </defs>
-                              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#1e293b" />
-                              <XAxis dataKey="age" tick={{fill: '#475569', fontSize: 10}} axisLine={false} tickLine={false} tickFormatter={(v) => `Age ${v}`} />
-                              <YAxis tick={{fill: '#475569', fontSize: 10}} axisLine={false} tickLine={false} tickFormatter={(val) => val >= 1000000 ? `$${(val/1000000).toFixed(1)}m` : `$${(val/1000).toFixed(0)}k`} />
-                              <Tooltip 
-                                 contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '12px', color: '#fff' }} 
-                                 itemStyle={{ fontSize: 12 }}
-                                 formatter={(val: number) => fmtSGD(val)}
-                                 labelFormatter={(l) => `Age ${l}`}
-                              />
-                              
-                              <Area 
-                                 type="monotone" 
-                                 dataKey="now" 
-                                 stroke="#10b981" 
-                                 strokeWidth={3}
-                                 fill="url(#colorNow)" 
-                                 name="Start Today" 
-                                 animationDuration={1500}
-                              />
-                              
-                              {showCostOfWaiting && (
-                                 <Area 
-                                    type="monotone" 
-                                    dataKey="later" 
-                                    stroke="#94a3b8" 
-                                    strokeWidth={2} 
-                                    strokeDasharray="5 5"
-                                    fill="url(#colorLater)" 
-                                    name={`Wait ${delayYears} Years`} 
-                                    animationDuration={1500}
-                                 />
+                  <div className="h-full flex flex-col relative">
+                     {/* OVERLAY for Interaction Blocking */}
+                     {chartLockedIndex !== null && (
+                        <div 
+                           className="absolute inset-0 z-50 cursor-zoom-out"
+                           onClick={() => setChartLockedIndex(null)}
+                           title="Click to Unlock"
+                        />
+                     )}
+
+                     <ResponsiveContainer width="100%" height="100%">
+                        <AreaChart 
+                           data={compoundingData.chartData} 
+                           margin={{ top: 10, right: 10, left: 0, bottom: 0 }}
+                           onMouseMove={(e) => {
+                               // Only update hover if NOT locked
+                               if (chartLockedIndex === null) {
+                                   if (e.activeTooltipIndex !== undefined) {
+                                       setCurrHoverIdx(e.activeTooltipIndex);
+                                   }
+                                   if (e.activeCoordinate) {
+                                       setLockedTooltipPos(e.activeCoordinate);
+                                   }
+                               }
+                           }}
+                           onMouseLeave={() => {
+                               if (chartLockedIndex === null) {
+                                   setCurrHoverIdx(null);
+                                   setLockedTooltipPos(null);
+                               }
+                           }}
+                           onClick={() => {
+                               // Toggle Lock
+                               if (chartLockedIndex !== null) {
+                                   setChartLockedIndex(null);
+                               } else if (currHoverIdx !== null) {
+                                   setChartLockedIndex(currHoverIdx);
+                               }
+                           }}
+                        >
+                           <defs>
+                              <linearGradient id="colorInv" x1="0" y1="0" x2="0" y2="1">
+                                 <stop offset="5%" stopColor="#6366f1" stopOpacity={0.8}/>
+                                 <stop offset="95%" stopColor="#6366f1" stopOpacity={0}/>
+                              </linearGradient>
+                              <linearGradient id="colorCons" x1="0" y1="0" x2="0" y2="1">
+                                 <stop offset="5%" stopColor="#10b981" stopOpacity={0.6}/>
+                                 <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                              </linearGradient>
+                              <linearGradient id="colorBank" x1="0" y1="0" x2="0" y2="1">
+                                 <stop offset="5%" stopColor="#94a3b8" stopOpacity={0.4}/>
+                                 <stop offset="95%" stopColor="#94a3b8" stopOpacity={0}/>
+                              </linearGradient>
+                           </defs>
+                           <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#1e293b" />
+                           <XAxis dataKey="age" tick={{fill: '#475569', fontSize: 10}} axisLine={false} tickLine={false} tickFormatter={(v) => `Age ${v}`} />
+                           <YAxis tick={{fill: '#475569', fontSize: 10}} axisLine={false} tickLine={false} tickFormatter={(val) => val >= 1000000 ? `$${(val/1000000).toFixed(1)}m` : `$${(val/1000).toFixed(0)}k`} />
+                           
+                           <Tooltip 
+                              // Force active if locked, using the locked index or current hover
+                              active={chartLockedIndex !== null || currHoverIdx !== null}
+                              // If locked, use locked pos. If hovering, let Recharts handle it (undefined)
+                              position={chartLockedIndex !== null ? (lockedTooltipPos || undefined) : undefined}
+                              // Content
+                              contentStyle={{ 
+                                 backgroundColor: '#0f172a', 
+                                 borderColor: chartLockedIndex !== null ? '#f59e0b' : '#334155', 
+                                 borderWidth: chartLockedIndex !== null ? '2px' : '1px',
+                                 borderRadius: '16px', 
+                                 color: '#fff',
+                                 boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.5)',
+                                 pointerEvents: 'none'
+                              }} 
+                              itemStyle={{ fontSize: 12, padding: '2px 0' }}
+                              formatter={(val: number) => fmtSGD(val)}
+                              labelFormatter={(l) => (
+                                 <div className="flex items-center justify-between gap-4 mb-2 border-b border-white/10 pb-1">
+                                     <span className="font-black text-sm">Age {l}</span>
+                                     {chartLockedIndex !== null && (
+                                         <span className="bg-amber-500 text-white text-[9px] font-black px-1.5 py-0.5 rounded animate-pulse uppercase">Pinned</span>
+                                     )}
+                                 </div>
                               )}
-                           </AreaChart>
-                        </ResponsiveContainer>
-                     </div>
+                              // If locked, manually feed payload to ensure it renders even if mouse is blocked
+                              payload={chartLockedIndex !== null && compoundingData.chartData[chartLockedIndex] ? [
+                                  { name: 'Investment Growth', value: compoundingData.chartData[chartLockedIndex].invested, color: '#6366f1' },
+                                  { name: 'Conservative Growth', value: compoundingData.chartData[chartLockedIndex].conservative, color: '#10b981' },
+                                  { name: 'Bank Savings (Cash)', value: compoundingData.chartData[chartLockedIndex].bank, color: '#94a3b8' }
+                              ] : undefined}
+                           />
+                           
+                           <Area 
+                              type="monotone" 
+                              dataKey="invested" 
+                              stroke="#6366f1" 
+                              strokeWidth={3}
+                              fill="url(#colorInv)" 
+                              name="Investment Growth" 
+                              animationDuration={1500}
+                              activeDot={chartLockedIndex === null ? { r: 6 } : false}
+                           />
+
+                           <Area 
+                              type="monotone" 
+                              dataKey="conservative" 
+                              stroke="#10b981" 
+                              strokeWidth={2}
+                              fill="url(#colorCons)" 
+                              name="Conservative Growth" 
+                              animationDuration={1500}
+                              activeDot={chartLockedIndex === null ? { r: 4 } : false}
+                           />
+                           
+                           <Area 
+                              type="monotone" 
+                              dataKey="bank" 
+                              stroke="#94a3b8" 
+                              strokeWidth={2} 
+                              strokeDasharray="5 5"
+                              fill="url(#colorBank)" 
+                              name="Bank Savings (Cash)" 
+                              animationDuration={1500}
+                              activeDot={chartLockedIndex === null ? { r: 3 } : false}
+                           />
+
+                           {/* LOCKED STATE VISUALS (Manual Render) */}
+                           {chartLockedIndex !== null && compoundingData.chartData[chartLockedIndex] && (
+                               <>
+                                   <ReferenceLine 
+                                     x={compoundingData.chartData[chartLockedIndex].age} 
+                                     stroke="#f59e0b" 
+                                     strokeWidth={2} 
+                                     strokeDasharray="0" 
+                                   />
+                                   {/* Manual Dots for Pinned State */}
+                                   <ReferenceDot 
+                                       x={compoundingData.chartData[chartLockedIndex].age} 
+                                       y={compoundingData.chartData[chartLockedIndex].invested} 
+                                       r={8} fill="#6366f1" stroke="none" 
+                                   />
+                                   <ReferenceDot 
+                                       x={compoundingData.chartData[chartLockedIndex].age} 
+                                       y={compoundingData.chartData[chartLockedIndex].conservative} 
+                                       r={6} fill="#10b981" stroke="none" 
+                                   />
+                                   <ReferenceDot 
+                                       x={compoundingData.chartData[chartLockedIndex].age} 
+                                       y={compoundingData.chartData[chartLockedIndex].bank} 
+                                       r={4} fill="#94a3b8" stroke="none" 
+                                   />
+                               </>
+                           )}
+                        </AreaChart>
+                     </ResponsiveContainer>
                      
-                     <div className="grid grid-cols-3 gap-4 mt-6 bg-slate-800/50 p-4 rounded-xl border border-white/5">
+                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-6 bg-slate-800/50 p-4 rounded-xl border border-white/5">
                         <div className="text-center">
-                           <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Target Return</div>
-                           <div className="text-xl font-bold text-indigo-400">
-                              {simulationReturn.toFixed(1)}%
-                           </div>
+                           <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Investments ({simulationReturn.toFixed(1)}%)</div>
+                           <div className="text-xl font-bold text-white">{fmtSGD(compoundingData.finalInv)}</div>
                         </div>
                         <div className="text-center">
-                           <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Projected Wealth</div>
-                           <div className="text-xl font-bold text-white">{fmtSGD(compoundingData.finalNow)}</div>
+                           <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Conservative ({simulationConservativeReturn.toFixed(1)}%)</div>
+                           <div className="text-xl font-bold text-teal-400">{fmtSGD(compoundingData.finalCons)}</div>
                         </div>
-                        <div className="text-center relative">
-                           <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Wait {delayYears} Years</div>
-                           <div className={`text-xl font-bold ${showCostOfWaiting ? 'text-red-400 line-through' : 'text-gray-500'}`}>
-                              {fmtSGD(compoundingData.finalLater)}
+                        <div className="text-center">
+                           <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Bank Savings ({simulationBankReturn.toFixed(2)}%)</div>
+                           <div className="text-xl font-bold text-gray-500">
+                              {fmtSGD(compoundingData.finalBank)}
                            </div>
-                           {!showCostOfWaiting && <div className="absolute inset-0 flex items-center justify-center bg-slate-800/90 text-[10px] text-white font-bold rounded cursor-pointer" onClick={() => setShowCostOfWaiting(true)}>Tap to Reveal</div>}
                         </div>
                      </div>
                      
                      {/* DISCLAIMER TEXT */}
                      <p className="mt-4 text-[9px] text-indigo-400/60 text-center font-medium leading-relaxed italic">
-                        Illustration purpose only to demonstrate compounding interest. Actual investment returns fluctuate and capital is not protected.
+                        Illustration purpose only to demonstrate compounding interest differences. Rates are projected for comparison and subject to market fluctuation.
                      </p>
                   </div>
                ) : (
