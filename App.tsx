@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from './contexts/AuthContext';
 import { useClient } from './contexts/ClientContext';
@@ -46,7 +45,6 @@ const App: React.FC = () => {
   const toast = useToast();
   
   // 1. INSTANT ANCHOR HYDRATION
-  // Using unified DB_KEYS to ensure 0ms load time
   const [clients, setClients] = useState<Client[]>(() => {
     try {
       const local = localStorage.getItem(DB_KEYS.CLIENTS);
@@ -56,13 +54,14 @@ const App: React.FC = () => {
     }
   });
 
-  const [activeTab, setActiveTab] = useState('dashboard');
+  // Default Login Tab set to Disclaimer
+  const [activeTab, setActiveTab] = useState('disclaimer');
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [isPricingModalOpen, setIsPricingModalOpen] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [lastSavedTime, setLastSavedTime] = useState<Date | null>(null);
 
-  // Sync Recovery Hook (Auto-resets connection zombies when app wakes up)
+  // Sync Recovery Hook
   useSyncRecovery(user?.id, () => {
       refreshClients();
   });
@@ -70,8 +69,6 @@ const App: React.FC = () => {
   const refreshClients = useCallback(async () => {
     if (user) {
       const data = await db.getClients(user.id);
-      // Safety: Only update state if we got data back OR if state is currently empty
-      // This prevents the "disappearing leads" flicker on network timeout
       if (data.length > 0 || clients.length === 0) {
         setClients(data);
       }
@@ -92,7 +89,6 @@ const App: React.FC = () => {
       const clientObj = generateClientObject();
       const savedClient = await db.saveClient(clientObj, user.id);
       
-      // Update local state immediately (Optimistic UI)
       setClients(prev => {
         const idx = prev.findIndex(c => c.id === savedClient.id);
         if (idx >= 0) {
@@ -109,7 +105,7 @@ const App: React.FC = () => {
       setTimeout(() => setSaveStatus('idle'), 3000);
     } catch (e) {
       setSaveStatus('error');
-      toast.error("Save failed. Background sync active.");
+      toast.error("Cloud Sync Delayed. Data is safe locally.");
     }
   };
 
@@ -136,11 +132,10 @@ const App: React.FC = () => {
   }
 
   const renderTab = () => {
-    if (!canAccessTab(user, activeTab)) {
-        return <div className="p-20 text-center text-slate-400 font-bold">Please upgrade your plan to access this high-precision module.</div>;
-    }
+    // If no access will auto be CRM tab
+    const effectiveTab = canAccessTab(user, activeTab) ? activeTab : 'crm';
 
-    switch (activeTab) {
+    switch (effectiveTab) {
       case 'dashboard': return <DashboardTab user={user} clients={clients} onLoadClient={handleLoadClient} onNewClient={() => { resetClient(); setActiveTab('profile'); }} setActiveTab={setActiveTab} />;
       case 'crm': return <CrmTab clients={clients} profile={user} selectedClientId={clientId} newClient={() => { resetClient(); setActiveTab('profile'); }} saveClient={handleSave} loadClient={handleLoadClient} deleteClient={async (id) => { await db.deleteClient(id); setClients(c => c.filter(x => x.id !== id)); }} onRefresh={refreshClients} onUpdateGlobalClient={(c) => { setClients(prev => prev.map(old => old.id === c.id ? c : old)); db.saveClient(c, user.id); }} />;
       case 'profile': return <ProfileTab clients={clients} onLoadClient={handleLoadClient} onNewProfile={resetClient} />;
@@ -162,7 +157,7 @@ const App: React.FC = () => {
       case 'report': return <ReportTab clients={clients} />;
       case 'admin': return <AdminTab />;
       case 'disclaimer': return <DisclaimerTab />;
-      default: return <DashboardTab user={user} clients={clients} onLoadClient={handleLoadClient} onNewClient={resetClient} setActiveTab={setActiveTab} />;
+      default: return <CrmTab clients={clients} profile={user} selectedClientId={clientId} newClient={() => { resetClient(); setActiveTab('profile'); }} saveClient={handleSave} loadClient={handleLoadClient} deleteClient={async (id) => { await db.deleteClient(id); setClients(c => c.filter(x => x.id !== id)); }} onRefresh={refreshClients} onUpdateGlobalClient={(c) => { setClients(prev => prev.map(old => old.id === c.id ? c : old)); db.saveClient(c, user.id); }} />;
     }
   };
 

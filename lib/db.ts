@@ -1,10 +1,9 @@
-
 import { supabase, isSupabaseConfigured } from './supabase';
 import { Client } from '../types';
 import { syncInspector } from './syncInspector';
 
 // VERIFICATION LOG
-console.log("🚀 Sproutly DB v6.6: Atomic Persistence Active");
+console.log("🚀 Sproutly DB v6.7: Deep Anchor Protocol Active");
 
 export const DB_KEYS = {
   CLIENTS: 'sproutly_clients_v2',
@@ -46,7 +45,7 @@ async function upsertWithTimeout(table: string, payload: any, timeoutMs: number)
     const timeoutOp = new Promise((_, reject) => {
         setTimeout(() => {
             controller.abort();
-            reject(new Error(`NETWORK_ABORT: Timed out after ${timeoutMs}ms`));
+            reject(new Error(`NETWORK_ABORT: Sync timed out after ${timeoutMs}ms`));
         }, timeoutMs);
     });
     const dbOp = supabase.from(table).upsert(payload).abortSignal(controller.signal);
@@ -72,7 +71,7 @@ export const db = {
   },
 
   getClients: async (userId?: string): Promise<Client[]> => {
-    // 1. Instant Local Anchor Load
+    // 1. Load Local Anchor (0ms)
     let localClients: Client[] = [];
     try {
         const local = localStorage.getItem(DB_KEYS.CLIENTS);
@@ -82,7 +81,7 @@ export const db = {
     if (!isSupabaseConfigured() || !supabase) return localClients;
 
     try {
-      // 2. Cloud Fetch with manual AbortSignal
+      // 2. Cloud Fetch
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 8000);
 
@@ -93,45 +92,38 @@ export const db = {
       
       clearTimeout(timeoutId);
       
-      // If network fails or timeout, yield local immediately
+      // If network is unstable, return local instantly to prevent $0 screen
       if (error) {
-          syncInspector.log('warn', 'CLOUD_ERR', `Sync interrupted: ${error.message}`);
+          syncInspector.log('warn', 'CLOUD_ERR', `Sync interrupted: ${error.message}. Yielding anchor.`);
           return localClients;
       }
 
-      // If cloud is empty but local has data, trust local (Prevents disappearing leads)
-      if ((!data || data.length === 0) && localClients.length > 0) {
-          syncInspector.log('info', 'LOCKED', 'Cloud returned 0 leads, holding local anchor.');
-          return localClients;
-      }
-
-      const cloudClients = (data || []).map((row: any) => ({
-          ...row.data,
-          id: row.id,
-          _ownerId: row.user_id,
-          lastUpdated: row.updated_at || row.data.lastUpdated
-      }));
-
-      // 3. UNION MERGE Protocol
+      // 3. UNION-MERGE Protocol (The "Disappearing Leads" Fix)
       const clientMap = new Map<string, Client>();
-      
-      // Map local first
       localClients.forEach(c => clientMap.set(c.id, c));
       
-      // Overlay cloud, but PRIORITIZE items with pending changes in outbox
+      const cloudClientsRaw = data || [];
       const outboxIds = new Set(getOutbox().map(i => i.id));
-      
-      cloudClients.forEach((cloudC: Client) => {
-          if (!outboxIds.has(cloudC.id)) {
+
+      cloudClientsRaw.forEach((row: any) => {
+          const cloudC: Client = {
+              ...row.data,
+              id: row.id,
+              _ownerId: row.user_id,
+              lastUpdated: row.updated_at || row.data.lastUpdated
+          };
+
+          const localC = clientMap.get(cloudC.id);
+          const isPendingLocalSave = outboxIds.has(cloudC.id);
+          const isCloudNewer = !localC || (new Date(cloudC.lastUpdated).getTime() > new Date(localC.lastUpdated).getTime());
+
+          if (!isPendingLocalSave && isCloudNewer) {
               clientMap.set(cloudC.id, cloudC);
           }
       });
 
       const mergedList = Array.from(clientMap.values());
-      
-      // Sync merged list back to physical storage
       localStorage.setItem(DB_KEYS.CLIENTS, JSON.stringify(mergedList));
-      
       return mergedList;
     } catch (e: any) { 
       return localClients; 
@@ -142,7 +134,6 @@ export const db = {
     const now = new Date().toISOString();
     const clientData = { ...client, lastUpdated: now };
     
-    // 1. Sync Physical Write (Blocking)
     const local = localStorage.getItem(DB_KEYS.CLIENTS);
     const clients: Client[] = local ? JSON.parse(local) : [];
     const idx = clients.findIndex(c => c.id === clientData.id);
@@ -150,7 +141,6 @@ export const db = {
     else clients.unshift(clientData);
     localStorage.setItem(DB_KEYS.CLIENTS, JSON.stringify(clients));
 
-    // 2. Queue for Handshake
     const outbox = getOutbox();
     const filtered = outbox.filter(item => item.id !== clientData.id);
     filtered.push({
@@ -162,13 +152,11 @@ export const db = {
     });
     saveOutbox(filtered);
 
-    // 3. Flush
     db.flushCloudQueue(userId);
     return clientData;
   },
 
   deleteClient: async (id: string): Promise<void> => {
-    // Physical Write
     const local = localStorage.getItem(DB_KEYS.CLIENTS);
     const clients: Client[] = local ? JSON.parse(local) : [];
     localStorage.setItem(DB_KEYS.CLIENTS, JSON.stringify(clients.filter(c => c.id !== id)));
