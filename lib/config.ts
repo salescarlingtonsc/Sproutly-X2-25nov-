@@ -20,7 +20,6 @@ export const TIER_CONFIG: Record<SubscriptionTier, { label: string; clientLimit:
   'platinum': {
     label: 'Platinum',
     clientLimit: 50,
-    // STRICT: Only CRM, Profile, and Communication tools. No financial planning calculators.
     allowedTabs: ['dashboard', 'profile', 'crm', 'reminders', 'disclaimer']
   },
   'diamond': {
@@ -66,29 +65,24 @@ export const TAB_GROUPS = [
   { title: 'System', tabs: ['report', 'admin', 'disclaimer'] }
 ];
 
-export const ALL_AVAILABLE_TABS = TAB_DEFINITIONS;
-
 export const canAccessTab = (user: UserProfile | null, tabId: string): boolean => {
   if (!user) return false;
   
-  // Super Admin / Director has access to everything by default
+  // Super Admin / Director has access to everything
   if (user.role === 'admin' || user.role === 'director' || user.isAgencyAdmin) return true;
 
-  // Check if user has specific module overrides
-  if (user.modules && Array.isArray(user.modules) && user.modules.length > 0) {
+  // STRICT OVERRIDE: If modules is defined (even if empty []), it is the absolute authority
+  if (user.modules && Array.isArray(user.modules)) {
+      // Disclaimer is always the emergency fallback and always allowed
+      if (tabId === 'disclaimer') return true;
       return user.modules.includes(tabId);
   }
-
-  // If no specific module override, Disclaimer is usually open
-  if (tabId === 'disclaimer') return true;
 
   // Fallback to Tier config
   const tier = user.subscriptionTier || 'free';
   const config = TIER_CONFIG[tier];
+  if (!config) return tabId === 'disclaimer';
   
-  if (!config) return false;
-  
-  // Admin tab is special - only for admin/director roles (checked above) or if explicitly granted
   if (tabId === 'admin') return false; 
 
   return config.allowedTabs.includes(tabId);

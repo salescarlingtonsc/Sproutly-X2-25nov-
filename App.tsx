@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from './contexts/AuthContext';
 import { useClient } from './contexts/ClientContext';
@@ -44,7 +45,6 @@ const App: React.FC = () => {
   } = useClient();
   const toast = useToast();
   
-  // 1. INSTANT ANCHOR HYDRATION
   const [clients, setClients] = useState<Client[]>(() => {
     try {
       const local = localStorage.getItem(DB_KEYS.CLIENTS);
@@ -54,7 +54,6 @@ const App: React.FC = () => {
     }
   });
 
-  // Default Login Tab set to Disclaimer
   const [activeTab, setActiveTab] = useState('disclaimer');
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [isPricingModalOpen, setIsPricingModalOpen] = useState(false);
@@ -65,6 +64,13 @@ const App: React.FC = () => {
   useSyncRecovery(user?.id, () => {
       refreshClients();
   });
+
+  // Access Guard: If current tab is blocked, force navigate to CRM
+  useEffect(() => {
+    if (user && !canAccessTab(user, activeTab)) {
+      setActiveTab('crm');
+    }
+  }, [user, activeTab]);
 
   const refreshClients = useCallback(async () => {
     if (user) {
@@ -132,10 +138,7 @@ const App: React.FC = () => {
   }
 
   const renderTab = () => {
-    // If no access will auto be CRM tab
-    const effectiveTab = canAccessTab(user, activeTab) ? activeTab : 'crm';
-
-    switch (effectiveTab) {
+    switch (activeTab) {
       case 'dashboard': return <DashboardTab user={user} clients={clients} onLoadClient={handleLoadClient} onNewClient={() => { resetClient(); setActiveTab('profile'); }} setActiveTab={setActiveTab} />;
       case 'crm': return <CrmTab clients={clients} profile={user} selectedClientId={clientId} newClient={() => { resetClient(); setActiveTab('profile'); }} saveClient={handleSave} loadClient={handleLoadClient} deleteClient={async (id) => { await db.deleteClient(id); setClients(c => c.filter(x => x.id !== id)); }} onRefresh={refreshClients} onUpdateGlobalClient={(c) => { setClients(prev => prev.map(old => old.id === c.id ? c : old)); db.saveClient(c, user.id); }} />;
       case 'profile': return <ProfileTab clients={clients} onLoadClient={handleLoadClient} onNewProfile={resetClient} />;

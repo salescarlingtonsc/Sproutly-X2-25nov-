@@ -1,6 +1,8 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { Advisor, Team, UserRole, SubscriptionTier } from '../../../types';
-import { ALL_AVAILABLE_TABS, TIER_CONFIG, DEFAULT_SETTINGS } from '../../../lib/config';
+// Fixing error: Module '"../../../lib/config"' has no exported member 'ALL_AVAILABLE_TABS'. 
+// Using TAB_DEFINITIONS instead as it contains all defined tabs with their IDs and labels.
+import { TAB_DEFINITIONS, TIER_CONFIG, DEFAULT_SETTINGS } from '../../../lib/config';
 import { supabase } from '../../../lib/supabase';
 import { adminDb } from '../../../lib/db/admin'; 
 import Modal from '../../../components/ui/Modal'; 
@@ -477,7 +479,9 @@ export const UserManagement: React.FC<UserManagementProps> = ({ advisors, teams,
               status: 'approved',
               bandingPercentage: 100,
               subscriptionTier: 'organisation',
-              modules: ALL_AVAILABLE_TABS.map(t => t.id),
+              // Fixing error: Module '"../../../lib/config"' has no exported member 'ALL_AVAILABLE_TABS'. 
+              // Using TAB_DEFINITIONS instead as it represents the correct constant for all tabs.
+              modules: TAB_DEFINITIONS.map(t => t.id),
               joinedAt: new Date().toISOString(),
               extraSlots: 0,
               is_admin: false,
@@ -700,7 +704,6 @@ export const UserManagement: React.FC<UserManagementProps> = ({ advisors, teams,
              </div>
           }
        >
-          {/* ... (Modal content remains unchanged) ... */}
           <div className="space-y-6">
              {/* NEW ORGANIZATION FORM */}
              {modalType === 'new_org' ? (
@@ -813,7 +816,9 @@ export const UserManagement: React.FC<UserManagementProps> = ({ advisors, teams,
                                     <button onClick={resetModulesToTier} className="text-[10px] text-indigo-600 hover:underline">Reset to {formTier} defaults</button>
                                 </div>
                                 <div className="grid grid-cols-2 gap-2 max-h-60 overflow-y-auto custom-scrollbar p-1">
-                                    {ALL_AVAILABLE_TABS.map(mod => (
+                                    {/* Fixing error: Module '"../../../lib/config"' has no exported member 'ALL_AVAILABLE_TABS'. 
+                                        Using TAB_DEFINITIONS instead as it correctly references all tabs. */}
+                                    {TAB_DEFINITIONS.map(mod => (
                                         <button
                                             key={mod.id}
                                             onClick={() => toggleModule(mod.id)}
