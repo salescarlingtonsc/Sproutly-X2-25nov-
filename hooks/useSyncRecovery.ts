@@ -7,6 +7,9 @@ import { syncInspector } from '../lib/syncInspector';
 export const useSyncRecovery = (userId?: string, onRecovery?: () => void) => {
   useEffect(() => {
     const triggerRecovery = async (source: string) => {
+      // Small debounce for mobile stability (allows network stack to wake up)
+      await new Promise(r => setTimeout(r, 800));
+      
       // 1. Break Zombie Locks Immediately
       db.resetLocks();
       
@@ -14,24 +17,26 @@ export const useSyncRecovery = (userId?: string, onRecovery?: () => void) => {
       
       if (!userId) return;
 
-      // 2. Refresh Session
-      const { data: { session } } = await supabase!.auth.getSession();
-      if (!session) {
-        syncInspector.log('error', 'AUTH_STALE', 'Session expired during background wait');
-        return;
-      }
+      try {
+          // 2. Refresh Session
+          const { data: { session } } = await supabase!.auth.getSession();
+          if (!session) {
+            syncInspector.log('error', 'AUTH_STALE', 'Session expired during background wait');
+            return;
+          }
 
-      // 3. Trigger External UI Callback
-      if (onRecovery) onRecovery();
+          // 3. Trigger External UI Callback
+          if (onRecovery) onRecovery();
 
-      // 4. Force a Queue Flush
-      db.flushCloudQueue(userId);
+          // 4. Force a Queue Flush
+          db.flushCloudQueue(userId);
+      } catch (e) {}
     };
 
     // Standard Focus
     const handleFocus = () => triggerRecovery('window_focus');
     
-    // Nuclear Option: iOS pageshow triggers even if process was frozen
+    // Nuclear Option: iOS/Android pageshow triggers even if process was frozen
     const handlePageShow = () => triggerRecovery('pageshow_detected');
 
     window.addEventListener('focus', handleFocus);
