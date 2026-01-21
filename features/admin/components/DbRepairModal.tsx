@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef } from 'react';
 import Modal from '../../../components/ui/Modal';
 import Button from '../../../components/ui/Button';
@@ -327,13 +328,13 @@ const DbRepairModal: React.FC<DbRepairModalProps> = ({ isOpen, onClose }) => {
 
       // STEP 1: Check Security Function (Fast Read)
       if (isMountedRef.current) setStatusText("1/5 Checking Security Protocols...");
-      const { error: rpcError } = await withTimeout(supabase.rpc('check_is_admin'), 3000) as any;
+      const { error: rpcError } = await withTimeout(supabase.rpc('check_is_admin') as Promise<any>, 3000) as any;
       if (rpcError) throw new Error(`Security RPC Broken: ${rpcError.message}`);
 
       // STEP 2: Read Profile (Select)
       if (isMountedRef.current) setStatusText("2/5 Simulating Profile Load...");
       const { error: profileError } = await withTimeout(
-          supabase.from('profiles').select('id').limit(1).single()
+          supabase.from('profiles').select('id').limit(1).single() as Promise<any>
       , 5000) as any;
       
       if (profileError) {
@@ -346,7 +347,7 @@ const DbRepairModal: React.FC<DbRepairModalProps> = ({ isOpen, onClose }) => {
       // STEP 3: Write Profile (Update) - Critical for recursion in UPDATE policies
       if (isMountedRef.current) setStatusText("3/5 Verifying Profile Write...");
       const { error: writeProfileError } = await withTimeout(
-          supabase.from('profiles').update({ updated_at: new Date().toISOString() }).eq('id', userId)
+          supabase.from('profiles').update({ updated_at: new Date().toISOString() }).eq('id', userId) as Promise<any>
       , 5000) as any;
       if (writeProfileError) {
           if (writeProfileError.message.includes('recursion') || writeProfileError.message.includes('stack depth')) {
@@ -363,7 +364,7 @@ const DbRepairModal: React.FC<DbRepairModalProps> = ({ isOpen, onClose }) => {
               id: dummyId,
               user_id: userId, 
               data: { name: 'Health Check Probe' }
-          })
+          }) as Promise<any>
       , 5000) as any;
 
       if (writeClientError) {

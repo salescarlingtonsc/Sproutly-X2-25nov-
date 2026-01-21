@@ -1,4 +1,3 @@
-
 import React, { useMemo, useState } from 'react';
 import { useClient } from '../../contexts/ClientContext';
 import { useAi } from '../../contexts/AiContext';
@@ -247,7 +246,8 @@ const CashflowTab: React.FC = () => {
     const startPoint = { 
         label: `Age ${currentAge}`, 
         value: startBalance, // Lazy path starts at current savings
-        wealth: startTotal   // Wealth path starts at total net worth
+        wealth: startTotal,   // Wealth path starts at total net worth
+        liquidity: startBalance
     };
     
     const yearlyPoints = monthlyProjection

@@ -4,7 +4,7 @@ import { Client } from '../types';
 import { syncInspector } from './syncInspector';
 
 // VERIFICATION LOG
-console.log("🚀 Sproutly DB v8.6: Abort Error Suppression Active");
+console.log("🚀 Sproutly DB v8.9: Floating Promise Fixes Applied");
 
 export const DB_KEYS = {
   CLIENTS: 'sproutly_clients_v2',
@@ -46,12 +46,29 @@ const saveOutbox = (items: OutboxItem[]) => {
   syncInspector.updateSnapshot(updates);
 };
 
+// Helper to Robustly Identify Aborts
+const isAbortError = (err: any): boolean => {
+    if (!err) return false;
+    const msg = (typeof err === 'string' ? err : (err.message || JSON.stringify(err))).toLowerCase();
+    const name = (err.name || '').toLowerCase();
+    
+    return (
+        msg === 'network_abort' || 
+        msg === 'timeout_abort' ||
+        name === 'aborterror' || 
+        msg.includes('aborted') || 
+        msg.includes('operation was aborted') ||
+        msg.includes('user aborted') ||
+        err.status === 0 || // Often indicates network interrupt
+        err.code === 20 // DOMException.ABORT_ERR
+    );
+};
+
 // Robust Upsert Wrapper that handles Aborts
 async function upsertWithTimeout(table: string, payload: any, timeoutMs: number) {
     if (!supabase) throw new Error("Supabase not initialized");
     
     // We race the Supabase call against a timeout promise
-    // This ensures we don't hang indefinitely if the network stack gets stuck
     const timeoutPromise = new Promise((_, reject) => {
         const id = setTimeout(() => {
             clearTimeout(id);
@@ -60,7 +77,6 @@ async function upsertWithTimeout(table: string, payload: any, timeoutMs: number)
     });
 
     try {
-        // Use Promise.race to enforce timeout
         const result: any = await Promise.race([
             supabase.from(table).upsert(payload),
             timeoutPromise
@@ -69,13 +85,8 @@ async function upsertWithTimeout(table: string, payload: any, timeoutMs: number)
         if (result.error) throw result.error;
         return true;
     } catch (err: any) {
-        // Normalize "AbortError" or "TIMEOUT_ABORT" to a string we can catch
-        if (
-            err.message === 'TIMEOUT_ABORT' || 
-            err.name === 'AbortError' || 
-            err.message?.includes('aborted') || 
-            err.message?.includes('The operation was aborted')
-        ) {
+        if (isAbortError(err)) {
+            // Normalize to a single controllable string
             throw new Error("NETWORK_ABORT");
         }
         throw err;
@@ -90,28 +101,31 @@ const fetchWithAuthRetry = async (queryFn: () => Promise<any>, retryCount = 0): 
         if (res.error) throw res.error;
         return res;
     } catch (e: any) {
+        const msg = (e.message || '').toLowerCase();
+        
         const isAuthError = 
-            e.message?.includes('JWT') || 
-            e.message?.includes('token') || 
+            msg.includes('jwt') || 
+            msg.includes('token') || 
             e.code === 'PGRST301' || 
             e.code === '401' ||
-            e.message?.includes('session');
+            msg.includes('session');
             
-        const isNetworkAbort = 
-            e.name === 'AbortError' || 
-            e.message?.includes('aborted') || 
-            e.message?.includes('Failed to fetch');
+        const isNetworkAbort = isAbortError(e) || msg.includes('failed to fetch');
         
         // Retry logic
         if ((isAuthError || isNetworkAbort) && retryCount < 2 && supabase) {
             console.log(`🔄 Recovery Triggered (${isAuthError ? 'Auth' : 'Network'}). Retrying...`);
             
-            // If Auth error, refresh session first
-            if (isAuthError) {
-                await supabase.auth.refreshSession();
-            } else {
-                // If Network error, wait 500ms for connection to stabilize
-                await new Promise(r => setTimeout(r, 500));
+            try {
+                // If Auth error, refresh session first
+                if (isAuthError) {
+                    await supabase.auth.refreshSession();
+                } else {
+                    // If Network error, wait 500ms for connection to stabilize
+                    await new Promise(r => setTimeout(r, 500));
+                }
+            } catch (innerErr) {
+                // Ignore refresh errors during retry prep
             }
             
             return fetchWithAuthRetry(queryFn, retryCount + 1);
@@ -125,15 +139,10 @@ export const db = {
   isFlushing: () => !!activeFlushPromise,
 
   resetLocks: () => {
-    // 1. Kill any active promise logically
     activeFlushPromise = null;
-    
-    // 2. Increment session ID so any running loops abort immediately
     currentFlushSessionId++;
-    
     if (flushWatchdog) clearTimeout(flushWatchdog);
     flushWatchdog = null;
-    
     syncInspector.log('info', 'LOCKED', `Locks reset. New Session: ${currentFlushSessionId}`);
     syncInspector.updateSnapshot({ isFlushing: false });
   },
@@ -154,7 +163,7 @@ export const db = {
     if (!isSupabaseConfigured() || !supabase) return localClients;
 
     try {
-      const { data } = await fetchWithAuthRetry(() => supabase!.from('clients').select('*'));
+      const { data } = await fetchWithAuthRetry(() => supabase!.from('clients').select('*') as Promise<any>);
       
       const clientMap = new Map<string, Client>();
       localClients.forEach(c => clientMap.set(c.id, c));
@@ -183,7 +192,9 @@ export const db = {
       localStorage.setItem(DB_KEYS.CLIENTS, JSON.stringify(mergedList));
       return mergedList;
     } catch (e: any) { 
-      syncInspector.log('warn', 'CLOUD_ERR', `Read failed: ${e.message}. Using local cache.`);
+      // If we failed even after retries, log it but don't show global error unless it's critical
+      const lvl = isAbortError(e) ? 'warn' : 'error';
+      syncInspector.log(lvl, 'CLOUD_ERR', `Read failed: ${e.message}. Using local cache.`);
       return localClients; 
     }
   },
@@ -213,7 +224,6 @@ export const db = {
     saveOutbox(filtered);
 
     // 3. Trigger Flush (AGGRESSIVE MODE)
-    // We removed the background check. Now we push immediately using KeepAlive fetch.
     if (typeof navigator !== 'undefined' && navigator.onLine) {
         try {
             await db.flushCloudQueue(userId);
@@ -222,7 +232,8 @@ export const db = {
             const currentOutbox = getOutbox();
             const pendingItem = currentOutbox.find(i => i.id === clientData.id);
             if (pendingItem && pendingItem.attempts === 0) {
-                db.flushCloudQueue(userId); 
+                // Fix: Catch this floating promise to prevent Unhandled Rejection on iOS app switch
+                db.flushCloudQueue(userId).catch(e => console.debug("Secondary flush aborted (backgrounding)", e)); 
             }
         } catch (e: any) {
             console.error("Background Sync Error:", e);
@@ -262,7 +273,8 @@ export const db = {
       });
     });
     saveOutbox(outbox);
-    db.flushCloudQueue(userId);
+    // Fix: Catch floating promise
+    db.flushCloudQueue(userId).catch(e => console.debug("Bulk flush aborted", e));
   },
 
   transferOwnership: async (clientId: string, newOwnerId: string): Promise<void> => {
@@ -334,16 +346,17 @@ export const db = {
                     syncInspector.updateSnapshot({ lastCloudOkAt: Date.now(), lastSaveOkAt: Date.now() });
                 } catch (err: any) {
                     // CRITICAL FIX: Detect Abort/Network Errors and Retry
-                    const isAuthError = err.message?.includes("Auth Stale") || err.message?.includes("JWT") || err.code === '401' || err.message?.includes("session");
-                    const isAbortError = err.message === 'NETWORK_ABORT' || err.name === 'AbortError' || err.message?.includes('aborted');
+                    const msg = (err.message || '').toLowerCase();
+                    const isAuthError = msg.includes("auth stale") || msg.includes("jwt") || err.code === '401' || msg.includes("session");
+                    const isAbort = isAbortError(err);
                     
-                    if (isAuthError || isAbortError) {
+                    if (isAuthError || isAbort) {
                         const label = isAuthError ? "Auth Stale" : "Network Abort";
-                        console.log(`⚠️ ${label} in write loop. Retrying immediately...`);
+                        console.log(`⚠️ ${label} in write loop. Retrying...`);
                         
                         try {
                             if (isAuthError) await supabase!.auth.refreshSession();
-                            if (isAbortError) await new Promise(r => setTimeout(r, 800)); // Pause for network wake-up
+                            if (isAbort) await new Promise(r => setTimeout(r, 800)); // Pause for network wake-up
 
                             // Retry immediately
                             await upsertWithTimeout('clients', {
@@ -352,6 +365,7 @@ export const db = {
                                 data: { ...item.data, _ownerId: item.userId || userId },
                                 updated_at: item.data.lastUpdated
                             }, SYNC_TIMEOUT_MS);
+                            
                             successfulIds.add(item.id); // Success on retry
                             continue; // Next item
                         } catch (retryErr) {
@@ -361,11 +375,10 @@ export const db = {
                     
                     // IF WE ARE HERE, RETRY FAILED OR IT WAS A REAL ERROR
                     // If it was an Abort error that persisted, we suppress the global banner
-                    // because backgrounding happens frequently on mobile.
-                    if (isAbortError) {
+                    if (isAbort) {
                         console.warn(`Background Sync Paused for ${item.id} (Network Abort). Will retry next wake.`);
                         // Do NOT set lastCloudErr here to avoid the red banner
-                        syncInspector.log('warn', 'TIMEOUT_ABORTED', `Sync aborted for ${item.id}`);
+                        syncInspector.log('warn', 'TIMEOUT_ABORTED', `Sync paused for ${item.id}`);
                     } else {
                         processingErrors.set(item.id, err.message);
                         syncInspector.updateSnapshot({ lastCloudErr: err.message });

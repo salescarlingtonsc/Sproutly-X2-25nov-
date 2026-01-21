@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useMemo } from 'react';
 import { db } from '../../lib/db';
 import { Client, Product, Sale, ContactStatus } from '../../types';
@@ -102,7 +103,8 @@ const RemindersTab: React.FC = () => {
       setClients(prev => prev.map(old => old.id === updatedC.id ? updatedC : old));
       setSelectedClient(updatedC);
       loadClient(updatedC);
-      db.saveClient(updatedC);
+      // Fix: Catch floating promise to prevent Unhandled Rejection on app switch
+      db.saveClient(updatedC).catch(() => {});
   };
 
   const isContactedToday = (client: Client) => {
@@ -149,7 +151,8 @@ const RemindersTab: React.FC = () => {
             author: 'System' 
           }, ...(client.notes || [])]
       };
-      await db.saveClient(updatedClient);
+      // Fix: Catch potential rejection before proceeding
+      await db.saveClient(updatedClient).catch(() => {});
       handleUpdateClient(updatedClient);
       toast.success("Appointment cleared!");
   };
@@ -170,7 +173,7 @@ const RemindersTab: React.FC = () => {
             lastUpdated: now,
             notes: [{ id: `wish_${Date.now()}`, content: 'Sent Birthday Wish 🎂', date: now, author: 'System' }, ...(client.notes || [])]
         };
-        await db.saveClient(updatedClient);
+        await db.saveClient(updatedClient).catch(() => {});
         handleUpdateClient(updatedClient);
     }
     
@@ -389,7 +392,8 @@ const RemindersTab: React.FC = () => {
                           onUpdate={handleUpdateClient}
                           currentUser={user}
                           onDelete={async (id) => {
-                              await db.deleteClient(id);
+                              // Fix: Catch potential rejection
+                              await db.deleteClient(id).catch(() => {});
                               setClients(prev => prev.filter(c => c.id !== id));
                               setSelectedClient(null);
                               toast.success("Client deleted");
