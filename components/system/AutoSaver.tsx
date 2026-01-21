@@ -1,6 +1,8 @@
+
 import React, { useEffect, useRef } from 'react';
 import { useClient } from '../../contexts/ClientContext';
 import { useAuth } from '../../contexts/AuthContext';
+import { syncInspector } from '../../lib/syncInspector';
 
 interface AutoSaverProps {
   onSave: () => void;
@@ -14,41 +16,70 @@ const AutoSaver: React.FC<AutoSaverProps> = ({ onSave }) => {
   } = useClient();
   const { user } = useAuth();
 
-  // Ref to track if it's the initial mount (to skip saving on load)
+  // Ref to track if it's the initial mount
   const isMounted = useRef(false);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  
+  // Keep latest onSave reference to avoid re-binding event listeners
+  const onSaveRef = useRef(onSave);
+  useEffect(() => { onSaveRef.current = onSave; }, [onSave]);
 
-  // Watch ALL state objects that constitute the client data
+  // 1. DATA WATCHER: Debounce Save
   useEffect(() => {
     if (!isMounted.current) {
       isMounted.current = true;
       return;
     }
 
-    // If no user, don't try to save
     if (!user) return;
 
-    // Debounce the save (wait 2 seconds after last keystroke)
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current);
-    }
+    // GHOST PROTOCOL: Prevent saving if the client is empty
+    const hasIdentity = 
+        (profile.name && profile.name.trim() !== '') || 
+        (profile.phone && profile.phone.trim() !== '') || 
+        (crmState.company && crmState.company.trim() !== '');
 
+    if (!hasIdentity) return;
+
+    // Clear existing timer
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+
+    // Set new timer
     timeoutRef.current = setTimeout(() => {
       console.log('🔄 Auto-saving changes...');
-      onSave();
+      onSaveRef.current();
+      timeoutRef.current = null;
     }, 2000);
 
     return () => {
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
     };
   }, [
-    // Dependency array contains all data parts. Any change here triggers the effect.
     profile, expenses, customExpenses, cpfState, cashflowState, 
     insuranceState, investorState, propertyState, wealthState, 
     retirement, nineBoxState, crmState, user
   ]);
 
-  return null; // Invisible component
+  // 2. FREEZE PROTECTION: Save immediately on App Switch / Tab Hide
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+        if (document.visibilityState === 'hidden') {
+            // If a save was pending (timer running), force it NOW before browser freezes CPU
+            if (timeoutRef.current) {
+                console.log('💤 App backgrounding: Forcing immediate save.');
+                syncInspector.log('warn', 'LOCAL_WRITE', 'Forced save due to backgrounding');
+                clearTimeout(timeoutRef.current);
+                timeoutRef.current = null;
+                onSaveRef.current();
+            }
+        }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, []);
+
+  return null;
 };
 
 export default AutoSaver;

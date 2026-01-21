@@ -6,11 +6,14 @@ import { UserProfile, SubscriptionTier } from '../types';
 interface AuthContextType {
   user: UserProfile | null;
   isLoading: boolean;
+  isRecoveryMode: boolean;
   signInWithEmail: (email: string) => Promise<{ error: any }>;
   signInWithPassword: (email: string, password: string) => Promise<{ error: any }>;
   signUpWithPassword: (email: string, password: string) => Promise<{ data: any; error: any }>;
   signInWithGoogle: () => Promise<{ error: any }>;
   resetPassword: (email: string) => Promise<{ data: any; error: any }>;
+  updatePassword: (password: string) => Promise<{ data: any; error: any }>;
+  resendVerificationEmail: (email: string) => Promise<{ data: any; error: any }>;
   signOut: () => Promise<void>;
   refreshProfile: () => Promise<void>;
 }
@@ -22,12 +25,14 @@ const USER_CACHE_KEY = 'sproutly.user_cache.v1';
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<UserProfile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isRecoveryMode, setIsRecoveryMode] = useState(false);
   const loadingTimeoutRef = useRef<any>(null);
 
+  // Hardcoded Admin Email for override
   const ADMIN_EMAIL = 'sales.carlingtonsc@gmail.com';
 
   useEffect(() => {
-    // 1. INSTANT HYDRATION
+    // 1. INSTANT HYDRATION FROM LOCAL STORAGE (Speed)
     const cachedUser = localStorage.getItem(USER_CACHE_KEY);
     let hasCache = false;
 
@@ -45,8 +50,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
 
-    // 2. SAFETY BACKSTOP: If Supabase hangs for >5s, unblock the UI
-    // This prevents the "White Screen" if the DB is looping or network is dead.
+    // 2. SAFETY TIMEOUT (Prevent infinite loading screens)
     loadingTimeoutRef.current = setTimeout(() => {
       if (isLoading) {
         console.warn("🛡️ Auth Backstop: Supabase check timed out. Unblocking UI.");
@@ -56,12 +60,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const checkSession = async () => {
       try {
+        // Use getSession instead of getUser for speed + token check
         const { data: { session }, error } = await supabase.auth.getSession();
         
         if (error) throw error;
 
         if (session?.user) {
-          // If no cache, unblock with minimal user data immediately
+          // If we didn't have cache, show SOMETHING immediately while we fetch the full profile
           if (!hasCache) {
              const fallbackUser: UserProfile = {
                 id: session.user.id,
@@ -78,10 +83,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
              setUser(fallbackUser);
              setIsLoading(false);
           }
-
-          // Fetch full profile in background
+          // Now fetch the real profile from DB
           loadUserProfile(session.user.id, session.user.email!);
         } else {
+          // No session, clear everything
           if (hasCache) {
              localStorage.removeItem(USER_CACHE_KEY);
              setUser(null);
@@ -98,6 +103,29 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     checkSession();
 
+    // 3. PROACTIVE REFRESH ON APP SWITCHING (The Fix)
+    // When user switches apps (visibility change) or focuses window, check token validity immediately.
+    const handleFocus = async () => {
+        if (!supabase) return;
+        const { data } = await supabase.auth.getSession();
+        if (data.session) {
+            // If token expires in less than 60 minutes, force refresh now to be safe
+            const expiresAt = data.session.expires_at; // Unix timestamp in seconds
+            const now = Math.floor(Date.now() / 1000);
+            const timeRemaining = expiresAt ? expiresAt - now : 0;
+            
+            if (timeRemaining < 3600) { // 1 hour buffer
+                console.log("⚡ Proactive Session Refresh triggered on wake.");
+                await supabase.auth.refreshSession();
+            }
+        }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') handleFocus();
+    });
+
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (event === 'SIGNED_IN' && session?.user) {
         await loadUserProfile(session.user.id, session.user.email!);
@@ -105,11 +133,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         localStorage.removeItem(USER_CACHE_KEY);
         setUser(null);
         setIsLoading(false);
+      } else if (event === 'PASSWORD_RECOVERY') {
+        setIsRecoveryMode(true);
+      } else if (event === 'TOKEN_REFRESHED') {
+        // Token refreshed successfully
       }
     });
 
     return () => {
       subscription.unsubscribe();
+      window.removeEventListener('focus', handleFocus);
       if (loadingTimeoutRef.current) clearTimeout(loadingTimeoutRef.current);
     };
   }, []);
@@ -126,12 +159,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           .maybeSingle();
 
       if (fetchError) {
-          if (fetchError.message.includes('stack depth')) {
-              console.error("🚨 CRITICAL: Database Recursion Loop Detected. Run Repair SQL.");
+          // Detect infinite recursion in RLS policies (Database bug)
+          if (fetchError.message.includes('stack depth') || fetchError.message.includes('recursion')) {
+              console.error("🚨 CRITICAL: Database Recursion Loop Detected in Auth.");
           }
           throw fetchError;
       }
 
+      // Merge DB data with local override logic
       const isAdminByData = profileData?.role === 'admin' || profileData?.is_admin === true;
       const finalRole = (isHardcodedAdmin || isAdminByData) ? 'admin' : (profileData?.role || 'advisor');
       const finalIsAdmin = isHardcodedAdmin || isAdminByData;
@@ -190,6 +225,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return await supabase.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin });
   };
 
+  const updatePassword = async (password: string) => {
+    if (!supabase) return { data: null, error: { message: 'Supabase not configured' } };
+    const result = await supabase.auth.updateUser({ password });
+    if (!result.error) {
+        setIsRecoveryMode(false);
+    }
+    return result;
+  };
+
+  const resendVerificationEmail = async (email: string) => {
+    if (!supabase) return { data: null, error: { message: 'Supabase not configured' } };
+    return await supabase.auth.resend({ 
+      type: 'signup', 
+      email, 
+      options: { emailRedirectTo: window.location.origin } 
+    });
+  };
+
   const signOut = async () => {
     if (supabase) await supabase.auth.signOut();
     localStorage.removeItem(USER_CACHE_KEY); 
@@ -201,7 +254,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   return (
-    <AuthContext.Provider value={{ user, isLoading, signInWithEmail, signInWithPassword, signUpWithPassword, signInWithGoogle, resetPassword, signOut, refreshProfile }}>
+    <AuthContext.Provider value={{ user, isLoading, isRecoveryMode, signInWithEmail, signInWithPassword, signUpWithPassword, signInWithGoogle, resetPassword, updatePassword, resendVerificationEmail, signOut, refreshProfile }}>
       {children}
     </AuthContext.Provider>
   );

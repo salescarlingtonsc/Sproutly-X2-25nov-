@@ -59,8 +59,22 @@ if (!isConfigured) {
   console.log('Supabase configured with URL:', SUPABASE_URL);
 }
 
+// FORCE KEEPALIVE: This tells the browser to NOT kill the request if the tab closes/backgrounds.
+const fetchWithKeepAlive = (url: RequestInfo | URL, init?: RequestInit) => {
+  return fetch(url, { ...init, keepalive: true });
+};
+
 export const supabase = isConfigured 
-  ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) 
+  ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      global: {
+        fetch: fetchWithKeepAlive
+      },
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: true
+      }
+    }) 
   : null;
 
 export const isSupabaseConfigured = () => !!isConfigured;

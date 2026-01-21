@@ -103,8 +103,7 @@ const CashflowTab: React.FC = () => {
 
     let yearlyIncomeAccumulator = 0;
     let yearlyWithdrawalAccumulator = 0;
-    let yearlyNetAccumulator = 0; // Tracks Actual Net (after inv)
-    let yearlyNetSurplusAccumulator = 0; // Tracks Raw Net (before inv)
+    let yearlyNetAccumulator = 0;
 
     for (let m = 0; m < totalMonths; m++) {
       const stepDate = new Date(startYear, startMonth + m, 1);
@@ -186,14 +185,15 @@ const CashflowTab: React.FC = () => {
       }
 
       const totalIncome = monthIncome + additionalIncome;
-      // Net Surplus = The raw cash generated (Income - Expense/Withdrawals)
       const netSurplus = totalIncome - withdrawalAmount;
 
-      // 1. ACTUAL PATH: Subtract investment from cash (because it moves to portfolio)
+      // 1. ACTUAL PATH: Subtract investment from cash
       const netActual = netSurplus - (isRetired ? 0 : monthlyInvestment);
       balance += netActual;
 
-      // 2. LAZY PATH: Keep investment in cash (assumes NO investment action taken)
+      // 2. LAZY PATH: Keep investment in cash
+      // If retired, we assume no new investment anyway, so netSurplus is same.
+      // If working, we keep the monthlyInvestment in the bank.
       lazyBalance += netSurplus;
 
       // WEALTH GROWTH
@@ -205,7 +205,6 @@ const CashflowTab: React.FC = () => {
       yearlyIncomeAccumulator += totalIncome;
       yearlyWithdrawalAccumulator += withdrawalAmount;
       yearlyNetAccumulator += netActual;
-      yearlyNetSurplusAccumulator += netSurplus;
 
       const isCycleEnd = (m + 1) % 12 === 0 || m === totalMonths - 1;
 
@@ -215,31 +214,23 @@ const CashflowTab: React.FC = () => {
          year: stepYear,
          totalIncome,
          withdrawal: withdrawalAmount,
-         
-         // Two versions of Net Flow
-         netCashflow: netActual, // After Investment
-         netSurplus: netSurplus, // Before Investment (Cash Only View)
-         
-         balance: balance, // Actual Cash (invested)
+         netCashflow: netActual,
+         balance: balance, // Actual Cash
          lazyBalance: lazyBalance, // Hypothetical Cash (No Inv)
-         
          wealthBalance: wealthBalance,
          totalAssets: balance + wealthBalance, // Net Worth
          isCareerPaused,
          hasAdditionalIncome: additionalIncome > 0,
          hasLargeWithdrawal: withdrawalAmount > 0,
-         
          annualIncomeSnapshot: yearlyIncomeAccumulator,
          annualWithdrawalSnapshot: yearlyWithdrawalAccumulator,
-         annualNetSnapshot: yearlyNetAccumulator,
-         annualNetSurplusSnapshot: yearlyNetSurplusAccumulator
+         annualNetSnapshot: yearlyNetAccumulator
       });
 
       if (isCycleEnd) {
           yearlyIncomeAccumulator = 0;
           yearlyWithdrawalAccumulator = 0;
           yearlyNetAccumulator = 0;
-          yearlyNetSurplusAccumulator = 0;
       }
     }
     return projection;
@@ -248,10 +239,6 @@ const CashflowTab: React.FC = () => {
   // --- CHART DATA PREP ---
   const chartData = useMemo(() => {
     if (!monthlyProjection.length) return [];
-    
-    // Logic: 
-    // !showWealthView -> Show "Lazy Balance" (What happens if I just save in bank)
-    // showWealthView -> Show "Total Assets" (What happens if I invest)
     
     const startBalance = toNum(currentSavings, 0);
     const startWealth = toNum(investorState?.portfolioValue, 0);
@@ -625,8 +612,8 @@ const CashflowTab: React.FC = () => {
                         <td className="p-4 text-right text-red-500">
                             {fmtSGD(Math.abs(ledgerView === 'yearly' ? row.annualWithdrawalSnapshot : row.withdrawal))}
                         </td>
-                        <td className={`p-4 text-right font-bold ${(ledgerView === 'yearly' ? (showWealthView ? row.annualNetSnapshot : row.annualNetSurplusSnapshot) : (showWealthView ? row.netCashflow : row.netSurplus)) < 0 ? 'text-red-500' : 'text-indigo-600'}`}>
-                            {fmtSGD(ledgerView === 'yearly' ? (showWealthView ? row.annualNetSnapshot : row.annualNetSurplusSnapshot) : (showWealthView ? row.netCashflow : row.netSurplus))}
+                        <td className={`p-4 text-right font-bold ${(ledgerView === 'yearly' ? row.annualNetSnapshot : row.netCashflow) < 0 ? 'text-red-500' : 'text-indigo-600'}`}>
+                            {fmtSGD(ledgerView === 'yearly' ? row.annualNetSnapshot : row.netCashflow)}
                         </td>
                         <td className="p-4 text-right font-mono font-bold text-emerald-600 bg-emerald-50/20">{fmtSGD(showWealthView ? row.balance : row.lazyBalance)}</td>
                         {showWealthView && (

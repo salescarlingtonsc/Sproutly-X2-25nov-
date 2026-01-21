@@ -134,6 +134,26 @@ const RemindersTab: React.FC = () => {
       toast.success(isAlreadyWished ? "Unchecked!" : "Checked off!");
   };
 
+  const handleDismissAppt = async (e: React.MouseEvent, client: Client) => {
+      e.stopPropagation();
+      const now = new Date().toISOString();
+      // Clear the appointment date to remove it from the list
+      const updatedClient = {
+          ...client,
+          appointments: { ...client.appointments, firstApptDate: '' },
+          lastUpdated: now,
+          notes: [{ 
+            id: `appt_cleared_${Date.now()}`, 
+            content: 'Appointment cleared from Action Center.', 
+            date: now, 
+            author: 'System' 
+          }, ...(client.notes || [])]
+      };
+      await db.saveClient(updatedClient);
+      handleUpdateClient(updatedClient);
+      toast.success("Appointment cleared!");
+  };
+
   const handleWhatsApp = async (e: React.MouseEvent, client: Client, isBirthday: boolean = false) => {
     e.stopPropagation();
     const phone = client.profile.phone?.replace(/\D/g, '') || '';
@@ -198,12 +218,16 @@ const RemindersTab: React.FC = () => {
     return daysSince > 3; 
   }), [filteredClients, now]);
 
+  // UPDATED APPOINTMENT LOGIC: Show appointments that are TODAY or BEFORE TODAY (Overdue)
   const appointments = useMemo(() => filteredClients.filter(c => {
       if (!c.appointments?.firstApptDate) return false;
       const apptDate = new Date(c.appointments.firstApptDate);
-      const diff = (apptDate.getTime() - now.getTime()) / (1000 * 3600 * 24);
-      return diff >= 0 && diff <= 2; 
-  }).sort((a,b) => new Date(a.appointments.firstApptDate).getTime() - new Date(b.appointments.firstApptDate).getTime()), [filteredClients, now]);
+      const endOfToday = new Date();
+      endOfToday.setHours(23, 59, 59, 999);
+      
+      // If appointment is today or earlier, show it
+      return apptDate.getTime() <= endOfToday.getTime(); 
+  }).sort((a,b) => new Date(a.appointments.firstApptDate).getTime() - new Date(b.appointments.firstApptDate).getTime()), [filteredClients]);
 
   const followUpTasks = useMemo(() => filteredClients.filter(c => {
       if (!c.followUp?.nextFollowUpDate) return false;
@@ -215,7 +239,10 @@ const RemindersTab: React.FC = () => {
       return diffDays <= 14;
   }).sort((a, b) => new Date(a.followUp.nextFollowUpDate).getTime() - new Date(b.followUp.nextFollowUpDate).getTime()), [filteredClients]);
 
-  const ReminderCard = ({ title, items, colorClass, icon, badgeColor, isBirthdayCard }: any) => (
+  const ReminderCard = ({ title, items, colorClass, icon, badgeColor, isBirthdayCard }: any) => {
+    const isApptCard = title.includes('Appointment');
+    
+    return (
     <div className={`bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col h-[calc(100vh-280px)] min-h-[500px]`}>
         <div className={`px-4 py-3 border-b border-slate-100 flex items-center gap-3 ${colorClass} shrink-0`}>
             <div className={`p-1.5 rounded-lg bg-white/40 shadow-sm border border-black/5`}>{icon}</div>
@@ -271,9 +298,10 @@ const RemindersTab: React.FC = () => {
                                                     </span>
                                                 );
                                             })()
-                                        ) : title.includes('Appointment') && c.appointments?.firstApptDate ? (
-                                             <span className="text-[9px] font-bold text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-100">
+                                        ) : isApptCard && c.appointments?.firstApptDate ? (
+                                             <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${new Date(c.appointments.firstApptDate) < new Date() ? 'bg-red-50 text-red-600 border-red-100' : 'bg-indigo-50 text-indigo-600 border-indigo-100'}`}>
                                                 {new Date(c.appointments.firstApptDate).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                                                {new Date(c.appointments.firstApptDate) < new Date() ? ' (Past)' : ''}
                                              </span>
                                         ) : null}
                                     </div>
@@ -289,22 +317,23 @@ const RemindersTab: React.FC = () => {
                                 </div>
                                 
                                 <div className="flex flex-col gap-1 items-center justify-center shrink-0 self-center">
-                                    {isBirthdayCard && (
+                                    {(isBirthdayCard || isApptCard) && (
                                         <button 
-                                            onClick={(e) => handleMarkWished(e, c)}
+                                            onClick={(e) => isBirthdayCard ? handleMarkWished(e, c) : handleDismissAppt(e, c)}
                                             className={`w-6 h-6 flex items-center justify-center rounded transition-all shadow-sm
                                                 ${wished 
                                                     ? 'bg-emerald-100 text-emerald-700 border border-emerald-200' 
                                                     : 'bg-white border border-slate-200 text-slate-300 hover:border-emerald-400 hover:text-emerald-500'
                                                 }`}
-                                            title={wished ? "Unmark Wished" : "Mark as Wished"}
+                                            title={isBirthdayCard ? (wished ? "Unmark Wished" : "Mark as Wished") : "Mark Completed"}
                                         >
-                                            {wished ? "✓" : "○"}
+                                            {wished ? "✓" : (isApptCard ? "✓" : "○")}
                                         </button>
                                     )}
                                     <button 
                                         onClick={(e) => handleWhatsApp(e, c, isBirthdayCard)}
                                         className="w-6 h-6 flex items-center justify-center rounded transition-all shadow-sm bg-slate-50 text-slate-400 hover:bg-[#25D366] hover:text-white group-hover:opacity-100 border-slate-100"
+                                        title="WhatsApp"
                                     >
                                         <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path d="M12.031 6.172c-3.181 0-5.767 2.586-5.768 5.766-.001 1.298.38 2.27 1.025 3.312l-.542 2.01 2.036-.53c.96.514 1.95.787 3.25.788h.003c3.181 0 5.767-2.586 5.768-5.766 0-3.18-2.587-5.766-5.768-5.766h-.004zm3.003 8.3c-.12.33-.7.63-1.01.69-.24.05-.55.08-1.53-.33-1.3-.54-2.12-1.85-2.19-1.94-.06-.09-.54-.72-.54-1.37s.34-.97.46-1.1c.12-.13.27-.16.36-.16s.18.01.26.01.21-.04.33.25c.12.29.41 1.01.45 1.09.04.08.07.17.01.28-.06.11-.09.18-.18.29-.06.11-.09.18-.18.29-.09.11-.18.23-.26.3-.09.08-.18.17-.08.34.1.17.44.73.94 1.18.64.57 1.18.75 1.35.83.17.08.27.07.37-.04.1-.11.43-.51.55-.68.12-.17.23-.15.39-.09.16.06 1.03.49 1.2.58.17.09.28.14.32.2.04.06.04.35-.08.68z"/></svg>
                                     </button>
@@ -316,7 +345,8 @@ const RemindersTab: React.FC = () => {
             )}
         </div>
     </div>
-  );
+    );
+  };
 
   return (
     <div className="p-6 md:p-8 animate-fade-in pb-24 md:pb-8">

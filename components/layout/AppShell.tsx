@@ -9,7 +9,9 @@ import { fmtTime } from '../../lib/helpers';
 import Modal from '../ui/Modal'; 
 import Button from '../ui/Button'; 
 import { supabase } from '../../lib/supabase'; 
+import { db } from '../../lib/db';
 import SyncInspectorModal from '../sync/SyncInspectorModal'; // Import Inspector
+import { syncInspector } from '../../lib/syncInspector'; // Import Singleton
 
 interface AppShellProps {
   activeTab: string;
@@ -53,6 +55,7 @@ const AppShell: React.FC<AppShellProps> = ({
   
   // Sync Inspector State
   const [showSyncInspector, setShowSyncInspector] = useState(false);
+  const [syncSnapshot, setSyncSnapshot] = useState(syncInspector.getSnapshot());
 
   const profileRef = useRef<HTMLDivElement>(null);
 
@@ -81,6 +84,29 @@ const AppShell: React.FC<AppShellProps> = ({
     }
     return () => clearTimeout(timer);
   }, [saveStatus]);
+
+  // Real-time Sync Monitoring
+  useEffect(() => {
+    const handleSnap = (e: any) => setSyncSnapshot(e.detail.snapshot);
+    window.addEventListener('sproutly:sync_snapshot', handleSnap);
+    return () => window.removeEventListener('sproutly:sync_snapshot', handleSnap);
+  }, []);
+
+  // Monitor Auth Stale Error for Hard Refresh
+  useEffect(() => {
+    if (syncSnapshot.lastCloudErr && syncSnapshot.lastCloudErr.includes("Auth Stale")) {
+       const key = 'sproutly_auth_refresh_cd';
+       const last = sessionStorage.getItem(key);
+       const now = Date.now();
+       
+       // Prevent death spiral: Only hard reload once every 10 seconds
+       if (!last || (now - parseInt(last) > 10000)) {
+           sessionStorage.setItem(key, String(now));
+           console.warn("Auth Stale detected. Hard refreshing application...");
+           window.location.reload();
+       }
+    }
+  }, [syncSnapshot.lastCloudErr]);
 
   const handleTabChange = (tabId: string) => {
     if (canAccessTab(user, tabId)) {
@@ -137,6 +163,10 @@ const AppShell: React.FC<AppShellProps> = ({
   const activeDef = TAB_DEFINITIONS.find(t => t.id === activeTab);
   const headerTitle = activeDef?.label || 'Dashboard';
 
+  // Sync Logic Visualization
+  const isBackgroundSyncing = syncSnapshot.isFlushing || syncSnapshot.queueCount > 0;
+  const isOnline = syncSnapshot.online;
+
   return (
     <div className="flex h-screen supports-[height:100dvh]:h-[100dvh] overflow-hidden bg-slate-50 font-sans text-slate-900 overscroll-none">
       
@@ -157,6 +187,32 @@ const AppShell: React.FC<AppShellProps> = ({
             <div className="absolute -top-20 -left-20 w-96 h-96 bg-indigo-300 rounded-full mix-blend-multiply filter blur-3xl opacity-10 animate-blob"></div>
             <div className="absolute -top-20 -right-20 w-96 h-96 bg-emerald-300 rounded-full mix-blend-multiply filter blur-3xl opacity-10 animate-blob animation-delay-2000"></div>
          </div>
+
+         {/* SYNC ERROR BANNER */}
+         {syncSnapshot.lastCloudErr && (
+            <div className="bg-red-600 text-white px-4 py-2 flex items-center justify-between text-xs font-bold z-30 shrink-0 shadow-md animate-slide-in-from-top">
+               <div className="flex items-center gap-2">
+                  <span>⚠️ Sync Error: {syncSnapshot.lastCloudErr}</span>
+               </div>
+               <div className="flex items-center gap-3">
+                  <button 
+                    onClick={() => {
+                        syncInspector.updateSnapshot({ lastCloudErr: null });
+                        if (user?.id) db.flushCloudQueue(user.id);
+                    }} 
+                    className="bg-white/20 hover:bg-white/30 px-3 py-1 rounded transition-colors uppercase tracking-wider"
+                  >
+                    Flush Queue
+                  </button>
+                  <button 
+                    onClick={() => syncInspector.updateSnapshot({ lastCloudErr: null })} 
+                    className="opacity-80 hover:opacity-100"
+                  >
+                    ✕
+                  </button>
+               </div>
+            </div>
+         )}
 
          {/* Header Bar */}
          <header className="h-16 px-4 md:px-6 border-b border-gray-200 bg-white/80 backdrop-blur-md flex items-center justify-between z-20 shrink-0">
@@ -192,21 +248,34 @@ const AppShell: React.FC<AppShellProps> = ({
             {/* Right Actions */}
             <div className="flex items-center gap-2 md:gap-3">
                
+               {/* Global Status Indicator (Prioritize Sync State) */}
+               {!isOnline && (
+                   <span className="flex items-center gap-1 px-2 py-1 bg-red-50 text-red-600 rounded-full border border-red-100 text-[10px] font-bold uppercase">
+                       <span>⚠️</span> Offline
+                   </span>
+               )}
+
+               {isOnline && isBackgroundSyncing && saveStatus !== 'saving' && (
+                   <span className="flex items-center gap-1 px-2 py-1 bg-indigo-50 text-indigo-600 rounded-full border border-indigo-100 text-[10px] font-bold uppercase animate-pulse">
+                       <span className="animate-spin">↻</span> Syncing ({syncSnapshot.queueCount})
+                   </span>
+               )}
+
                {/* Sync Inspector Button */}
                <button 
                   onClick={() => setShowSyncInspector(true)}
                   className="hidden md:flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-[10px] font-bold text-slate-500 transition-colors"
                >
-                  <span>☁️</span> Sync
+                  <span>☁️</span> Status
                </button>
 
-               {/* Save Status - Always visible now */}
+               {/* Manual Save Status */}
                {!isReadOnly && (
                   <div className="flex flex-col items-end mr-1 md:mr-2 min-w-[80px]">
                      {saveStatus === 'saving' && (
                         <>
                            <span className="text-[10px] text-indigo-600 font-bold flex items-center gap-1 bg-indigo-50/80 backdrop-blur-sm px-2 py-1 rounded-full border border-indigo-100 transition-all animate-pulse">
-                              <span className="animate-spin">↻</span> <span className="hidden sm:inline">Syncing...</span>
+                              <span className="animate-spin">↻</span> <span className="hidden sm:inline">Saving...</span>
                            </span>
                            {showRefreshBtn && onSystemRefresh && (
                               <button 
@@ -228,7 +297,7 @@ const AppShell: React.FC<AppShellProps> = ({
                            ⚠️ <span className="hidden sm:inline">Failed</span>
                         </span>
                      )}
-                     {saveStatus === 'idle' && (
+                     {saveStatus === 'idle' && !isBackgroundSyncing && (
                         <span className="text-[10px] text-slate-400 font-medium flex items-center gap-1 transition-opacity duration-500">
                            {lastSavedTime ? (
                                <>

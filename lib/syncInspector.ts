@@ -15,6 +15,7 @@ export type SyncLogCode =
   | 'AUTH_CHECK'
   | 'AUTH_OK'
   | 'AUTH_STALE'
+  | 'AUTH_FAIL'
   | 'NETWORK_OFFLINE'
   | 'NETWORK_ONLINE'
   | 'TIMEOUT_ABORTED'
@@ -56,7 +57,8 @@ const SNAPSHOT: SyncSnapshot = {
   isFlushing: false,
   queueCount: 0,
   lastCloudOkAt: null,
-  lastCloudErr: null,
+  // Initialize from storage to ensure error persists across reloads until solved
+  lastCloudErr: typeof localStorage !== 'undefined' ? localStorage.getItem('sproutly_last_sync_err') : null,
   lastSessionOkAt: null,
   lastSessionErr: null,
   lastSaveAttemptAt: null,
@@ -97,6 +99,16 @@ export const syncInspector = {
 
   updateSnapshot: (updates: Partial<SyncSnapshot>) => {
     Object.assign(SNAPSHOT, updates);
+    
+    // Persist error state to localStorage so it survives hard refreshes
+    if (updates.lastCloudErr !== undefined) {
+        if (updates.lastCloudErr) {
+            localStorage.setItem('sproutly_last_sync_err', updates.lastCloudErr);
+        } else {
+            localStorage.removeItem('sproutly_last_sync_err');
+        }
+    }
+
     dispatchSnapshot();
   },
 

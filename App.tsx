@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from './contexts/AuthContext';
 import { useClient } from './contexts/ClientContext';
@@ -38,7 +39,7 @@ import DisclaimerTab from './features/disclaimer/DisclaimerTab';
 import AiAssistant from './features/ai-chat/AiAssistant';
 
 const App: React.FC = () => {
-  const { user, isLoading: isAuthLoading } = useAuth();
+  const { user, isLoading: isAuthLoading, isRecoveryMode } = useAuth();
   const { 
     clientId, generateClientObject, loadClient, promoteToSaved, resetClient,
     setChatHistory 
@@ -48,7 +49,9 @@ const App: React.FC = () => {
   const [clients, setClients] = useState<Client[]>(() => {
     try {
       const local = localStorage.getItem(DB_KEYS.CLIENTS);
-      return local ? JSON.parse(local) : [];
+      const parsed = local ? JSON.parse(local) : [];
+      // Filter out ghosts on initial load
+      return parsed.filter((c: Client) => c.profile?.name || c.name || c.company || c.phone);
     } catch (e) {
       return [];
     }
@@ -60,10 +63,49 @@ const App: React.FC = () => {
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [lastSavedTime, setLastSavedTime] = useState<Date | null>(null);
 
-  // Sync Recovery Hook
-  useSyncRecovery(user?.id, () => {
+  const refreshClients = useCallback(async () => {
+    if (user) {
+      const data = await db.getClients(user.id);
+      // Filter out ghosts from DB fetch
+      const validClients = data.filter(c => c.profile?.name || c.name || c.company || c.phone);
+      
+      // Update state with fresh data
+      setClients(validClients);
+    }
+  }, [user]);
+
+  // Handle password recovery mode
+  useEffect(() => {
+    if (isRecoveryMode) {
+      setIsAuthModalOpen(true);
+    }
+  }, [isRecoveryMode]);
+
+  // Sync Recovery Hook with Visual Feedback
+  // Wrapped in useCallback with STABLE dependencies to prevent the hook from resetting locks on every render
+  const handleRecovery = useCallback((source: string) => {
+      const queueCount = db.getQueueCount();
+      
+      // VISUAL FEEDBACK: Provide reassurance when returning from background
+      if (source === 'visibility_immediate' || source === 'time_jump_detected') {
+          console.log(`⚡ App Woke Up (${source})`);
+          // Force UI refresh if we have pending items OR just generally to be safe
+          if (queueCount > 0) {
+             toast.info(`⚡ Resuming Sync (${queueCount} items)...`);
+          } else {
+             // Subtle indicator that system is live
+             // toast.info("⚡ System Active");
+          }
+      } else if (queueCount > 0 && source === 'network_online') {
+          toast.info("⚡ Online: Resuming Sync...");
+      }
+      
+      // Force data refresh from cloud to ensure we see any changes that might have happened
+      // while we were backgrounded (or if the previous sync succeeded but UI didn't update)
       refreshClients();
-  });
+  }, [refreshClients]);
+
+  useSyncRecovery(user?.id, handleRecovery);
 
   // Access Guard: If current tab is blocked, force navigate to CRM
   useEffect(() => {
@@ -72,27 +114,29 @@ const App: React.FC = () => {
     }
   }, [user, activeTab]);
 
-  const refreshClients = useCallback(async () => {
-    if (user) {
-      const data = await db.getClients(user.id);
-      if (data.length > 0 || clients.length === 0) {
-        setClients(data);
-      }
-    }
-  }, [user, clients.length]);
-
   useEffect(() => {
     if (user) refreshClients();
   }, [user, refreshClients]);
 
   const handleSave = async () => {
     if (!user) {
-        // Only prompt login if explicitly trying to save (auto-save shouldn't block UI if not logged in, but here we assume user is logged in for AutoSaver to run)
         return;
     }
+    
+    const clientObj = generateClientObject();
+
+    // GHOST GUARD: Strictly prevent saving empty records
+    const hasIdentity = 
+        (clientObj.profile.name && clientObj.profile.name.trim() !== '') || 
+        (clientObj.profile.phone && clientObj.profile.phone.trim() !== '') || 
+        (clientObj.company && clientObj.company.trim() !== '');
+
+    if (!hasIdentity) {
+        return;
+    }
+
     setSaveStatus('saving');
     try {
-      const clientObj = generateClientObject();
       const savedClient = await db.saveClient(clientObj, user.id);
       
       setClients(prev => {
@@ -111,7 +155,6 @@ const App: React.FC = () => {
       setTimeout(() => setSaveStatus('idle'), 3000);
     } catch (e) {
       setSaveStatus('error');
-      // Quiet fail on autosave to not annoy user, or use a subtle toast
       console.error("Sync Error", e);
     }
   };
@@ -180,6 +223,15 @@ const App: React.FC = () => {
     >
       <AutoSaver onSave={handleSave} />
       {renderTab()}
+      {/* 
+        This AuthModal instance serves as the "Password Reset" handler when user is logged in (via reset link).
+        It forces 'update_password' view if isRecoveryMode is true.
+      */}
+      <AuthModal 
+        isOpen={isAuthModalOpen} 
+        onClose={() => setIsAuthModalOpen(false)} 
+        defaultView={isRecoveryMode ? 'update_password' : 'login'}
+      />
       <PricingModal isOpen={isPricingModalOpen} onClose={() => setIsPricingModalOpen(false)} />
       <AiAssistant currentClient={clients.find(c => c.id === clientId) || null} />
     </AppShell>
