@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import Modal from '../../../components/ui/Modal';
 import Button from '../../../components/ui/Button';
@@ -328,13 +327,15 @@ const DbRepairModal: React.FC<DbRepairModalProps> = ({ isOpen, onClose }) => {
 
       // STEP 1: Check Security Function (Fast Read)
       if (isMountedRef.current) setStatusText("1/5 Checking Security Protocols...");
-      const { error: rpcError } = await withTimeout(supabase.rpc('check_is_admin') as Promise<any>, 3000) as any;
+      // FIX: Added intermediate 'unknown' cast to satisfy TypeScript during Promise conversion
+      const { error: rpcError } = await withTimeout((supabase.rpc('check_is_admin') as unknown) as Promise<any>, 3000) as any;
       if (rpcError) throw new Error(`Security RPC Broken: ${rpcError.message}`);
 
       // STEP 2: Read Profile (Select)
       if (isMountedRef.current) setStatusText("2/5 Simulating Profile Load...");
+      // FIX: Added intermediate 'unknown' cast to satisfy TypeScript during Promise conversion
       const { error: profileError } = await withTimeout(
-          supabase.from('profiles').select('id').limit(1).single() as Promise<any>
+          (supabase.from('profiles').select('id').limit(1).single() as unknown) as Promise<any>
       , 5000) as any;
       
       if (profileError) {
@@ -346,8 +347,9 @@ const DbRepairModal: React.FC<DbRepairModalProps> = ({ isOpen, onClose }) => {
 
       // STEP 3: Write Profile (Update) - Critical for recursion in UPDATE policies
       if (isMountedRef.current) setStatusText("3/5 Verifying Profile Write...");
+      // FIX: Added intermediate 'unknown' cast to satisfy TypeScript during Promise conversion
       const { error: writeProfileError } = await withTimeout(
-          supabase.from('profiles').update({ updated_at: new Date().toISOString() }).eq('id', userId) as Promise<any>
+          (supabase.from('profiles').update({ updated_at: new Date().toISOString() }).eq('id', userId) as unknown) as Promise<any>
       , 5000) as any;
       if (writeProfileError) {
           if (writeProfileError.message.includes('recursion') || writeProfileError.message.includes('stack depth')) {
@@ -359,12 +361,13 @@ const DbRepairModal: React.FC<DbRepairModalProps> = ({ isOpen, onClose }) => {
       // STEP 4: Write Client (Insert & Delete) - Critical for "Save to Supabase"
       if (isMountedRef.current) setStatusText("4/5 Verifying Client Sync...");
       const dummyId = '00000000-0000-0000-0000-000000000000'; 
+      // FIX: Added intermediate 'unknown' cast to satisfy TypeScript during Promise conversion
       const { error: writeClientError } = await withTimeout(
-          supabase.from('clients').upsert({ 
+          (supabase.from('clients').upsert({ 
               id: dummyId,
               user_id: userId, 
               data: { name: 'Health Check Probe' }
-          }) as Promise<any>
+          }) as unknown) as Promise<any>
       , 5000) as any;
 
       if (writeClientError) {

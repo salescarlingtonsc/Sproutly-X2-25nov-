@@ -1,11 +1,11 @@
-
 import React, { useEffect, useRef } from 'react';
 import { useClient } from '../../contexts/ClientContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { syncInspector } from '../../lib/syncInspector';
 
 interface AutoSaverProps {
-  onSave: () => void;
+  // Updated interface to allow for asynchronous save handlers
+  onSave: () => void | Promise<void>;
 }
 
 const AutoSaver: React.FC<AutoSaverProps> = ({ onSave }) => {
@@ -70,7 +70,14 @@ const AutoSaver: React.FC<AutoSaverProps> = ({ onSave }) => {
                 syncInspector.log('warn', 'LOCAL_WRITE', 'Forced save due to backgrounding');
                 clearTimeout(timeoutRef.current);
                 timeoutRef.current = null;
-                onSaveRef.current();
+                // handleSave is async, catch it here as it's a floating promise now
+                try {
+                    // FIX: Explicitly cast to any to handle void vs Promise check without TS errors
+                    const result: any = onSaveRef.current();
+                    if (result && result instanceof Promise) {
+                        result.catch(() => {});
+                    }
+                } catch (e) {}
             }
         }
     };

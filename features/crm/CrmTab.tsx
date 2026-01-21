@@ -1,3 +1,4 @@
+
 import React, { useState, useMemo, useEffect } from 'react';
 import { Client, Product, WhatsAppTemplate, ContactStatus, Sale } from '../../types';
 import { AnalyticsPanel } from './components/AnalyticsPanel';
@@ -326,7 +327,7 @@ const CrmTab: React.FC<CrmTabProps> = ({
                             <input type="checkbox" checked={selectedIds.has(client.id)} onChange={() => handleToggleSelect(client.id)} className="w-5 h-5 rounded border-slate-300 text-indigo-600 cursor-pointer shadow-sm" />
                         </div>
                         <div className={selectedIds.has(client.id) ? 'ring-2 ring-indigo-500 rounded-xl' : ''}>
-                            <ClientCard client={client} products={products} onUpdate={onUpdateGlobalClient} currentUser={user} onDelete={async (id) => { const c = await confirm({title:"Delete?", message:"Permanently remove lead?"}); if(c) deleteClient(id); }} onAddSale={() => setActiveSaleClient(client)} />
+                            <ClientCard client={client} products={products} onUpdate={onUpdateGlobalClient} currentUser={user} onDelete={async (id) => { const c = await confirm({title:"Delete?", message:"Permanently remove lead?"}); if(c) await deleteClient(id).catch(() => {}); }} onAddSale={() => setActiveSaleClient(client)} />
                         </div>
                     </div>
                 ))}
@@ -356,12 +357,12 @@ const CrmTab: React.FC<CrmTabProps> = ({
                                    return (
                                        <React.Fragment key={statusKey}>
                                            <tr className="bg-slate-50/80"><td colSpan={showAdvisorCol ? 8 : 7} className="px-4 py-2 border-y border-slate-200/50"><div className="flex items-center gap-2"><span className={`text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded ${config.bg} ${config.text}`}>{config.label}</span><span className="text-xs text-slate-400 font-bold">{group.length}</span></div></td></tr>
-                                           {group.map(client => <ClientRow key={client.id} client={client} isSelected={selectedIds.has(client.id)} onToggle={() => handleToggleSelect(client.id)} onClick={() => setActiveDetailClient(client)} onStatusUpdate={handleStatusChange} onWhatsApp={() => setActiveWhatsAppClient(client)} onRecordSale={() => setActiveSaleClient(client)} onLoadProfile={() => loadClient(client, true)} onDelete={async () => { const c = await confirm({title:"Delete?", message:"Permanently remove lead?"}); if(c) deleteClient(client.id); }} canDelete={true} advisorName={advisorMap[client.advisorId || client._ownerId || ''] || client._ownerEmail} showAdvisor={showAdvisorCol} />)}
+                                           {group.map(client => <ClientRow key={client.id} client={client} isSelected={selectedIds.has(client.id)} onToggle={() => handleToggleSelect(client.id)} onClick={() => setActiveDetailClient(client)} onStatusUpdate={handleStatusChange} onWhatsApp={() => setActiveWhatsAppClient(client)} onRecordSale={() => setActiveSaleClient(client)} onLoadProfile={() => loadClient(client, true)} onDelete={async () => { const c = await confirm({title:"Delete?", message:"Permanently remove lead?"}); if(c) await deleteClient(client.id).catch(() => {}); }} canDelete={true} advisorName={advisorMap[client.advisorId || client._ownerId || ''] || client._ownerEmail} showAdvisor={showAdvisorCol} />)}
                                        </React.Fragment>
                                    );
                                })
                            ) : (
-                               filteredClients.map(client => <ClientRow key={client.id} client={client} isSelected={selectedIds.has(client.id)} onToggle={() => handleToggleSelect(client.id)} onClick={() => setActiveDetailClient(client)} onStatusUpdate={handleStatusChange} onWhatsApp={() => setActiveWhatsAppClient(client)} onRecordSale={() => setActiveSaleClient(client)} onLoadProfile={() => loadClient(client, true)} onDelete={async () => { const c = await confirm({title:"Delete?", message:"Permanently remove lead?"}); if(c) deleteClient(client.id); }} canDelete={true} advisorName={advisorMap[client.advisorId || client._ownerId || ''] || client._ownerEmail} showAdvisor={showAdvisorCol} />)
+                               filteredClients.map(client => <ClientRow key={client.id} client={client} isSelected={selectedIds.has(client.id)} onToggle={() => handleToggleSelect(client.id)} onClick={() => setActiveDetailClient(client)} onStatusUpdate={handleStatusChange} onWhatsApp={() => setActiveWhatsAppClient(client)} onRecordSale={() => setActiveSaleClient(client)} onLoadProfile={() => loadClient(client, true)} onDelete={async () => { const c = await confirm({title:"Delete?", message:"Permanently remove lead?"}); if(c) await deleteClient(client.id).catch(() => {}); }} canDelete={true} advisorName={advisorMap[client.advisorId || client._ownerId || ''] || client._ownerEmail} showAdvisor={showAdvisorCol} />)
                            )}
                        </tbody>
                    </table>
@@ -386,7 +387,7 @@ const CrmTab: React.FC<CrmTabProps> = ({
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[100] flex justify-center p-4 animate-fade-in overflow-y-auto" onClick={() => setActiveDetailClient(null)}>
             <div className="w-full max-w-2xl min-h-0 h-fit my-auto animate-scale-in flex flex-col" onClick={e => e.stopPropagation()}>
                  <div className="bg-white rounded-xl shadow-2xl overflow-hidden flex flex-col max-h-[90dvh]">
-                    <ClientCard client={activeDetailClient} products={products} onUpdate={(c) => { onUpdateGlobalClient(c); setActiveDetailClient(c); }} currentUser={user} onDelete={async (id) => { const c = await confirm({title:"Delete?", message:"Permanently remove lead?"}); if(c) { deleteClient(id); setActiveDetailClient(null); } }} onAddSale={() => setActiveSaleClient(activeDetailClient)} onClose={() => setActiveDetailClient(null)} />
+                    <ClientCard client={activeDetailClient} products={products} onUpdate={(c) => { onUpdateGlobalClient(c); setActiveDetailClient(c); }} currentUser={user} onDelete={async (id) => { const c = await confirm({title:"Delete?", message:"Permanently remove lead?"}); if(c) { await deleteClient(id).catch(() => {}); setActiveDetailClient(null); } }} onAddSale={() => setActiveSaleClient(activeDetailClient)} onClose={() => setActiveDetailClient(null)} />
                  </div>
             </div>
         </div>

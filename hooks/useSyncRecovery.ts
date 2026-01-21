@@ -1,3 +1,4 @@
+
 import { useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { db } from '../lib/db';
@@ -43,22 +44,23 @@ export const useSyncRecovery = (userId?:  string, onRecovery?: (source: string) 
 
       if (onRecovery) onRecovery(source);
 
-      db.flushCloudQueue(userId);
-      setTimeout(() => { if (db.getQueueCount() > 0) db.flushCloudQueue(userId); }, 1000);
-      setTimeout(() => { if (db.getQueueCount() > 0) db.flushCloudQueue(userId); }, 3000);
+      // SILENT CATCH: Background triggers must not bubble AbortErrors to UI
+      db.flushCloudQueue(userId).catch(() => {});
+      setTimeout(() => { if (db.getQueueCount() > 0) db.flushCloudQueue(userId).catch(() => {}); }, 1000);
+      setTimeout(() => { if (db.getQueueCount() > 0) db.flushCloudQueue(userId).catch(() => {}); }, 3000);
     };
 
     const queueRecovery = (source: string) => {
         if (debounceRef.current) clearTimeout(debounceRef.current);
         debounceRef. current = setTimeout(() => {
-            executeRecovery(source);
+            executeRecovery(source).catch(() => {});
             debounceRef.current = null;
         }, 500);
     };
 
     if (userId && ! hasBootedRef.current) {
         hasBootedRef.current = true;
-        executeRecovery('app_mount');
+        executeRecovery('app_mount').catch(() => {});
     }
 
     const handleFocus = () => queueRecovery('window_focus');
@@ -68,7 +70,7 @@ export const useSyncRecovery = (userId?:  string, onRecovery?: (source: string) 
     const handleVisibility = () => {
         if (document.visibilityState === 'visible') {
             if (debounceRef.current) clearTimeout(debounceRef.current);
-            executeRecovery('visibility_immediate');
+            executeRecovery('visibility_immediate').catch(() => {});
         }
     };
 
@@ -83,9 +85,9 @@ export const useSyncRecovery = (userId?:  string, onRecovery?: (source: string) 
         
         if (diff > 3000) {
             if (debounceRef.current) clearTimeout(debounceRef.current);
-            executeRecovery('time_jump_detected');
+            executeRecovery('time_jump_detected').catch(() => {});
         } else if (db.getQueueCount() > 0 && ! db.isFlushing()) {
-            if (userId) db.flushCloudQueue(userId);
+            if (userId) db.flushCloudQueue(userId).catch(() => {});
         }
         
         lastTickRef.current = now;
