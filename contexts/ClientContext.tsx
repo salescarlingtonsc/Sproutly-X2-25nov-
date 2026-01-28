@@ -169,6 +169,7 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     setClientId(c.id);
     setClientRef(c.referenceCode || null);
     setLastUpdated(c.lastUpdated);
+    // Hardened Load: Ensure followUp exists
     const safeFollowUp = c.followUp || { status: 'new' };
     if (c.value && !safeFollowUp.dealValue) safeFollowUp.dealValue = c.value.toString();
     setFollowUp(safeFollowUp);
@@ -241,7 +242,10 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const generateClientObject = (): Client => {
     if (!user) throw new Error("CRITICAL: Cannot save without active user session.");
     
-    const derivedStage = STATUS_TO_STAGE[followUp.status] || followUp.status || 'New Lead';
+    // HARDENED GENERATION: Ensure followUp exists
+    const safeFollowUp = followUp || { status: 'new' };
+    const derivedStage = STATUS_TO_STAGE[safeFollowUp.status] || safeFollowUp.status || 'New Lead';
+    
     const finalId = clientId || draftId.current;
     
     // Safety check: if draftId was somehow malformed, regenerate it
@@ -269,7 +273,7 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       insuranceState,
       nineBoxState,
       lastUpdated: new Date().toISOString(),
-      followUp,
+      followUp: safeFollowUp,
       appointments,
       documents,
       _ownerId: ownerId || user.id,
@@ -282,9 +286,9 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       retirementAge: toNum(profile.retirementAge),
       tags: profile.tags || [],
       stage: derivedStage,
-      priority: followUp.priority || 'Medium',
-      value: toNum(followUp.dealValue),
-      lastContact: followUp.lastContactedAt || '',
+      priority: safeFollowUp.priority || 'Medium',
+      value: toNum(safeFollowUp.dealValue),
+      lastContact: safeFollowUp.lastContactedAt || '',
       firstApptDate: appointments.firstApptDate,
       company: crmState.company,
       platform: crmState.platform,

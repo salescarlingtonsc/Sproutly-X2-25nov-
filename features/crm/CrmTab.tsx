@@ -92,6 +92,21 @@ const CrmTab: React.FC<CrmTabProps> = ({
 
   const isAdmin = user?.role === 'admin' || user?.is_admin === true || user?.role === 'director';
 
+  // --- FRONT-END FIREWALL: SANITIZE RAW CLIENTS IMMEDIATELY ---
+  const sanitizedClients = useMemo(() => {
+      return (clients || []).map(c => {
+          if (!c) return null;
+          // Force inject missing objects to prevent "undefined is not an object"
+          return {
+              ...c,
+              followUp: c.followUp || { status: 'new' }, 
+              profile: c.profile || { name: 'Unknown', email: '', phone: '' },
+              appointments: c.appointments || {},
+              notes: c.notes || []
+          };
+      }).filter(c => c !== null) as Client[];
+  }, [clients]);
+
   useEffect(() => {
     const resolveNames = async () => {
         if (!supabase) return;
@@ -113,9 +128,7 @@ const CrmTab: React.FC<CrmTabProps> = ({
 
   const availableAdvisors = useMemo(() => {
     const map = new Map<string, string>();
-    clients.forEach(c => {
-      // Defensive check for malformed client object
-      if (!c) return;
+    sanitizedClients.forEach(c => {
       const ownerId = c.advisorId || c._ownerId;
       if (ownerId) {
          let label = advisorMap[ownerId] || c._ownerEmail || `Advisor ${ownerId.substring(0, 4)}`;
@@ -123,7 +136,7 @@ const CrmTab: React.FC<CrmTabProps> = ({
       }
     });
     return Array.from(map.entries()).map(([id, name]) => ({ id, name })).sort((a,b) => a.name.localeCompare(b.name));
-  }, [clients, advisorMap]);
+  }, [sanitizedClients, advisorMap]);
 
   const showAdvisorCol = availableAdvisors.length > 1;
 
@@ -136,11 +149,11 @@ const CrmTab: React.FC<CrmTabProps> = ({
   }, [user?.organizationId]);
 
   useEffect(() => {
-    if (selectedClientId && clients.length > 0) {
-        const matchedClient = clients.find(c => c && c.id === selectedClientId);
+    if (selectedClientId && sanitizedClients.length > 0) {
+        const matchedClient = sanitizedClients.find(c => c.id === selectedClientId);
         if (matchedClient) setActiveDetailClient(matchedClient);
     }
-  }, [selectedClientId, clients]);
+  }, [selectedClientId, sanitizedClients]);
 
   const handleClearFilters = () => {
       setSearchTerm('');
@@ -165,10 +178,8 @@ const CrmTab: React.FC<CrmTabProps> = ({
   };
 
   const filteredClients = useMemo(() => {
-    let filtered = clients.filter(client => {
-      // STRICT HARDENING: Skip null/undefined clients
-      if (!client) return false;
-
+    let filtered = sanitizedClients.filter(client => {
+      // Access is safe here due to sanitizedClients firewall
       const name = client.name || client.profile?.name || '';
       const company = client.company || '';
       const phone = client.phone || client.profile?.phone || '';
@@ -178,7 +189,7 @@ const CrmTab: React.FC<CrmTabProps> = ({
                             phone.includes(searchTerm) ||
                             (client.tags || []).some(t => t.toLowerCase().includes(searchTerm.toLowerCase()));
       
-      // DEFENIVE PIPELINE ACCESS
+      // OPTIONAL CHAINING GUARD ADDED
       const currentStatus = client.followUp?.status || client.stage || 'new';
       const matchesStage = stageFilter === 'All' || currentStatus === stageFilter || client.stage === stageFilter;
       const effectiveOwner = client.advisorId || client._ownerId;
@@ -194,9 +205,6 @@ const CrmTab: React.FC<CrmTabProps> = ({
 
     if (sortConfig.key) {
         filtered.sort((a, b) => {
-            // Safety Check
-            if (!a || !b) return 0;
-
             let aVal: any = '';
             let bVal: any = '';
             switch (sortConfig.key) {
@@ -211,6 +219,7 @@ const CrmTab: React.FC<CrmTabProps> = ({
                     bVal = (advisorMap[bId] || b._ownerEmail || '').toLowerCase();
                     break;
                 case 'stage':
+                    // OPTIONAL CHAINING GUARD ADDED
                     aVal = (a.stage || a.followUp?.status || '').toLowerCase();
                     bVal = (b.stage || b.followUp?.status || '').toLowerCase();
                     break;
@@ -231,7 +240,7 @@ const CrmTab: React.FC<CrmTabProps> = ({
         });
     }
     return filtered;
-  }, [clients, searchTerm, stageFilter, advisorFilter, momentumFilter, sortConfig, advisorMap]);
+  }, [sanitizedClients, searchTerm, stageFilter, advisorFilter, momentumFilter, sortConfig, advisorMap]);
 
   // Virtual Pagination Slice
   const visibleClients = useMemo(() => {
@@ -246,8 +255,7 @@ const CrmTab: React.FC<CrmTabProps> = ({
     STATUS_ORDER.forEach(s => groups[s] = []);
     groups['other'] = [];
     visibleClients.forEach(c => {
-        // STRICT HARDENING: Skip missing or malformed records
-        if (!c) return;
+        // OPTIONAL CHAINING GUARD ADDED
         const status = c.followUp?.status || 'new';
         if (groups[status]) groups[status].push(c);
         else groups['other'].push(c);
@@ -292,12 +300,12 @@ const CrmTab: React.FC<CrmTabProps> = ({
       const now = new Date().toISOString();
       const newStageName = STATUS_CONFIG[newStatus]?.label || client.stage || 'New Lead';
       
-      // HARDENED INITIALIZATION of followUp if missing
       const updatedClient = {
           ...client,
           stage: newStageName,
           lastContact: now,
           lastUpdated: now,
+          // OPTIONAL CHAINING GUARD ADDED
           followUp: { ...(client.followUp || { status: 'new' }), status: newStatus, lastContactedAt: now },
           notes: [{ id: `sys_${Date.now()}`, content: `Stage updated: ${client.stage || 'New'} ➔ ${newStageName}`, date: now, author: 'System' }, ...(client.notes || [])]
       };
@@ -309,11 +317,12 @@ const CrmTab: React.FC<CrmTabProps> = ({
   return (
     <div className="p-6 md:p-8 animate-fade-in pb-24 md:pb-8 relative">
       <AnalyticsPanel 
-        clients={clients}
+        clients={sanitizedClients} // Pass sanitized clients to analytics
         advisorFilter={advisorFilter}
         setAdvisorFilter={setAdvisorFilter}
         availableAdvisors={availableAdvisors}
         onStageClick={(stage) => setStageFilter(stage)}
+        onMomentumClick={(range) => setMomentumFilter(range)}
       />
 
       <div className="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">

@@ -145,7 +145,7 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
           const statusKey = REVERSE_STATUS_MAP[val] || val;
           const logEntry = { id: `sys_${now.getTime()}`, content: `Stage updated: ${client.stage || 'New'} ➔ ${val}`, date: now.toISOString(), author: 'System' };
           // FIX: Ensure followUp exists before spreading
-          onUpdate({ ...client, stage: val, followUp: { ...(client.followUp || {}), status: statusKey as ContactStatus, lastContactedAt: now.toISOString() }, notes: [logEntry, ...(client.notes || [])], lastUpdated: now.toISOString() });
+          onUpdate({ ...client, stage: val, followUp: { ...(client.followUp || {status: 'new'}), status: statusKey as ContactStatus, lastContactedAt: now.toISOString() }, notes: [logEntry, ...(client.notes || [])], lastUpdated: now.toISOString() });
           logActivity(client.id, 'status_change', `Stage changed to ${val}`);
       } else {
           onUpdate({ ...client, [field]: val });
