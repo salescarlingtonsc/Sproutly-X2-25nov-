@@ -117,6 +117,7 @@ const DashboardTab: React.FC<DashboardTabProps> = ({ user, clients, onLoadClient
   const kpiStats = useMemo(() => {
       // Aggressive safety filter for active leads
       const activeLeads = filteredClients.filter(c => {
+          // STRICT OPTIONAL CHAINING TO PREVENT CRASH
           const status = c.followUp?.status || c.stage || 'new';
           return !['client', 'case_closed', 'not_keen'].includes(status.toLowerCase());
       });

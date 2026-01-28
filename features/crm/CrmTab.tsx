@@ -189,7 +189,7 @@ const CrmTab: React.FC<CrmTabProps> = ({
                             phone.includes(searchTerm) ||
                             (client.tags || []).some(t => t.toLowerCase().includes(searchTerm.toLowerCase()));
       
-      // OPTIONAL CHAINING GUARD ADDED
+      // STRICT OPTIONAL CHAINING
       const currentStatus = client.followUp?.status || client.stage || 'new';
       const matchesStage = stageFilter === 'All' || currentStatus === stageFilter || client.stage === stageFilter;
       const effectiveOwner = client.advisorId || client._ownerId;
@@ -219,7 +219,7 @@ const CrmTab: React.FC<CrmTabProps> = ({
                     bVal = (advisorMap[bId] || b._ownerEmail || '').toLowerCase();
                     break;
                 case 'stage':
-                    // OPTIONAL CHAINING GUARD ADDED
+                    // STRICT OPTIONAL CHAINING
                     aVal = (a.stage || a.followUp?.status || '').toLowerCase();
                     bVal = (b.stage || b.followUp?.status || '').toLowerCase();
                     break;
@@ -255,7 +255,7 @@ const CrmTab: React.FC<CrmTabProps> = ({
     STATUS_ORDER.forEach(s => groups[s] = []);
     groups['other'] = [];
     visibleClients.forEach(c => {
-        // OPTIONAL CHAINING GUARD ADDED
+        // STRICT OPTIONAL CHAINING
         const status = c.followUp?.status || 'new';
         if (groups[status]) groups[status].push(c);
         else groups['other'].push(c);
@@ -305,7 +305,7 @@ const CrmTab: React.FC<CrmTabProps> = ({
           stage: newStageName,
           lastContact: now,
           lastUpdated: now,
-          // OPTIONAL CHAINING GUARD ADDED
+          // STRICT OPTIONAL CHAINING IN SPREAD
           followUp: { ...(client.followUp || { status: 'new' }), status: newStatus, lastContactedAt: now },
           notes: [{ id: `sys_${Date.now()}`, content: `Stage updated: ${client.stage || 'New'} ➔ ${newStageName}`, date: now, author: 'System' }, ...(client.notes || [])]
       };
