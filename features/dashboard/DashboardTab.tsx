@@ -1,4 +1,3 @@
-
 import React, { useState, useMemo } from 'react';
 import { Client, Product, Benchmarks, UserProfile } from '../../types';
 import { PieChart, Pie, Legend, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
@@ -116,7 +115,12 @@ const DashboardTab: React.FC<DashboardTabProps> = ({ user, clients, onLoadClient
 
   // --- TOP LEVEL KPI BLOCK ---
   const kpiStats = useMemo(() => {
-      const activeLeads = filteredClients.filter(c => !['client', 'case_closed', 'not_keen'].includes(c.followUp?.status || ''));
+      // Aggressive safety filter for active leads
+      const activeLeads = filteredClients.filter(c => {
+          const status = c.followUp?.status || c.stage || 'new';
+          return !['client', 'case_closed', 'not_keen'].includes(status.toLowerCase());
+      });
+      
       const totalExpRevenue = filteredClients.reduce((acc, c) => acc + (toNum(c.value) || 0), 0);
       const avgDealValue = activeLeads.length > 0 ? totalExpRevenue / activeLeads.length : 0;
       const actionableOpps = filteredClients.filter(c => (c.momentumScore || 0) > 70).length;

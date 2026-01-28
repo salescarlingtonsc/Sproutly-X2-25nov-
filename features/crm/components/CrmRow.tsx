@@ -227,7 +227,8 @@ const CrmRow: React.FC<CrmRowProps> = memo(({
                   <EditableCell 
                     value={cellValue} type={col.type} isActive={isActive} isEditing={isEditing}
                     onEditStart={() => onSetEditing(client.id, col.id)}
-                    onStopEditing={onStopEditing}
+                    /* Corrected prop name from onStopEditing to onEditStop */
+                    onEditStop={onStopEditing}
                     onChange={(v) => onUpdate(client.id, col.field, v, col.section)} 
                   />
                )}

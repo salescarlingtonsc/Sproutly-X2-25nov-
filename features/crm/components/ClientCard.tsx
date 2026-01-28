@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useCallback, memo } from 'react';
 import { Client, FamilyMember, Policy, UserProfile, Sale, Product, ContactStatus } from '../../../types';
 import { analyzeClientMomentum, generateInvestmentReport, polishContent } from '../../../lib/gemini';
@@ -129,8 +128,8 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
           return;
       }
       if (field === 'nextFollowUpDate') {
-          // FIX: Ensure followUp exists before spreading
-          onUpdate({ ...client, followUp: { ...(client.followUp || {}), nextFollowUpDate: val } });
+          /* Fixed: Ensure 'status' is preserved when spreading to satisfy the required 'status' property on followUp */
+          onUpdate({ ...client, followUp: { status: client.followUp?.status || 'new', ...client.followUp, nextFollowUpDate: val } });
           return;
       }
       if (field === 'firstApptDate') {
@@ -267,7 +266,7 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
             {onClose && (
               <button 
                 onClick={onClose} 
-                className="text-slate-400 hover:text-white hover:bg-slate-500 p-2 rounded-lg transition-all border border-transparent hover:border-slate-600 flex items-center justify-center h-8 w-8"
+                className="text-slate-400 hover:text-white hover:bg-slate-500 p-2 rounded-lg transition-all border border-transparent hover:border-rose-600 flex items-center justify-center h-8 w-8"
                 title="Close Card"
               >
                 ✕

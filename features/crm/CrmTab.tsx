@@ -173,7 +173,8 @@ const CrmTab: React.FC<CrmTabProps> = ({
                             phone.includes(searchTerm) ||
                             (client.tags || []).some(t => t.toLowerCase().includes(searchTerm.toLowerCase()));
       
-      const currentStatus = client.followUp?.status || client.stage || '';
+      // DEFENIVE PIPELINE ACCESS
+      const currentStatus = client.followUp?.status || client.stage || 'new';
       const matchesStage = stageFilter === 'All' || currentStatus === stageFilter || client.stage === stageFilter;
       const effectiveOwner = client.advisorId || client._ownerId;
       const matchesAdvisor = advisorFilter === 'All' || effectiveOwner === advisorFilter;
@@ -237,6 +238,7 @@ const CrmTab: React.FC<CrmTabProps> = ({
     STATUS_ORDER.forEach(s => groups[s] = []);
     groups['other'] = [];
     visibleClients.forEach(c => {
+        // DEFENSIVE ACCESS
         const status = c.followUp?.status || 'new';
         if (groups[status]) groups[status].push(c);
         else groups['other'].push(c);
@@ -279,13 +281,15 @@ const CrmTab: React.FC<CrmTabProps> = ({
 
   const handleStatusChange = (client: Client, newStatus: ContactStatus) => {
       const now = new Date().toISOString();
-      const newStageName = STATUS_CONFIG[newStatus]?.label || client.stage;
+      const newStageName = STATUS_CONFIG[newStatus]?.label || client.stage || 'New Lead';
+      
+      // HARDENED INITIALIZATION of followUp if missing
       const updatedClient = {
           ...client,
           stage: newStageName,
           lastContact: now,
           lastUpdated: now,
-          followUp: { ...client.followUp, status: newStatus, lastContactedAt: now },
+          followUp: { ...(client.followUp || { status: 'new' }), status: newStatus, lastContactedAt: now },
           notes: [{ id: `sys_${Date.now()}`, content: `Stage updated: ${client.stage || 'New'} ➔ ${newStageName}`, date: now, author: 'System' }, ...(client.notes || [])]
       };
       onUpdateGlobalClient(updatedClient);
@@ -524,7 +528,6 @@ const ClientRow: React.FC<{
             <td className="px-4 py-3" onClick={e => e.stopPropagation()}><input type="checkbox" checked={isSelected} onChange={onToggle} className="rounded border-slate-300 text-indigo-600 cursor-pointer" /></td>
             <td className="px-4 py-3"><div className="font-bold text-slate-800">{client.name}</div><div className="text-xs text-slate-400">{client.company}</div></td>
             {showAdvisor && <td className="px-4 py-3 text-xs font-medium text-slate-600 truncate max-w-[150px]">{advisorName || 'Unassigned'}</td>}
-            {/* Fix: changed 'onUpdate' to 'onStatusUpdate' as it is the correct prop received from destructuring on line 521 */}
             <td className="px-4 py-3" onClick={e => e.stopPropagation()}><StatusDropdown client={client} onUpdate={onStatusUpdate} /></td>
             <td className="px-4 py-3"><div className="text-sm font-bold text-slate-700">{client.momentumScore || 50}/100</div><div className="text-xs text-slate-400">${(client.value || 0).toLocaleString()}</div></td>
             <td className="px-4 py-3 text-xs text-slate-500"><div>📞 {client.phone || '-'}</div><div>✉️ {client.email || '-'}</div></td>
