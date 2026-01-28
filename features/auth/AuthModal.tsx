@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { isSupabaseConfigured, supabase } from '../../lib/supabase';
@@ -71,12 +70,8 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialError, de
         const { error } = await signInWithGoogle();
         if (error) throw error;
     } catch (err: any) {
-        if (!err.message?.includes('aborted') && !err.message?.includes('cancel')) {
-            setStatus('error');
-            setMessage(err.message || "Google Authentication Failed.");
-        } else {
-            setStatus('idle');
-        }
+        setStatus('error');
+        setMessage(err.message || "Google Authentication Failed.");
     }
   };
 
@@ -133,12 +128,8 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialError, de
             onClose();
         }
     } catch (err: any) {
-        if (!err.message?.includes('aborted') && !err.message?.includes('cancel')) {
-            setStatus('error');
-            setMessage(err.message || "An error occurred.");
-        } else {
-            setStatus('idle');
-        }
+        setStatus('error');
+        setMessage(err.message || "An error occurred.");
     }
   };
 

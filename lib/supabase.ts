@@ -37,9 +37,9 @@ const rawUrl =
   getEnv('NEXT_PUBLIC_SUPABASE_URL') ||
   'https://koibycgvdasjphceqmqo.supabase.co'; 
 
-export const SUPABASE_URL = rawUrl ? rawUrl.replace(/\/$/, '') : '';
+const SUPABASE_URL = rawUrl ? rawUrl.replace(/\/$/, '') : '';
 
-export const SUPABASE_ANON_KEY = 
+const SUPABASE_ANON_KEY = 
   getEnv('VITE_SUPABASE_ANON_KEY') || 
   getEnv('REACT_APP_SUPABASE_ANON_KEY') || 
   getEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY') ||

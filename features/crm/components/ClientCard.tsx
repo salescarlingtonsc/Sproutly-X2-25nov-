@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useCallback, memo } from 'react';
 import { Client, FamilyMember, Policy, UserProfile, Sale, Product, ContactStatus } from '../../../types';
 import { analyzeClientMomentum, generateInvestmentReport, polishContent } from '../../../lib/gemini';
@@ -95,12 +96,12 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
   const [editingSale, setEditingSale] = useState<Sale | null>(null);
   const [showClosureDeck, setShowClosureDeck] = useState(false);
   const [showWhatsApp, setShowWhatsApp] = useState(false);
-  const [showScriptGen, setShowScriptGen] = useState(false); 
+  const [showScriptGen, setShowScriptGen] = useState(false); // NEW
   const [waTemplates, setWaTemplates] = useState(DEFAULT_TEMPLATES);
   const [isPolishing, setIsPolishing] = useState(false);
 
   const isOwner = client._ownerId === currentUser?.id;
-  const canDeleteClient = currentUser?.email === 'sales.carlingtonsc@gmail.com' || currentUser?.role === 'admin' || currentUser?.is_admin === true || currentUser?.role === 'director';
+  const canDeleteClient = currentUser?.email === 'sales.carlingtonsc@gmail.com' || currentUser?.role === 'admin' || currentUser?.is_admin === true;
 
   const campaignTag = (client.tags || []).find(t => t.startsWith('Campaign: '));
   const campaignName = campaignTag ? campaignTag.replace('Campaign: ', '') : '';
@@ -128,24 +129,21 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
           return;
       }
       if (field === 'nextFollowUpDate') {
-          /* Fixed: Ensure 'status' is preserved when spreading to satisfy the required 'status' property on followUp */
-          onUpdate({ ...client, followUp: { status: client.followUp?.status || 'new', ...client.followUp, nextFollowUpDate: val } });
+          onUpdate({ ...client, followUp: { ...client.followUp, nextFollowUpDate: val } });
           return;
       }
       if (field === 'firstApptDate') {
-          // FIX: Ensure appointments exist before spreading
           onUpdate({ 
               ...client, 
               firstApptDate: val,
-              appointments: { ...(client.appointments || {}), firstApptDate: val }
+              appointments: { ...client.appointments, firstApptDate: val }
           });
           return;
       }
       if (field === 'stage' && val !== client.stage) {
           const statusKey = REVERSE_STATUS_MAP[val] || val;
           const logEntry = { id: `sys_${now.getTime()}`, content: `Stage updated: ${client.stage || 'New'} ➔ ${val}`, date: now.toISOString(), author: 'System' };
-          // FIX: Ensure followUp exists before spreading
-          onUpdate({ ...client, stage: val, followUp: { ...(client.followUp || {status: 'new'}), status: statusKey as ContactStatus, lastContactedAt: now.toISOString() }, notes: [logEntry, ...(client.notes || [])], lastUpdated: now.toISOString() });
+          onUpdate({ ...client, stage: val, followUp: { ...client.followUp, status: statusKey as ContactStatus, lastContactedAt: now.toISOString() }, notes: [logEntry, ...(client.notes || [])], lastUpdated: now.toISOString() });
           logActivity(client.id, 'status_change', `Stage changed to ${val}`);
       } else {
           onUpdate({ ...client, [field]: val });
@@ -254,19 +252,10 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
                 <div className={`text-xs font-bold px-2.5 py-0.5 rounded-full border ${getMomentumColor(client.momentumScore || 0)} mb-1`}>Score: {client.momentumScore || 0}</div>
                 <div className="flex gap-2 text-[9px] text-slate-400 font-bold uppercase tracking-tighter"><span>{(client.sales?.length || 0)} Sales</span><span>•</span><span>${(client.value || 0).toLocaleString()} Revenue</span></div>
             </div>
-            {canDeleteClient && onDelete && (
-                <button 
-                  onClick={(e) => { e.stopPropagation(); onDelete(client.id); }} 
-                  className="text-slate-400 hover:text-white hover:bg-rose-500 p-2 rounded-lg transition-all border border-transparent hover:border-rose-600 flex items-center justify-center h-8 w-8 mr-1"
-                  title="Delete Client"
-                >
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-                </button>
-            )}
             {onClose && (
               <button 
                 onClick={onClose} 
-                className="text-slate-400 hover:text-white hover:bg-slate-500 p-2 rounded-lg transition-all border border-transparent hover:border-rose-600 flex items-center justify-center h-8 w-8"
+                className="text-slate-400 hover:text-white hover:bg-rose-500 p-2 rounded-lg transition-all border border-transparent hover:border-rose-600 flex items-center justify-center h-8 w-8"
                 title="Close Card"
               >
                 ✕

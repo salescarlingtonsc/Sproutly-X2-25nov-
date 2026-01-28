@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useMemo } from 'react';
 import PageHeader from '../../components/layout/PageHeader';
 import Modal from '../../components/ui/Modal';
@@ -136,6 +135,9 @@ const MarketNewsTab: React.FC = () => {
           }));
 
           // 3. Save ALL at once (Atomic update) to prevent partial saves
+          // We need to reverse because addNews usually prepends, but here we want to batch
+          // Since marketDb.addNews saves individually, let's just loop.
+          // For true batching, we rely on the rapid execution.
           for (const item of processedItems) {
               await marketDb.addNews(item);
           }
@@ -147,11 +149,7 @@ const MarketNewsTab: React.FC = () => {
           toast.success(`Synced & Broadcasted ${processedItems.length} new insights.`);
 
       } catch (e: any) {
-          if (e.message?.includes('aborted') || e.name === 'AbortError') {
-              console.debug("Live sync aborted.");
-          } else {
-              toast.error("Sync failed: " + e.message);
-          }
+          toast.error("Sync failed: " + e.message);
       } finally {
           setIsSyncing(false);
       }
@@ -189,11 +187,7 @@ const MarketNewsTab: React.FC = () => {
         setIsIngestOpen(false);
         setRawInput('');
     } catch (e: any) {
-        if (e.message?.includes('aborted') || e.name === 'AbortError') {
-            console.debug("Processing aborted.");
-        } else {
-            toast.error("Processing failed: " + e.message);
-        }
+        toast.error("Processing failed: " + e.message);
     } finally {
         setIsProcessing(false);
     }

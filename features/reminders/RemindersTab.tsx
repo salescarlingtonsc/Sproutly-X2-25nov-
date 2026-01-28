@@ -137,6 +137,7 @@ const RemindersTab: React.FC = () => {
   const handleDismissAppt = async (e: React.MouseEvent, client: Client) => {
       e.stopPropagation();
       const now = new Date().toISOString();
+      // Clear the appointment date to remove it from the list
       const updatedClient = {
           ...client,
           appointments: { ...client.appointments, firstApptDate: '' },
@@ -180,8 +181,7 @@ const RemindersTab: React.FC = () => {
   const currentMonth = now.getMonth();
 
   const birthdayReminders = useMemo(() => filteredClients.filter(c => {
-    // FIX: Added optional chaining to followUp to prevent crash if object is missing
-    const s = c.followUp?.status || 'new';
+    const s = c.followUp.status || 'new';
     if (s === 'new' || s.startsWith('npu') || s === 'not_keen') return false;
 
     const checkBirthday = (dobStr?: string) => {
@@ -197,34 +197,35 @@ const RemindersTab: React.FC = () => {
   }), [filteredClients, currentMonth]);
 
   const untouchedLeads = useMemo(() => filteredClients.filter(c => {
-    // FIX: Added optional chaining to followUp to prevent crash if object is missing
-    const s = c.followUp?.status;
+    const s = c.followUp.status;
     const isTargetStage = s === 'new' || (s && s.startsWith('npu'));
     if (!isTargetStage) return false;
-    const lastActivity = c.followUp?.lastContactedAt || c.lastUpdated;
+    const lastActivity = c.followUp.lastContactedAt || c.lastUpdated;
     const lastDate = lastActivity ? new Date(lastActivity) : new Date(0); 
     const diffTime = now.getTime() - lastDate.getTime();
     const diffDays = diffTime / (1000 * 3600 * 24);
     return diffDays > 2;
   }).sort((a,b) => {
-      const dateA = new Date(a.followUp?.lastContactedAt || a.lastUpdated).getTime();
-      const dateB = new Date(b.followUp?.lastContactedAt || b.lastUpdated).getTime();
+      const dateA = new Date(a.followUp.lastContactedAt || a.lastUpdated).getTime();
+      const dateB = new Date(b.followUp.lastContactedAt || b.lastUpdated).getTime();
       return dateA - dateB; 
   }), [filteredClients, now]);
 
   const pendingOverdue = useMemo(() => filteredClients.filter(c => {
-    // FIX: Added optional chaining to followUp to prevent crash if object is missing
-    if (c.followUp?.status !== 'pending_decision') return false;
-    const lastDate = c.followUp?.lastContactedAt || c.lastUpdated;
+    if (c.followUp.status !== 'pending_decision') return false;
+    const lastDate = c.followUp.lastContactedAt || c.lastUpdated;
     const daysSince = (now.getTime() - new Date(lastDate).getTime()) / (1000 * 3600 * 24);
     return daysSince > 3; 
   }), [filteredClients, now]);
 
+  // UPDATED APPOINTMENT LOGIC: Show appointments that are TODAY or BEFORE TODAY (Overdue)
   const appointments = useMemo(() => filteredClients.filter(c => {
       if (!c.appointments?.firstApptDate) return false;
       const apptDate = new Date(c.appointments.firstApptDate);
       const endOfToday = new Date();
       endOfToday.setHours(23, 59, 59, 999);
+      
+      // If appointment is today or earlier, show it
       return apptDate.getTime() <= endOfToday.getTime(); 
   }).sort((a,b) => new Date(a.appointments.firstApptDate).getTime() - new Date(b.appointments.firstApptDate).getTime()), [filteredClients]);
 
@@ -307,7 +308,7 @@ const RemindersTab: React.FC = () => {
                                     
                                     <div className="flex items-center gap-2">
                                         <span className={`text-[9px] font-bold px-1.5 rounded-sm uppercase tracking-wider ${badgeColor || 'bg-slate-100 text-slate-500'}`}>
-                                            {c.followUp?.status?.replace('npu_', 'NPU ')}
+                                            {c.followUp.status?.replace('npu_', 'NPU ')}
                                         </span>
                                         <span className="text-[9px] text-slate-400 truncate font-mono">
                                             {c.profile.phone || '-'}

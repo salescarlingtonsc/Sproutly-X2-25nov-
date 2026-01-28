@@ -115,7 +115,6 @@ const AppShell: React.FC<AppShellProps> = ({
 
   const isOnline = syncSnapshot.online;
   const isQueuePending = syncSnapshot.queueCount > 0;
-  const isSyncing = syncSnapshot.isFlushing;
 
   return (
     <div className="flex h-screen supports-[height:100dvh]:h-[100dvh] overflow-hidden bg-slate-50 font-sans text-slate-900 overscroll-none">
@@ -148,22 +147,9 @@ const AppShell: React.FC<AppShellProps> = ({
             </div>
 
             <div className="flex items-center gap-2 md:gap-3">
-               {/* CLOUD SYNC BUTTON (NEW) */}
-               <button 
-                  onClick={() => setShowSyncInspector(true)}
-                  className={`flex items-center gap-1 px-2.5 py-1.5 rounded-full border text-[10px] font-bold uppercase transition-all shadow-sm
-                    ${!isOnline ? 'bg-red-50 text-red-600 border-red-200' : 
-                      isSyncing ? 'bg-indigo-50 text-indigo-600 border-indigo-200 animate-pulse' :
-                      isQueuePending ? 'bg-amber-50 text-amber-600 border-amber-200' :
-                      'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'
-                    }`}
-                  title="View Sync Status & Logs"
-               >
-                  <span>{isOnline ? (isSyncing ? '🔄' : '☁️') : '⚠️'}</span>
-                  <span className="hidden sm:inline">
-                      {isSyncing ? 'Syncing...' : isQueuePending ? `Pending (${syncSnapshot.queueCount})` : 'Synced'}
-                  </span>
-               </button>
+               {!isOnline && (
+                   <span className="flex items-center gap-1 px-2 py-1 bg-red-50 text-red-600 rounded-full border border-red-100 text-[10px] font-bold uppercase"><span>⚠️</span> Offline</span>
+               )}
 
                {!isReadOnly && (
                   <div className="flex flex-col items-end mr-1 md:mr-2 min-w-[80px]">
@@ -207,13 +193,7 @@ const AppShell: React.FC<AppShellProps> = ({
 
          <main className="flex-1 overflow-y-auto relative z-10 scroll-smooth">
             <div className="max-w-[1400px] mx-auto min-h-full">{children}</div>
-            <div className="py-8 text-center opacity-40">
-                <div className="flex justify-center items-center gap-2 mb-2">
-                    <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
-                        Sproutly Quantum Standard v6.0.0 Enterprise
-                    </span>
-                </div>
-            </div>
+            <div className="py-8 text-center opacity-40"><div className="flex justify-center items-center gap-2 mb-2"><span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Sproutly Intelligence Engine v2.5</span></div></div>
          </main>
       </div>
 

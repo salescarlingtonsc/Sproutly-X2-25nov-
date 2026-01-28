@@ -1,14 +1,13 @@
+
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from './contexts/AuthContext';
 import { useClient } from './contexts/ClientContext';
 import { useToast } from './contexts/ToastContext';
 import { useDialog } from './contexts/DialogContext';
 import { db, DB_KEYS } from './lib/db';
-import { supabase } from './lib/supabase';
 import { Client } from './types';
 import { canAccessTab } from './lib/config';
 import { useSyncRecovery } from './hooks/useSyncRecovery';
-import { syncInspector } from './lib/syncInspector';
 
 import AppShell from './components/layout/AppShell';
 import LandingPage from './features/auth/LandingPage';
@@ -41,10 +40,22 @@ import AiAssistant from './features/ai-chat/AiAssistant';
 
 const App: React.FC = () => {
   const { user, isLoading: isAuthLoading, isRecoveryMode } = useAuth();
-  const { clientId, generateClientObject, loadClient, promoteToSaved, resetClient } = useClient();
+  const { 
+    clientId, generateClientObject, loadClient, promoteToSaved, resetClient,
+    setChatHistory 
+  } = useClient();
   const toast = useToast();
   
-  const [clients, setClients] = useState<Client[]>([]);
+  const [clients, setClients] = useState<Client[]>(() => {
+    try {
+      const local = localStorage.getItem(DB_KEYS.CLIENTS);
+      const parsed = local ? JSON.parse(local) : [];
+      return parsed.filter((c: Client) => c.profile?.name || c.name || c.company || c.phone);
+    } catch (e) {
+      return [];
+    }
+  });
+
   const [activeTab, setActiveTab] = useState('disclaimer');
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [isPricingModalOpen, setIsPricingModalOpen] = useState(false);
@@ -53,54 +64,76 @@ const App: React.FC = () => {
 
   const refreshClients = useCallback(async () => {
     if (user) {
-      const data = await db.getClients();
-      setClients(data.filter((c: any) => c.profile?.name || c.name));
+      const data = await db.getClients(user.id);
+      const validClients = data.filter(c => c.profile?.name || c.name || c.company || c.phone);
+      setClients(validClients);
     }
   }, [user]);
 
-  // INITIAL CLOUD SYNC: Restore leads on boot
+  // SYNC HEARTBEAT: Ensure queue never gets stuck during long sessions
   useEffect(() => {
-    if (user) {
-        db.pullFromCloud().then(() => {
-            refreshClients();
-        });
+    if (!user) return;
+    const interval = setInterval(() => {
+        const count = db.getQueueCount();
+        if (count > 0 && !db.isFlushing() && navigator.onLine) {
+            console.log("💓 Sync Heartbeat: Poking idle queue...");
+            db.flushCloudQueue(user.id);
+        }
+    }, 45000); 
+    return () => clearInterval(interval);
+  }, [user]);
+
+  useEffect(() => {
+    if (isRecoveryMode) {
+      setIsAuthModalOpen(true);
     }
-  }, [user, refreshClients]);
+  }, [isRecoveryMode]);
 
-  useEffect(() => {
-    db.getClients().then(data => {
-        if (data && data.length > 0) setClients(data.filter((c: any) => c.name || c.profile?.name));
-    });
-  }, []);
-
-  useEffect(() => {
-      const h = () => refreshClients();
-      window.addEventListener('sproutly:data_synced', h);
-      return () => window.removeEventListener('sproutly:data_synced', h);
+  const handleRecovery = useCallback((source: string) => {
+      const queueCount = db.getQueueCount();
+      if (source === 'visibility_immediate' || source === 'time_jump_detected') {
+          if (queueCount > 0) {
+             toast.info(`⚡ Resuming Sync (${queueCount})...`);
+          }
+      }
+      refreshClients();
   }, [refreshClients]);
 
-  // Handle centralized recovery hook
-  useSyncRecovery(user?.id, refreshClients);
+  useSyncRecovery(user?.id, handleRecovery);
+
+  useEffect(() => {
+    if (user && !canAccessTab(user, activeTab)) {
+      setActiveTab('crm');
+    }
+  }, [user, activeTab]);
+
+  useEffect(() => {
+    if (user) refreshClients();
+  }, [user, refreshClients]);
 
   const handleSave = async () => {
     if (!user) return;
     const clientObj = generateClientObject();
-    if (!clientObj.profile.name && !clientObj.name) return;
+    const hasIdentity = (clientObj.profile.name && clientObj.profile.name.trim() !== '') || (clientObj.profile.phone && clientObj.profile.phone.trim() !== '') || (clientObj.company && clientObj.company.trim() !== '');
+    if (!hasIdentity) return;
 
     setSaveStatus('saving');
     try {
-      const saved = await db.saveClient(clientObj, user.id, { owner: 'UI', module: 'App', reason: 'Manual Save' });
+      const savedClient = await db.saveClient(clientObj, user.id);
       setClients(prev => {
-        const idx = prev.findIndex(c => c.id === saved.id);
-        if (idx >= 0) { const n = [...prev]; n[idx] = saved; return n; }
-        return [saved, ...prev];
+        const idx = prev.findIndex(c => c.id === savedClient.id);
+        if (idx >= 0) {
+          const next = [...prev];
+          next[idx] = savedClient;
+          return next;
+        }
+        return [savedClient, ...prev];
       });
-      promoteToSaved(saved);
-      db.scheduleFlush('Manual Save Trigger');
+      promoteToSaved(savedClient);
       setSaveStatus('saved');
       setLastSavedTime(new Date());
-      setTimeout(() => setSaveStatus(s => s === 'saved' ? 'idle' : s), 3000);
-    } catch (e: any) {
+      setTimeout(() => setSaveStatus('idle'), 3000);
+    } catch (e) {
       setSaveStatus('error');
     }
   };
@@ -111,44 +144,64 @@ const App: React.FC = () => {
   };
 
   if (isAuthLoading) {
-    return <div className="min-h-screen bg-slate-900 flex items-center justify-center"><div className="w-12 h-12 border-4 border-indigo-500/20 border-t-indigo-600 rounded-full animate-spin"></div></div>;
+    return (
+      <div className="min-h-screen bg-slate-900 flex items-center justify-center">
+        <div className="w-12 h-12 border-4 border-indigo-500/20 border-t-indigo-500 rounded-full animate-spin"></div>
+      </div>
+    );
   }
 
   if (!user) {
-    return <><LandingPage onLogin={() => setIsAuthModalOpen(true)} /><AuthModal isOpen={isAuthModalOpen} onClose={() => setIsAuthModalOpen(false)} /></>;
+    return (
+      <>
+        <LandingPage onLogin={() => setIsAuthModalOpen(true)} />
+        <AuthModal isOpen={isAuthModalOpen} onClose={() => setIsAuthModalOpen(false)} />
+      </>
+    );
   }
+
+  const renderTab = () => {
+    switch (activeTab) {
+      case 'dashboard': return <DashboardTab user={user} clients={clients} onLoadClient={handleLoadClient} onNewClient={() => { resetClient(); setActiveTab('profile'); }} setActiveTab={setActiveTab} />;
+      case 'crm': return <CrmTab clients={clients} profile={user} selectedClientId={clientId} newClient={() => { resetClient(); setActiveTab('profile'); }} saveClient={handleSave} loadClient={handleLoadClient} deleteClient={async (id) => { await db.deleteClient(id); setClients(c => c.filter(x => x.id !== id)); }} onRefresh={refreshClients} onUpdateGlobalClient={(c) => { setClients(prev => prev.map(old => old.id === c.id ? c : old)); db.saveClient(c, user.id); }} />;
+      case 'profile': return <ProfileTab clients={clients} onLoadClient={handleLoadClient} onNewProfile={resetClient} />;
+      case 'reminders': return <RemindersTab />;
+      case 'market': return <MarketNewsTab />;
+      case 'portfolio': return <PortfolioTab clients={clients} onUpdateClient={(c) => { setClients(prev => prev.map(old => old.id === c.id ? c : old)); db.saveClient(c, user.id); }} />;
+      case 'life_events': return <LifeEventsTab />;
+      case 'children': return <ChildrenTab />;
+      case 'cpf': return <CpfTab />;
+      case 'cashflow': return <CashflowTab />;
+      case 'insurance': return <InsuranceTab />;
+      case 'retirement': return <RetirementTab />;
+      case 'investor': return <InvestorTab />;
+      case 'wealth': return <WealthToolTab />;
+      case 'property': return <PropertyCalculatorTab />;
+      case 'nine_box': return <NineBoxTab />;
+      case 'vision': return <VisionBoardTab />;
+      case 'analytics': return <AnalyticsTab clients={clients} />;
+      case 'report': return <ReportTab clients={clients} />;
+      case 'admin': return <AdminTab />;
+      case 'disclaimer': return <DisclaimerTab />;
+      default: return <CrmTab clients={clients} profile={user} selectedClientId={clientId} newClient={() => { resetClient(); setActiveTab('profile'); }} saveClient={handleSave} loadClient={handleLoadClient} deleteClient={async (id) => { await db.deleteClient(id); setClients(c => c.filter(x => x.id !== id)); }} onRefresh={refreshClients} onUpdateGlobalClient={(c) => { setClients(prev => prev.map(old => old.id === c.id ? c : old)); db.saveClient(c, user.id); }} />;
+    }
+  };
 
   return (
     <AppShell 
-      activeTab={activeTab} setActiveTab={setActiveTab} onLoginClick={() => setIsAuthModalOpen(true)} onPricingClick={() => setIsPricingModalOpen(true)} onSaveClick={handleSave} saveStatus={saveStatus} lastSavedTime={lastSavedTime} clients={clients} onLoadClient={handleLoadClient} onSystemRefresh={refreshClients}
+      activeTab={activeTab} 
+      setActiveTab={setActiveTab}
+      onLoginClick={() => setIsAuthModalOpen(true)}
+      onPricingClick={() => setIsPricingModalOpen(true)}
+      onSaveClick={handleSave}
+      saveStatus={saveStatus}
+      lastSavedTime={lastSavedTime}
+      clients={clients}
+      onLoadClient={handleLoadClient}
+      onSystemRefresh={refreshClients}
     >
       <AutoSaver onSave={handleSave} />
-      {(() => {
-        switch (activeTab) {
-          case 'dashboard': return <DashboardTab user={user} clients={clients} onLoadClient={handleLoadClient} onNewClient={() => { resetClient(); setActiveTab('profile'); }} setActiveTab={setActiveTab} />;
-          case 'crm': return <CrmTab clients={clients} profile={user} selectedClientId={clientId} newClient={() => { resetClient(); setActiveTab('profile'); }} saveClient={handleSave} loadClient={handleLoadClient} deleteClient={async (id) => { await db.deleteClient(id); setClients(c => c.filter(x => x.id !== id)); }} onRefresh={refreshClients} onUpdateGlobalClient={(c) => { setClients(prev => prev.map(old => old.id === c.id ? c : old)); db.saveClient(c, user.id, { owner: 'UI', module: 'CRM', reason: 'Update' }); db.scheduleFlush('CRM Update'); }} />;
-          case 'profile': return <ProfileTab clients={clients} onLoadClient={handleLoadClient} onNewProfile={resetClient} />;
-          case 'reminders': return <RemindersTab />;
-          case 'market': return <MarketNewsTab />;
-          case 'portfolio': return <PortfolioTab clients={clients} onUpdateClient={(c) => { setClients(prev => prev.map(old => old.id === c.id ? c : old)); db.saveClient(c, user.id, { owner: 'UI', module: 'Portfolio', reason: 'Valuation update' }); db.scheduleFlush('Portfolio Valuation Update'); }} />;
-          case 'life_events': return <LifeEventsTab />;
-          case 'children': return <ChildrenTab />;
-          case 'cpf': return <CpfTab />;
-          case 'cashflow': return <CashflowTab />;
-          case 'insurance': return <InsuranceTab />;
-          case 'retirement': return <RetirementTab />;
-          case 'investor': return <InvestorTab />;
-          case 'wealth': return <WealthToolTab />;
-          case 'property': return <PropertyCalculatorTab />;
-          case 'nine_box': return <NineBoxTab />;
-          case 'vision': return <VisionBoardTab />;
-          case 'analytics': return <AnalyticsTab clients={clients} />;
-          case 'report': return <ReportTab clients={clients} />;
-          case 'admin': return <AdminTab />;
-          case 'disclaimer': return <DisclaimerTab />;
-          default: return <DashboardTab user={user} clients={clients} onLoadClient={handleLoadClient} onNewClient={() => { resetClient(); setActiveTab('profile'); }} setActiveTab={setActiveTab} />;
-        }
-      })()}
+      {renderTab()}
       <AuthModal isOpen={isAuthModalOpen} onClose={() => setIsAuthModalOpen(false)} defaultView={isRecoveryMode ? 'update_password' : 'login'} />
       <PricingModal isOpen={isPricingModalOpen} onClose={() => setIsPricingModalOpen(false)} />
       <AiAssistant currentClient={clients.find(c => c.id === clientId) || null} />

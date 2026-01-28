@@ -43,18 +43,13 @@ const ScriptGeneratorModal: React.FC<ScriptGeneratorModalProps> = ({ isOpen, onC
       }
     } catch (err: any) {
       if (isMountedRef.current) {
-        // Suppress abort errors from UI error state
-        if (err.name === 'AbortError' || err.message?.includes('aborted') || err.message?.includes('cancel')) {
-            console.debug('Script generation aborted.');
-            setLoading(false);
-            return;
-        }
-
         console.error("Script Gen Error:", err);
         // Normalize error message for UX
         let msg = err.message || "Failed to generate script protocol.";
         
-        if (msg.includes('fetch failed')) {
+        if (msg.includes('aborted') || msg.includes('cancel')) {
+            msg = "Generation cancelled or timed out.";
+        } else if (msg.includes('fetch failed')) {
             msg = "Network connection failed. Please check your internet.";
         }
         

@@ -1,3 +1,4 @@
+
 import React, { useState, useRef, useEffect } from 'react';
 import { Client, ContactStatus } from '../../../types';
 
@@ -9,8 +10,8 @@ export const STATUS_CONFIG: Record<ContactStatus, { label: string; dot: string; 
   'picked_up': { label: 'Picked up', dot: 'bg-emerald-500', bg: 'bg-emerald-50/60', text: 'text-emerald-800', hover: 'hover:bg-emerald-100' },
   
   // NPU SEQUENCE
-  'npu_1': { label: 'NPU 1', dot: 'bg-slate-400', bg: 'bg-slate-50', text: 'text-slate-600', hover: 'hover:bg-slate-100' },
-  'npu_2': { label: 'NPU 2', dot: 'bg-slate-500', bg: 'bg-slate-100', text: 'text-slate-700', hover: 'hover:bg-slate-200' },
+  'npu_1': { label: 'NPU 1', dot: 'bg-slate-300', bg: 'bg-slate-50', text: 'text-slate-600', hover: 'hover:bg-slate-100' },
+  'npu_2': { label: 'NPU 2', dot: 'bg-slate-400', bg: 'bg-slate-100', text: 'text-slate-700', hover: 'hover:bg-slate-200' },
   'npu_3': { label: 'NPU 3', dot: 'bg-amber-400', bg: 'bg-amber-50', text: 'text-amber-700', hover: 'hover:bg-amber-100' },
   'npu_4': { label: 'NPU 4', dot: 'bg-amber-500', bg: 'bg-amber-100', text: 'text-amber-800', hover: 'hover:bg-amber-200' },
   'npu_5': { label: 'NPU 5', dot: 'bg-red-400', bg: 'bg-red-50', text: 'text-red-700', hover: 'hover:bg-red-100' },
@@ -32,9 +33,8 @@ interface StatusDropdownProps {
 }
 
 const StatusDropdown: React.FC<StatusDropdownProps> = ({ client, onUpdate }) => {
-  // FIX: Safe access to followUp property
-  const currentStatus = client.followUp?.status || (client.stage as any) || 'new';
-  const config = STATUS_CONFIG[currentStatus as ContactStatus] || STATUS_CONFIG['new'];
+  const currentStatus = client.followUp.status || 'new';
+  const config = STATUS_CONFIG[currentStatus] || STATUS_CONFIG['new'];
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -61,7 +61,7 @@ const StatusDropdown: React.FC<StatusDropdownProps> = ({ client, onUpdate }) => 
         <div className="absolute top-full left-0 mt-2 w-56 bg-white rounded-xl shadow-2xl border border-slate-100 z-[1000] overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200 p-1.5">
           <div className="grid grid-cols-1 divide-y divide-slate-50">
              <div className="py-1">
-                {['new', 'picked_up', 'qualified'].map((s) => (
+                {['new', 'picked_up'].map((s) => (
                    <StatusItem key={s} s={s as ContactStatus} current={currentStatus} onClick={(val) => { onUpdate(client, val); setIsOpen(false); }} />
                 ))}
              </div>
@@ -76,7 +76,7 @@ const StatusDropdown: React.FC<StatusDropdownProps> = ({ client, onUpdate }) => 
                 ))}
              </div>
              <div className="py-1">
-                {['appt_set', 'appt_met', 'pending_decision', 'client', 'case_closed', 'not_keen'].map((s) => (
+                {['appt_set', 'appt_met', 'pending_decision', 'case_closed', 'not_keen'].map((s) => (
                    <StatusItem key={s} s={s as ContactStatus} current={currentStatus} onClick={(val) => { onUpdate(client, val); setIsOpen(false); }} />
                 ))}
              </div>
@@ -87,8 +87,9 @@ const StatusDropdown: React.FC<StatusDropdownProps> = ({ client, onUpdate }) => 
   );
 };
 
+// Fix: Typed as React.FC to handle React-reserved props like 'key' correctly in TypeScript
 const StatusItem: React.FC<{ s: ContactStatus; current: string; onClick: (s: ContactStatus) => void }> = ({ s, current, onClick }) => {
-   const conf = STATUS_CONFIG[s] || STATUS_CONFIG['new'];
+   const conf = STATUS_CONFIG[s];
    return (
       <button
          onClick={(e) => { e.stopPropagation(); onClick(s); }}

@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef } from 'react';
 import { Client, ContactStatus } from '../../../types';
 import { STATUS_CONFIG } from './StatusDropdown';
@@ -19,10 +20,9 @@ const CallSessionModal: React.FC<CallSessionModalProps> = ({ isOpen, onClose, cl
   const timerRef = useRef<any>(null);
 
   // Filter for valid leads: 'new' or 'npu_X' or 'picked_up'
-  // FIX: Added optional chaining to prevent crash on malformed records
   const callQueue = React.useMemo(() => {
     return clients.filter(c => {
-       const s = c.followUp?.status ?? 'new';
+       const s = c.followUp.status;
        return s === 'new' || s.startsWith('npu') || s === 'picked_up';
     });
   }, [clients]);
@@ -48,14 +48,12 @@ const CallSessionModal: React.FC<CallSessionModalProps> = ({ isOpen, onClose, cl
       clearInterval(timerRef.current);
     }
     return () => { if (timerRef.current) clearInterval(timerRef.current); };
-  }, [isActive, currentIndex]);
+  }, [isActive, currentIndex]); // Reset on index change handled by logic below
 
   const handleOutcome = (outcome: 'answered' | 'no_answer' | 'bad_number' | 'skip') => {
     if (!currentClient) return;
 
-    // FIX: Safe access for status calculation
-    let currentStatus: ContactStatus = currentClient.followUp?.status ?? 'new';
-    let newStatus: ContactStatus = currentStatus;
+    let newStatus: ContactStatus = currentClient.followUp.status;
     let newStageName: string = currentClient.stage || 'New Lead';
     let noteContent = `Call Session: ${outcome}. Duration: ${formatTime(timer)}.`;
 
@@ -64,12 +62,13 @@ const CallSessionModal: React.FC<CallSessionModalProps> = ({ isOpen, onClose, cl
        newStageName = 'Picked Up';
     } else if (outcome === 'no_answer') {
        // Smart NPU Logic
-       if (currentStatus === 'new') { newStatus = 'npu_1'; newStageName = 'NPU 1'; }
-       else if (currentStatus === 'npu_1') { newStatus = 'npu_2'; newStageName = 'NPU 2'; }
-       else if (currentStatus === 'npu_2') { newStatus = 'npu_3'; newStageName = 'NPU 3'; }
-       else if (currentStatus === 'npu_3') { newStatus = 'npu_4'; newStageName = 'NPU 4'; }
-       else if (currentStatus === 'npu_4') { newStatus = 'npu_5'; newStageName = 'NPU 5'; }
-       else if (currentStatus === 'npu_5') { newStatus = 'npu_6'; newStageName = 'NPU 6'; }
+       if (newStatus === 'new') { newStatus = 'npu_1'; newStageName = 'NPU 1'; }
+       else if (newStatus === 'npu_1') { newStatus = 'npu_2'; newStageName = 'NPU 2'; }
+       else if (newStatus === 'npu_2') { newStatus = 'npu_3'; newStageName = 'NPU 3'; }
+       else if (newStatus === 'npu_3') { newStatus = 'npu_4'; newStageName = 'NPU 4'; }
+       else if (newStatus === 'npu_4') { newStatus = 'npu_5'; newStageName = 'NPU 5'; }
+       else if (newStatus === 'npu_5') { newStatus = 'npu_6'; newStageName = 'NPU 6'; }
+       // Cap at NPU 6
     } else if (outcome === 'bad_number') {
        newStatus = 'not_keen';
        newStageName = 'Lost';
@@ -87,9 +86,10 @@ const CallSessionModal: React.FC<CallSessionModalProps> = ({ isOpen, onClose, cl
         
         onUpdateClient(currentClient, {
             stage: newStageName,
-            followUp: { ...(currentClient.followUp || {}), status: newStatus, lastContactedAt: now },
+            followUp: { ...currentClient.followUp, status: newStatus, lastContactedAt: now },
             notes: [newNote, ...(currentClient.notes || [])],
             lastContact: now,
+            // CRITICAL: Append to history for analytics
             stageHistory: [...(currentClient.stageHistory || []), { stage: newStageName, date: now }]
         });
         
@@ -98,11 +98,13 @@ const CallSessionModal: React.FC<CallSessionModalProps> = ({ isOpen, onClose, cl
         setSessionLog(prev => [...prev, { name: currentClient.profile.name, duration: formatTime(timer), outcome: newStatus }]);
     }
 
+    // Move to next
     if (currentIndex < callQueue.length - 1) {
        setCurrentIndex(prev => prev + 1);
        setTimer(0);
     } else {
        setIsActive(false);
+       alert("Session Complete! All queued leads processed.");
        onClose();
     }
   };
@@ -121,25 +123,25 @@ const CallSessionModal: React.FC<CallSessionModalProps> = ({ isOpen, onClose, cl
            <div className="bg-white rounded-2xl p-8 text-center max-w-sm w-full shadow-2xl">
               <div className="text-4xl mb-4">🎉</div>
               <h3 className="text-lg font-bold text-slate-800 mb-2">Queue Empty</h3>
-              <p className="text-slate-50 text-sm mb-6">No leads found in 'New' or 'NPU' stages.</p>
+              <p className="text-slate-500 text-sm mb-6">No leads found in 'New' or 'NPU' stages.</p>
               <Button onClick={onClose} className="w-full">Close</Button>
            </div>
         </div>
      );
   }
 
-  // FIX: Safe status config lookup
-  const currentStatus = currentClient?.followUp?.status ?? 'new';
-  const statusConf = STATUS_CONFIG[currentStatus] || STATUS_CONFIG['new'];
+  const statusConf = STATUS_CONFIG[currentClient.followUp.status] || STATUS_CONFIG['new'];
 
   return (
     <div className="fixed inset-0 z-[1000] bg-slate-900 flex items-center justify-center">
+       {/* Background Noise/Effect */}
        <div className="absolute inset-0 opacity-20 pointer-events-none bg-[url('https://grainy-gradients.vercel.app/noise.svg')]"></div>
        <div className="absolute top-0 right-0 p-8 text-white/30 font-mono text-xs">
           QUEUE: {currentIndex + 1} / {callQueue.length}
        </div>
 
        <div className="relative z-10 w-full max-w-2xl">
+          {/* TIMER CARD */}
           <div className="bg-white rounded-3xl shadow-2xl overflow-hidden mb-8">
              <div className="bg-slate-50 p-6 border-b border-slate-100 flex justify-between items-center">
                 <div className="flex items-center gap-3">
@@ -163,6 +165,7 @@ const CallSessionModal: React.FC<CallSessionModalProps> = ({ isOpen, onClose, cl
                 <div className="text-sm text-slate-500 font-medium uppercase tracking-widest pt-4">
                    {currentClient.company || 'No Company'} • {currentClient.profile.jobTitle || 'No Title'}
                 </div>
+                {/* Note Preview */}
                 {currentClient.notes && currentClient.notes.length > 0 && (
                    <div className="mt-6 p-4 bg-yellow-50 text-yellow-800 text-xs text-left rounded-xl border border-yellow-100 italic">
                       "{(currentClient.notes[0].content || '').substring(0, 100)}..."
@@ -170,6 +173,7 @@ const CallSessionModal: React.FC<CallSessionModalProps> = ({ isOpen, onClose, cl
                 )}
              </div>
 
+             {/* CONTROLS */}
              <div className="grid grid-cols-4 divide-x divide-slate-100 border-t border-slate-100">
                 <button 
                    onClick={() => handleOutcome('answered')}

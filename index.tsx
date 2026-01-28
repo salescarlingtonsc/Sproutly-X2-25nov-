@@ -1,3 +1,4 @@
+
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
@@ -7,24 +8,6 @@ import { ClientProvider } from './contexts/ClientContext';
 import { ToastProvider } from './contexts/ToastContext';
 import { DialogProvider } from './contexts/DialogContext';
 import { AiProvider } from './contexts/AiContext';
-
-// --- GLOBAL PROMISE SAFETY NET ---
-if (typeof window !== 'undefined') {
-  window.addEventListener('unhandledrejection', (event) => {
-    const msg = event.reason?.message || String(event.reason);
-    if (
-      msg.includes('aborted') || 
-      msg.includes('AbortError') || 
-      msg.includes('Network request failed') ||
-      msg.includes('cancelled') ||
-      msg.includes('The operation was aborted')
-    ) {
-      // Confirming to the user/developer that this is expected behavior
-      console.debug('🛡️ Sproutly Core: Background network death detected. Cold-Start recovery protocol standby.', msg);
-      event.preventDefault();
-    }
-  });
-}
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {

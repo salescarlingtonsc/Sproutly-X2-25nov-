@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useEffect } from 'react';
 import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
 import { chatWithFinancialContext } from '../../lib/gemini';
@@ -106,12 +105,7 @@ const AiAssistant: React.FC<AiAssistantProps> = ({ currentClient }) => {
       const finalHistory = [...newHistory, modelMsg];
       setMessages(finalHistory);
       if (currentClient) setChatHistory(finalHistory);
-    } catch (e: any) {
-      // Gracefully handle aborts/cancellations without showing error bubble
-      if (e.name === 'AbortError' || e.message?.includes('aborted') || e.message?.includes('cancelled')) {
-         setIsThinking(false);
-         return; 
-      }
+    } catch (e) {
       setMessages(prev => [...prev, { role: 'model', text: 'Error communicating with reasoning core.' }]);
     } finally {
       setIsThinking(false);
@@ -145,16 +139,9 @@ const AiAssistant: React.FC<AiAssistantProps> = ({ currentClient }) => {
             onclose: () => { setIsLiveActive(false); stream.getTracks().forEach(t => t.stop()); }
          }
       });
-      
-      // CRITICAL: Catch initial connection failure
-      sessionPromise.catch(e => {
-          console.debug("Live connection aborted/failed:", e);
-          setIsLiveActive(false);
-      });
 
       processor.onaudioprocess = (e) => {
          const inputData = e.inputBuffer.getChannelData(0);
-         // CRITICAL: Attach catch to this specific promise chain to prevents 'Unhandled Rejection' loops during stream drop
          sessionPromise.then((session) => {
             const int16 = new Int16Array(inputData.length);
             for (let i = 0; i < inputData.length; i++) int16[i] = inputData[i] * 32768;
@@ -162,8 +149,6 @@ const AiAssistant: React.FC<AiAssistantProps> = ({ currentClient }) => {
             const bytes = new Uint8Array(int16.buffer);
             for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
             session.sendRealtimeInput({ media: { mimeType: 'audio/pcm;rate=16000', data: btoa(binary) } });
-         }).catch(() => {
-             // Silently ignore send errors if connection dropped
          });
       };
       source.connect(processor); processor.connect(inputContext.destination);
