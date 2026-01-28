@@ -45,39 +45,50 @@ export const adminDb = {
   getSystemSettings: async (orgId?: string): Promise<SystemSettings | null> => {
     if (!supabase) return null;
     
-    let targetOrg = orgId;
+    try {
+        let targetOrg = orgId;
 
-    // If no orgId provided, try to find it from session
-    if (!targetOrg) {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (session?.user) {
-            const { data: profile } = await supabase
-                .from('profiles')
-                .select('organization_id')
-                .eq('id', session.user.id)
-                .single();
-            targetOrg = profile?.organization_id;
+        // If no orgId provided, try to find it from session
+        if (!targetOrg) {
+            const { data: { session } } = await supabase.auth.getSession();
+            if (session?.user) {
+                const { data: profile } = await supabase
+                    .from('profiles')
+                    .select('organization_id')
+                    .eq('id', session.user.id)
+                    .single();
+                targetOrg = profile?.organization_id;
+            }
         }
+
+        targetOrg = targetOrg || 'org_default';
+        
+        // Fetch BOTH the specific org settings AND the global backup
+        const { data, error } = await supabase
+          .from('organization_settings')
+          .select('id, data')
+          .in('id', [targetOrg, 'global_config']);
+
+        if (error) throw error;
+        if (!data) return null;
+
+        // 1. Try Specific Org
+        const specificSettings = data.find(row => row.id === targetOrg);
+        if (specificSettings) return specificSettings.data as SystemSettings;
+
+        // 2. Fallback to Global
+        const globalSettings = data.find(row => row.id === 'global_config');
+        if (globalSettings) return globalSettings.data as SystemSettings;
+
+        return null;
+    } catch (e: any) {
+        // Silently swallow abort errors or network interruptions during page load/unload
+        if (e.message?.includes('aborted') || e.message?.includes('fetch failed')) {
+            console.debug("Settings load aborted/failed silently.");
+            return null;
+        }
+        console.error("Admin Settings Load Error:", e);
+        return null;
     }
-
-    targetOrg = targetOrg || 'org_default';
-    
-    // Fetch BOTH the specific org settings AND the global backup
-    const { data, error } = await supabase
-      .from('organization_settings')
-      .select('id, data')
-      .in('id', [targetOrg, 'global_config']);
-
-    if (error || !data) return null;
-
-    // 1. Try Specific Org
-    const specificSettings = data.find(row => row.id === targetOrg);
-    if (specificSettings) return specificSettings.data as SystemSettings;
-
-    // 2. Fallback to Global
-    const globalSettings = data.find(row => row.id === 'global_config');
-    if (globalSettings) return globalSettings.data as SystemSettings;
-
-    return null;
   }
 };

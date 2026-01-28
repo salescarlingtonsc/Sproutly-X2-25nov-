@@ -1,503 +1,390 @@
-import { supabase, isSupabaseConfigured } from './supabase';
+import { supabase } from './supabase';
 import { Client } from '../types';
-import { syncInspector } from './syncInspector';
+import { syncInspector, SyncCausality } from './syncInspector';
+import Dexie, { type EntityTable } from 'dexie';
 
-// Hard timeout wrapper for all Supabase session calls
-async function withHardTimeout<T>(promise: Promise<T>, ms = 4000): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const id = setTimeout(() => reject(new Error("HARD_TIMEOUT")), ms);
-    promise.then(
-      (res) => { clearTimeout(id); resolve(res); },
-      (err) => { clearTimeout(id); reject(err); }
-    );
+console.log("🚀 Sproutly DB v24.0: Bi-Directional Orchestrator");
+
+// --- DEXIE DURABILITY LAYER ---
+interface DBClient {
+  id: string;
+  user_id: string;
+  data: Client;
+  updated_at: string;
+}
+
+interface OutboxItem {
+  id: string;
+  userId: string;
+  data: Client;
+  queuedAt: number;
+}
+
+const dbStore = new Dexie('SproutlyQuantumDB') as Dexie & {
+  clients: EntityTable<DBClient, 'id'>;
+  outbox: EntityTable<OutboxItem, 'id'>;
+};
+
+dbStore.version(1).stores({
+  clients: 'id, user_id, updated_at',
+  outbox: 'id, userId, queuedAt'
+});
+
+// --- PRIVATE ORCHESTRATOR STATE ---
+let _isFlushing = false;
+let _pendingFlush = false; 
+let _syncTimer: any = null;
+let _syncTimerSetAt = 0;
+let _currentScheduledReason = '';
+let _activeAbort: AbortController | null = null;
+let _lastFailureTime = 0;
+let _backoffIdx = 0;
+
+const BACKOFF_SCHEDULE = [2000, 5000, 10000, 30000, 60000, 120000, 300000];
+const FAILURE_COOLDOWN_MS = 10000;
+
+// Unified Visibility Listener
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', async () => {
+    const visibility = document.visibilityState;
+    if (visibility === 'visible') {
+        const qCount = await dbStore.outbox.count();
+        syncInspector.log('info', 'RESUME_START', `Visibility change: visible. Pending: ${_pendingFlush}, Queue: ${qCount}`, {
+            owner: 'Lifecycle',
+            module: 'lib/db.ts',
+            reason: 'visibility_visible'
+        });
+
+        if (_pendingFlush || qCount > 0) {
+            db.scheduleFlush('recovery_visibility_visible');
+        }
+    }
   });
 }
 
-// Debug marker
-console.log("🚀 Sproutly DB: Hard Timeout + Abort-Safe Sync Enabled");
+/**
+ * INTERNAL: Stability Gate
+ */
+async function passStabilityGate(causality: SyncCausality): Promise<{ ok: boolean; reason: string }> {
+  if (!navigator.onLine) return { ok: false, reason: 'offline' };
+
+  const timeSinceFailure = Date.now() - _lastFailureTime;
+  if (timeSinceFailure < FAILURE_COOLDOWN_MS) {
+    return { ok: false, reason: 'cooling_down' };
+  }
+
+  if (supabase) {
+    const { data } = await supabase.auth.getSession();
+    if (!data.session) return { ok: false, reason: 'no_session' };
+  }
+
+  return { ok: true, reason: '' };
+}
+
+/**
+ * HARDENED SYNC ENGINE
+ */
+async function executeInternalFlush(userId: string, causality: SyncCausality): Promise<void> {
+  const moduleTag = 'lib/db.ts:Orchestrator';
+  const finalCausality = { ...causality, module: moduleTag };
+
+  const qCountAtStart = await dbStore.outbox.count();
+  const { data: sessionCheck } = await supabase!.auth.getSession();
+  syncInspector.log('info', 'FLUSH_START', `Starting sync cycle. Queue: ${qCountAtStart}`, finalCausality, {
+      queueCount: qCountAtStart,
+      visibility: document.visibilityState,
+      online: navigator.onLine,
+      hasSession: !!sessionCheck.session
+  });
+
+  const gate = await passStabilityGate(finalCausality);
+  if (!gate.ok) {
+    syncInspector.log('info', 'GATE_BLOCKED', `Execution halted: ${gate.reason}`, finalCausality, {
+        gateReason: gate.reason,
+        visibility: document.visibilityState,
+        online: navigator.onLine
+    });
+    return;
+  }
+
+  if (_isFlushing && _activeAbort) {
+    syncInspector.log('info', 'FLUSH_ABORTED', `Yielding active session for: ${causality.reason}`, finalCausality);
+    _activeAbort.abort();
+  }
+
+  _isFlushing = true;
+  _pendingFlush = false; 
+  _activeAbort = new AbortController();
+
+  let errorOccurred: any = null;
+  let totalProcessed = 0;
+
+  try {
+    while (!_activeAbort.signal.aborted) {
+      const queue = await dbStore.outbox.orderBy('queuedAt').toArray();
+      if (queue.length === 0) break;
+      if (!navigator.onLine) break;
+
+      const batch = queue.slice(0, 50);
+      const payload = batch.map(item => ({
+        id: item.id,
+        user_id: item.userId,
+        data: item.data,
+        updated_at: item.data.lastUpdated
+      }));
+
+      syncInspector.log('info', 'UPSERT_START', `Attempting upsert. Count: ${payload.length}, Primary ID: ${payload[0].id}`, finalCausality, {
+          id: payload[0].id,
+          batchSize: payload.length
+      });
+
+      const UPSERT_TIMEOUT = 12000;
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('TIMEOUT: Network driver non-responsive')), UPSERT_TIMEOUT)
+      );
+
+      try {
+        const { error } = await Promise.race([
+          supabase!.from('clients').upsert(payload, { onConflict: 'id' }).abortSignal(_activeAbort.signal),
+          timeoutPromise
+        ]) as any;
+
+        if (error) throw error;
+
+        await dbStore.outbox.bulkDelete(batch.map(b => b.id));
+        totalProcessed += payload.length;
+        _backoffIdx = 0; 
+        
+        syncInspector.log('success', 'UPSERT_OK', `Upsert successful for ID: ${payload[0].id}`, finalCausality, { id: payload[0].id });
+
+      } catch (innerErr: any) {
+        syncInspector.log('error', 'UPSERT_ERR', `Upsert failed for ID: ${payload[0].id}. Error: ${innerErr.message || innerErr.name}`, finalCausality, {
+            id: payload[0].id,
+            name: innerErr.name,
+            message: innerErr.message,
+            code: innerErr.code
+        });
+        
+        const isNetworkHang = innerErr.message?.includes('TIMEOUT') || innerErr.name === 'AbortError' || innerErr.message?.includes('fetch');
+        if (isNetworkHang) {
+            errorOccurred = innerErr;
+            _lastFailureTime = Date.now();
+            const delay = BACKOFF_SCHEDULE[_backoffIdx];
+            const jitter = Math.random() * 1000;
+            _backoffIdx = Math.min(_backoffIdx + 1, BACKOFF_SCHEDULE.length - 1);
+            db.scheduleFlush('Stability Retry Loop'); 
+            break; 
+        }
+        throw innerErr; 
+      }
+      if (queue.length <= 50) break;
+    }
+  } catch (e: any) {
+    errorOccurred = e;
+  } finally {
+    _isFlushing = false;
+    _activeAbort = null;
+    const remaining = await dbStore.outbox.count();
+    
+    syncInspector.log(
+      errorOccurred ? 'error' : 'success',
+      'FLUSH_END',
+      `Sync cycle terminal. Processed: ${totalProcessed}, Remaining: ${remaining}`,
+      finalCausality,
+      { ok: !errorOccurred, processed: totalProcessed, remaining }
+    );
+    window.dispatchEvent(new CustomEvent('sproutly:data_synced'));
+  }
+}
+
+export const db = {
+  generateUuid: () => crypto.randomUUID(),
+  isValidUuid: (id: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id),
+  updateTokenCache: (token: string) => localStorage.setItem(DB_KEYS.TOKEN_CACHE, token),
+  isFlushing: () => _isFlushing,
+  getQueueCount: () => dbStore.outbox.count(),
+  
+  resetLocks: () => { 
+      if (_activeAbort) _activeAbort.abort();
+      _isFlushing = false; 
+      _pendingFlush = false;
+      _lastFailureTime = 0;
+      _backoffIdx = 0;
+      if (_syncTimer) clearTimeout(_syncTimer);
+      _syncTimer = null;
+  },
+
+  /**
+   * INBOUND SYNC: Restores missing leads from cloud.
+   */
+  pullFromCloud: async () => {
+    if (!supabase || !navigator.onLine) return;
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) return;
+
+    syncInspector.log('info', 'INIT', "Restoring leads from cloud...", { owner: 'Orchestrator', module: 'lib/db.ts', reason: 'cloud_restore' });
+
+    try {
+        const { data, error } = await supabase.from('clients').select('*');
+        if (error) throw error;
+        if (!data) return;
+
+        // Resolve local pending changes to avoid overwriting work in progress
+        const outboxIds = new Set((await dbStore.outbox.toArray()).map(o => o.id));
+
+        const recordsToUpdate: DBClient[] = data
+            .filter(row => !outboxIds.has(row.id)) // Respect local overrides
+            .map(row => ({
+                id: row.id,
+                user_id: row.user_id,
+                data: row.data as Client,
+                updated_at: row.updated_at
+            }));
+
+        if (recordsToUpdate.length > 0) {
+            await dbStore.clients.bulkPut(recordsToUpdate);
+            syncInspector.log('success', 'INIT', `Restored ${recordsToUpdate.length} leads from cloud.`, { owner: 'Orchestrator', module: 'lib/db.ts', reason: 'cloud_restore' });
+            window.dispatchEvent(new CustomEvent('sproutly:data_synced'));
+        }
+    } catch (e: any) {
+        syncInspector.log('error', 'CLOUD_ERR', `Cloud restore failed: ${e.message}`, { owner: 'Orchestrator', module: 'lib/db.ts', reason: 'cloud_restore' });
+    }
+  },
+
+  scheduleFlush: (reason: string) => {
+    const finalCausality = { owner: 'Orchestrator' as const, module: 'lib/db.ts', reason };
+
+    if (_syncTimer) {
+        syncInspector.log('info', 'FLUSH_CANCELLED_BY_DEDUPE', `Dedupe: Preempting [${_currentScheduledReason}] with [${reason}]`, finalCausality);
+        clearTimeout(_syncTimer);
+    }
+
+    _currentScheduledReason = reason;
+    _syncTimerSetAt = Date.now();
+    
+    const delay = (reason.includes('Watchdog') || reason.includes('recovery') || reason.includes('Retry')) ? 0 : 1500;
+
+    syncInspector.log('info', 'SCHEDULE_FLUSH_SET', `Timer set for: ${reason} (delay: ${delay}ms)`, finalCausality);
+
+    _syncTimer = setTimeout(async () => {
+      const executingReason = reason;
+      _syncTimer = null;
+      _currentScheduledReason = '';
+      
+      syncInspector.log('info', 'SCHEDULE_FLUSH_FIRE', `Timer callback executing for: ${executingReason}`, finalCausality);
+
+      let qCount = 0;
+      let online = false;
+      let visibility = 'hidden';
+      let hasSession = false;
+      let currentIsFlushing = _isFlushing;
+      let sessionData: any = null;
+
+      try {
+          qCount = await dbStore.outbox.count();
+          online = navigator.onLine;
+          visibility = document.visibilityState;
+          const { data } = await supabase!.auth.getSession();
+          sessionData = data;
+          hasSession = !!data.session;
+      } catch (e: any) {
+          syncInspector.log('error', 'FLUSH_SKIPPED', `Snapshot capture failed: ${e.message}`, finalCausality, { skipReason: 'snapshot_error' });
+          return;
+      }
+
+      syncInspector.log('info', 'CALL_FLUSH', `Invoking flush check for: ${executingReason}`, finalCausality, {
+          executingReason,
+          visibility,
+          online,
+          hasSession,
+          isFlushing: currentIsFlushing,
+          queueCount: qCount
+      });
+      
+      if (qCount === 0) {
+          syncInspector.log('info', 'FLUSH_SKIPPED', 'Queue empty.', finalCausality, { skipReason: 'queue_empty', visibility, online, hasSession });
+          return;
+      }
+
+      if (!online) {
+          syncInspector.log('info', 'FLUSH_SKIPPED', 'Offline.', finalCausality, { skipReason: 'offline', visibility, online, hasSession });
+          return;
+      }
+
+      if (visibility !== 'visible') {
+          _pendingFlush = true;
+          syncInspector.log('info', 'FLUSH_SKIPPED', 'Not visible.', finalCausality, { skipReason: 'not_visible', visibility, online, hasSession });
+          return;
+      }
+
+      if (!hasSession) {
+          syncInspector.log('info', 'FLUSH_SKIPPED', 'No auth session.', finalCausality, { skipReason: 'no_session', visibility, online, hasSession });
+          return;
+      }
+
+      if (currentIsFlushing) {
+          syncInspector.log('info', 'FLUSH_SKIPPED', 'Already flushing.', finalCausality, { skipReason: 'already_flushing', visibility, online, hasSession });
+          return;
+      }
+
+      executeInternalFlush(sessionData.session.user.id, finalCausality).catch(e => {
+          console.error("Flush Process Crashed:", e);
+          syncInspector.log('critical', 'UPSERT_ERR', `Fatal Orchestrator Crash: ${e.message}`, finalCausality);
+      });
+    }, delay);
+  },
+
+  requestFlush: (userId: string, causality: SyncCausality) => {
+    db.scheduleFlush(causality.reason);
+  },
+
+  createClientsBulk: async (clients: Client[], userId: string) => {
+    const records = clients.map(c => ({
+      id: c.id,
+      user_id: userId,
+      data: c,
+      updated_at: c.lastUpdated || new Date().toISOString()
+    }));
+    await dbStore.clients.bulkPut(records);
+    db.scheduleFlush('Bulk Ingest');
+  },
+
+  deleteClient: async (id: string) => {
+    await dbStore.clients.delete(id);
+    await dbStore.outbox.delete(id);
+    if (supabase) await supabase.from('clients').delete().eq('id', id);
+  },
+
+  transferOwnership: async (clientId: string, newOwnerId: string) => {
+    if (!supabase) return;
+    const { error } = await supabase.from('clients').update({ user_id: newOwnerId }).eq('id', clientId);
+    if (error) throw error;
+  },
+
+  getClients: async (_userId?: string) => {
+      const records = await dbStore.clients.toArray();
+      return records.map(r => ({ ...r.data, id: r.id }));
+  },
+
+  saveClient: async (client: Client, userId?: string, causality?: SyncCausality) => {
+    const finalCausality = causality || { owner: 'UI' as const, module: 'DB', reason: 'Local Save' };
+    const now = new Date().toISOString();
+    const updatedClient = { ...client, lastUpdated: now };
+    const finalUserId = userId || 'anonymous';
+
+    await dbStore.clients.put({ id: client.id, user_id: finalUserId, data: updatedClient, updated_at: now });
+    await dbStore.outbox.put({ id: client.id, userId: finalUserId, data: updatedClient, queuedAt: Date.now() });
+    
+    const count = await dbStore.outbox.count();
+    syncInspector.log('info', 'OUTBOX_ENQUEUE', `Dossier committed to durability layer. ID: ${client.id}, Queue: ${count}`, finalCausality, { queueCount: count, id: client.id });
+    
+    db.scheduleFlush(finalCausality.reason);
+    return updatedClient;
+  }
+};
 
 export const DB_KEYS = {
   CLIENTS: 'sproutly_clients_v2',
-  OUTBOX: 'sproutly_outbox_v1'
-};
-
-// Config
-const SYNC_TIMEOUT_MS = 25000;
-const FLUSH_WATCHDOG_MS = 30000;
-const MAX_RETRIES = 50;
-
-// Outbox item shape
-interface OutboxItem {
-  id: string;
-  data: Client;
-  userId: string;
-  queuedAt: number;
-  attempts: number;
-  lastAttempt?: number;
-}
-
-// Internal state
-let subscribers: Function[] = [];
-let activeFlushPromise: Promise<void> | null = null;
-let flushWatchdog: any = null;
-let currentFlushSessionId = 0;
-
-// Outbox helpers
-const getOutbox = (): OutboxItem[] => {
-  try {
-    const raw = localStorage.getItem(DB_KEYS.OUTBOX);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-};
-
-const saveOutbox = (items: OutboxItem[]) => {
-  localStorage.setItem(DB_KEYS.OUTBOX, JSON.stringify(items));
-  const updates: any = { queueCount: items.length };
-  if (items.length === 0) updates.lastCloudErr = null;
-  syncInspector.updateSnapshot(updates);
-};
-
-// Abort detection
-const isAbortError = (err: any): boolean => {
-  if (!err) return false;
-  const msg = (err.message || '').toLowerCase();
-  const name = (err.name || '').toLowerCase();
-  return (
-    msg.includes('aborted') ||
-    msg.includes('operation was aborted') ||
-    msg.includes('network_abort') ||
-    msg.includes('timeout_abort') ||
-    name === 'aborterror' ||
-    err.status === 0 ||
-    err.code === 20
-  );
-};
-
-// Upsert wrapper with timeout + abort normalization
-async function upsertWithTimeout(table: string, payload: any, timeoutMs: number) {
-  if (!supabase) throw new Error("Supabase not initialized");
-
-  const timeoutPromise = new Promise((_, reject) => {
-    const id = setTimeout(() => {
-      clearTimeout(id);
-      reject(new Error("TIMEOUT_ABORT"));
-    }, timeoutMs);
-  });
-
-  try {
-    const result: any = await Promise.race([
-      supabase.from(table).upsert(payload),
-      timeoutPromise
-    ]);
-    if (result.error) throw result.error;
-    return true;
-  } catch (err: any) {
-    if (isAbortError(err)) throw new Error("NETWORK_ABORT");
-    throw err;
-  }
-}
-
-// Retry wrapper for reads
-const fetchWithAuthRetry = async (queryFn: () => Promise<any>, retryCount = 0): Promise<any> => {
-  try {
-    const res = await queryFn();
-    if (res.error) throw res.error;
-    return res;
-  } catch (e: any) {
-    const msg = (e.message || '').toLowerCase();
-    const isAuthError =
-      msg.includes('jwt') ||
-      msg.includes('token') ||
-      msg.includes('session') ||
-      e.code === '401' ||
-      e.code === 'PGRST301';
-
-    const isNetworkAbort = isAbortError(e) || msg.includes('failed to fetch');
-
-    if ((isAuthError || isNetworkAbort) && retryCount < 2 && supabase) {
-      console.log(`🔄 Recovery Triggered (${isAuthError ? 'Auth' : 'Network'})`);
-
-      try {
-        if (isAuthError) {
-          await withHardTimeout(supabase.auth.refreshSession());
-        } else {
-          await new Promise(r => setTimeout(r, 500));
-        }
-      } catch {
-        // ignore
-      }
-
-      return fetchWithAuthRetry(queryFn, retryCount + 1);
-    }
-
-    throw e;
-  }
-};
-
-// ---------------------------
-// DB API
-// ---------------------------
-
-export const db = {
-  getQueueCount: () => getOutbox().length,
-  isFlushing: () => !!activeFlushPromise,
-
-  resetLocks: () => {
-    activeFlushPromise = null;
-    currentFlushSessionId++;
-    if (flushWatchdog) clearTimeout(flushWatchdog);
-    flushWatchdog = null;
-    syncInspector.log('info', 'LOCKED', `Locks reset. Session ${currentFlushSessionId}`);
-    syncInspector.updateSnapshot({ isFlushing: false });
-  },
-
-  subscribeToChanges: (callback: Function) => {
-    subscribers.push(callback);
-    return () => {
-      subscribers = subscribers.filter(cb => cb !== callback);
-    };
-  },
-
-  // ---------------------------
-  // GET CLIENTS
-  // ---------------------------
-  getClients: async (userId?: string): Promise<Client[]> => {
-    let localClients: Client[] = [];
-    try {
-      const raw = localStorage.getItem(DB_KEYS.CLIENTS);
-      localClients = raw ? JSON.parse(raw) : [];
-    } catch {}
-
-    if (!isSupabaseConfigured() || !supabase) return localClients;
-
-    try {
-      // FIX: Added intermediate 'unknown' cast to safely convert Supabase builder to Promise<any>
-      const { data } = await fetchWithAuthRetry(() =>
-        (supabase.from('clients').select('*') as unknown) as Promise<any>
-      );
-
-      const map = new Map<string, Client>();
-      localClients.forEach(c => map.set(c.id, c));
-
-      const outboxIds = new Set(getOutbox().map(i => i.id));
-
-      (data || []).forEach((row: any) => {
-        const cloud: Client = {
-          ...row.data,
-          id: row.id,
-          _ownerId: row.user_id,
-          lastUpdated: row.updated_at || row.data.lastUpdated
-        };
-
-        const local = map.get(cloud.id);
-        const pending = outboxIds.has(cloud.id);
-        const cloudNewer =
-          !local ||
-          new Date(cloud.lastUpdated).getTime() >
-            new Date(local.lastUpdated).getTime();
-
-        if (!pending && cloudNewer) {
-          map.set(cloud.id, cloud);
-        }
-      });
-
-      const merged = Array.from(map.values());
-      localStorage.setItem(DB_KEYS.CLIENTS, JSON.stringify(merged));
-      return merged;
-    } catch (e: any) {
-      const lvl = isAbortError(e) ? 'warn' : 'error';
-      syncInspector.log(lvl, 'CLOUD_ERR', `Read failed: ${e.message}`);
-      return localClients;
-    }
-  },
-
-  // ---------------------------
-  // SAVE CLIENT
-  // ---------------------------
-  saveClient: async (client: Client, userId?: string): Promise<Client> => {
-    const now = new Date().toISOString();
-    const updated = { ...client, lastUpdated: now };
-
-    // Update local
-    const raw = localStorage.getItem(DB_KEYS.CLIENTS);
-    const list: Client[] = raw ? JSON.parse(raw) : [];
-    const idx = list.findIndex(c => c.id === updated.id);
-    if (idx >= 0) list[idx] = updated;
-    else list.unshift(updated);
-    localStorage.setItem(DB_KEYS.CLIENTS, JSON.stringify(list));
-
-    // Queue for cloud
-    const outbox = getOutbox().filter(i => i.id !== updated.id);
-    outbox.push({
-      id: updated.id,
-      data: updated,
-      userId: userId || updated._ownerId || 'unknown',
-      queuedAt: Date.now(),
-      attempts: 0
-    });
-    saveOutbox(outbox);
-
-    // Trigger flush
-    if (navigator.onLine) {
-      try {
-        await db.flushCloudQueue(userId);
-        const pending = getOutbox().find(i => i.id === updated.id);
-        if (pending && pending.attempts === 0) {
-          db.flushCloudQueue(userId).catch(() => {});
-        }
-      } catch {}
-    }
-
-    return updated;
-  },
-
-  // ---------------------------
-  // DELETE CLIENT
-  // ---------------------------
-  deleteClient: async (id: string): Promise<void> => {
-    const raw = localStorage.getItem(DB_KEYS.CLIENTS);
-    const list: Client[] = raw ? JSON.parse(raw) : [];
-    localStorage.setItem(DB_KEYS.CLIENTS, JSON.stringify(list.filter(c => c.id !== id)));
-
-    saveOutbox(getOutbox().filter(i => i.id !== id));
-
-    if (isSupabaseConfigured() && supabase) {
-      try {
-        await supabase.from('clients').delete().eq('id', id);
-      } catch (e: any) {
-        if (!isAbortError(e)) throw e;
-      }
-    }
-  },
-
-  // ---------------------------
-  // BULK CREATE
-  // ---------------------------
-  createClientsBulk: async (newClients: Client[], userId: string): Promise<void> => {
-    const raw = localStorage.getItem(DB_KEYS.CLIENTS);
-    const list: Client[] = raw ? JSON.parse(raw) : [];
-    localStorage.setItem(DB_KEYS.CLIENTS, JSON.stringify([...newClients, ...list]));
-
-    const outbox = getOutbox();
-    newClients.forEach(c => {
-      outbox.push({
-        id: c.id,
-        data: c,
-        userId,
-        queuedAt: Date.now(),
-        attempts: 0
-      });
-    });
-    saveOutbox(outbox);
-
-    db.flushCloudQueue(userId).catch(() => {});
-  },
-
-  // ---------------------------
-  // TRANSFER OWNERSHIP
-  // ---------------------------
-  transferOwnership: async (clientId: string, newOwnerId: string): Promise<void> => {
-    const raw = localStorage.getItem(DB_KEYS.CLIENTS);
-    const list: Client[] = raw ? JSON.parse(raw) : [];
-    const idx = list.findIndex(c => c.id === clientId);
-    if (idx >= 0) {
-      list[idx] = { ...list[idx], _ownerId: newOwnerId };
-      localStorage.setItem(DB_KEYS.CLIENTS, JSON.stringify(list));
-    }
-
-    if (isSupabaseConfigured() && supabase) {
-      const { data } = await supabase
-        .from('clients')
-        .select('data')
-        .eq('id', clientId)
-        .single();
-
-      if (data) {
-        const newData = { ...data.data, _ownerId: newOwnerId };
-        await supabase
-          .from('clients')
-          .update({ user_id: newOwnerId, data: newData })
-          .eq('id', clientId);
-      }
-    }
-  },
-
-  // ---------------------------
-  // FLUSH CLOUD QUEUE
-  // ---------------------------
-  flushCloudQueue: async (userId?: string) => {
-    if (typeof navigator !== 'undefined' && !navigator.onLine) return;
-    if (activeFlushPromise) return activeFlushPromise;
-
-    const mySessionId = currentFlushSessionId;
-
-    activeFlushPromise = (async () => {
-      const initialOutbox = getOutbox();
-      if (initialOutbox.length === 0) return;
-
-      syncInspector.updateSnapshot({
-        isFlushing: true,
-        lastSaveAttemptAt: Date.now()
-      });
-
-      if (flushWatchdog) clearTimeout(flushWatchdog);
-      flushWatchdog = setTimeout(() => {
-        if (activeFlushPromise) db.resetLocks();
-      }, FLUSH_WATCHDOG_MS);
-
-      const successfulIds = new Set<string>();
-      const processingErrors = new Map<string, string>();
-
-      try {
-        for (const item of initialOutbox) {
-          // If a new flush session started, stop this one
-          if (currentFlushSessionId !== mySessionId) return;
-
-          // Drop items that exceeded retry limits
-          if (item.attempts > MAX_RETRIES) {
-            syncInspector.log(
-              'error',
-              'CLOUD_ERR',
-              `Dropping item ${item.id} - Max retries exceeded`
-            );
-            successfulIds.add(item.id);
-            continue;
-          }
-
-          try {
-            // ---------------------------
-            // SESSION VALIDATION
-            // ---------------------------
-            const { data: sData, error: sErr } = await withHardTimeout(
-              supabase.auth.getSession()
-            );
-
-            if (sErr || !sData?.session) {
-              const { data: rData, error: rErr } = await withHardTimeout(
-                supabase.auth.refreshSession()
-              );
-              if (rErr || !rData.session) {
-                throw new Error("Auth Stale - Re-login required");
-              }
-            }
-
-            // ---------------------------
-            // UPSERT PAYLOAD
-            // ---------------------------
-            const payload = {
-              id: item.id,
-              user_id: item.userId || userId,
-              data: {
-                ...item.data,
-                _ownerId: item.userId || userId
-              },
-              updated_at: item.data.lastUpdated
-            };
-
-            await upsertWithTimeout('clients', payload, SYNC_TIMEOUT_MS);
-
-            successfulIds.add(item.id);
-            syncInspector.updateSnapshot({
-              lastCloudOkAt: Date.now(),
-              lastSaveOkAt: Date.now()
-            });
-          } catch (err: any) {
-            const msg = (err.message || '').toLowerCase();
-            const isAuthError =
-              msg.includes("auth stale") ||
-              msg.includes("jwt") ||
-              msg.includes("session") ||
-              err.code === '401';
-
-            const isAbort = isAbortError(err);
-
-            // ---------------------------
-            // RETRY PATH
-            // ---------------------------
-            if (isAuthError || isAbort) {
-              const label = isAuthError ? "Auth Stale" : "Network Abort";
-              console.log(`⚠️ ${label} in write loop. Retrying...`);
-
-              try {
-                if (isAuthError) {
-                  await withHardTimeout(supabase.auth.refreshSession());
-                }
-                if (isAbort) {
-                  await new Promise(r => setTimeout(r, 800));
-                }
-
-                // Retry the upsert
-                await upsertWithTimeout(
-                  'clients',
-                  {
-                    id: item.id,
-                    user_id: item.userId || userId,
-                    data: {
-                      ...item.data,
-                      _ownerId: item.userId || userId
-                    },
-                    updated_at: item.data.lastUpdated
-                  },
-                  SYNC_TIMEOUT_MS
-                );
-
-                successfulIds.add(item.id);
-                continue;
-              } catch (retryErr) {
-                console.error(`Retry failed (${label}):`, retryErr);
-              }
-            }
-
-            // ---------------------------
-            // FINAL FAILURE PATH
-            // ---------------------------
-            if (isAbort) {
-              // Do NOT show global error banner
-              syncInspector.log(
-                'warn',
-                'TIMEOUT_ABORTED',
-                `Sync paused for ${item.id}`
-              );
-            } else {
-              processingErrors.set(item.id, err.message);
-              syncInspector.updateSnapshot({ lastCloudErr: err.message });
-            }
-          }
-        }
-      } finally {
-        // ---------------------------
-        // CLEANUP + OUTBOX UPDATE
-        // ---------------------------
-        if (currentFlushSessionId === mySessionId) {
-          const latest = getOutbox();
-          const finalOutbox = latest.filter(item => {
-            if (successfulIds.has(item.id)) return false;
-            if (processingErrors.has(item.id)) {
-              item.attempts += 1;
-              item.lastAttempt = Date.now();
-              return true;
-            }
-            return true;
-          });
-
-          saveOutbox(finalOutbox);
-          activeFlushPromise = null;
-
-          if (flushWatchdog) clearTimeout(flushWatchdog);
-
-          const updates: any = {
-            isFlushing: false,
-            queueCount: finalOutbox.length
-          };
-          if (finalOutbox.length === 0) updates.lastCloudErr = null;
-
-          syncInspector.updateSnapshot(updates);
-        }
-      }
-    })();
-
-    return activeFlushPromise;
-  }
+  OUTBOX: 'sproutly_outbox_v1',
+  TOKEN_CACHE: 'sproutly_auth_token_cache'
 };

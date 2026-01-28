@@ -212,7 +212,8 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
             label: `Age ${currentSimAge}`,
             invested: Math.round(valInv),
             conservative: Math.round(valCons),
-            bank: Math.round(valBank)
+            bank: Math.round(valBank),
+            liquidity: Math.round(valBank) // Add liquidity property to match type
         });
     }
     

@@ -7,8 +7,9 @@ import {
 } from '../types';
 import { getAge, toNum, generateRefCode } from '../lib/helpers';
 import { computeCpf } from '../lib/calculators';
+import { useAuth } from './AuthContext';
+import { db } from '../lib/db'; // Import strict UUID generator
 
-// --- INITIAL STATES ---
 export const INITIAL_PROFILE: Profile = {
   name: '', dob: '', gender: 'male', email: '', phone: '',
   employmentStatus: 'employed', grossSalary: '', monthlyIncome: '', takeHome: '',
@@ -40,7 +41,7 @@ export const INITIAL_CRM_STATE = {
   momentumScore: 50,
   sales: [] as Sale[],
   familyMembers: [] as FamilyMember[],
-  policies: [] as Policy[], // CRM policies
+  policies: [] as Policy[],
   notes: [] as Note[],
   goals: '',
   milestones: { createdAt: new Date().toISOString() },
@@ -48,7 +49,6 @@ export const INITIAL_CRM_STATE = {
   portfolios: [] as PortfolioItem[]
 };
 
-// Status Mapping for Readable UI
 const STATUS_TO_STAGE: Record<string, string> = {
   'new': 'New Lead',
   'contacted': 'Contacted',
@@ -60,7 +60,6 @@ const STATUS_TO_STAGE: Record<string, string> = {
   'client': 'Client',
   'case_closed': 'Case Closed',
   'not_keen': 'Lost',
-  // NPU Stages - Explicitly Mapped now
   'npu_1': 'NPU 1', 
   'npu_2': 'NPU 2',
   'npu_3': 'NPU 3',
@@ -69,23 +68,7 @@ const STATUS_TO_STAGE: Record<string, string> = {
   'npu_6': 'NPU 6'
 };
 
-// Robust UUID Generator (Fallback for non-secure contexts)
-const safeUUID = () => {
-  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-    try {
-      return crypto.randomUUID();
-    } catch (e) {
-      // Fallback if crypto.randomUUID fails (e.g. non-secure context)
-    }
-  }
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-    var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
-    return v.toString(16);
-  });
-};
-
 interface ClientContextType {
-  // Metadata
   clientId: string | null;
   clientRef: string | null;
   lastUpdated: string;
@@ -94,8 +77,6 @@ interface ClientContextType {
   documents: any;
   ownerId: string | null;
   ownerEmail: string | null;
-
-  // Core State
   profile: Profile;
   expenses: Expenses;
   customExpenses: CustomExpense[];
@@ -110,8 +91,6 @@ interface ClientContextType {
   nineBoxState: NineBoxState;
   crmState: typeof INITIAL_CRM_STATE;
   chatHistory: ChatMessage[];
-
-  // Setters
   setProfile: (p: Profile) => void;
   setExpenses: (e: Expenses) => void;
   setCustomExpenses: (e: CustomExpense[]) => void;
@@ -125,31 +104,24 @@ interface ClientContextType {
   setRetirement: (r: RetirementSettings) => void;
   setNineBoxState: (s: NineBoxState) => void;
   setCrmState: (s: typeof INITIAL_CRM_STATE) => void;
-  setOwnerId: (id: string | null) => void; // Added for Admin assignment
+  setOwnerId: (id: string | null) => void;
   setChatHistory: (history: ChatMessage[]) => void;
-
-  // Derived Data (Calculated)
   age: number;
   cpfData: CpfData;
   cashflowData: CashflowData;
-  
-  // Actions
   loadClient: (client: Client) => void;
-  promoteToSaved: (client: Client) => void; // New method for stable ID
+  promoteToSaved: (client: Client) => void;
   resetClient: () => void;
-  generateClientObject: () => Client; // For saving
+  generateClientObject: () => Client;
 }
 
 const ClientContext = createContext<ClientContextType | undefined>(undefined);
 
 export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  // State
+  const { user } = useAuth();
   const [clientId, setClientId] = useState<string | null>(null);
   const [clientRef, setClientRef] = useState<string | null>(null);
-  
-  // Stable Draft IDs (Prevent Duplicates on Autosave)
-  // These persist across renders even if state updates haven't propagated
-  const draftId = useRef<string>(safeUUID());
+  const draftId = useRef<string>(db.generateUuid());
   const draftRefCode = useRef<string>(generateRefCode());
 
   const [lastUpdated, setLastUpdated] = useState<string>(new Date().toISOString());
@@ -174,12 +146,10 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const [crmState, setCrmState] = useState(INITIAL_CRM_STATE);
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
 
-  // Sync profile children with children state
   useEffect(() => {
     setProfile(p => ({ ...p, children: childrenState }));
   }, [childrenState]);
 
-  // Derived Calculations
   const age = useMemo(() => getAge(profile.dob), [profile.dob]);
   
   const cpfData = useMemo(() => {
@@ -192,33 +162,20 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
                            customExpenses.reduce((a: number, b) => a + toNum(b.amount), 0);
      const takeHome = toNum(profile.takeHome) || (cpfData ? cpfData.takeHome : 0);
      const monthlySavings = takeHome - totalExpenses;
-     return {
-        takeHome,
-        totalExpenses,
-        monthlySavings,
-        annualSavings: monthlySavings * 12,
-        savingsRate: takeHome > 0 ? (monthlySavings / takeHome) * 100 : 0
-     };
+     return { takeHome, totalExpenses, monthlySavings, annualSavings: monthlySavings * 12, savingsRate: takeHome > 0 ? (monthlySavings / takeHome) * 100 : 0 };
   }, [expenses, customExpenses, profile.takeHome, cpfData]);
 
-  // Actions
   const loadClient = (c: Client) => {
     setClientId(c.id);
     setClientRef(c.referenceCode || null);
     setLastUpdated(c.lastUpdated);
-    
-    // SAFETY SYNC: Ensure dealValue is populated from value if missing
     const safeFollowUp = c.followUp || { status: 'new' };
-    if (c.value && !safeFollowUp.dealValue) {
-        safeFollowUp.dealValue = c.value.toString();
-    }
+    if (c.value && !safeFollowUp.dealValue) safeFollowUp.dealValue = c.value.toString();
     setFollowUp(safeFollowUp);
-    
     setAppointments(c.appointments || {});
     setDocuments(c.documents || []);
     setOwnerId(c._ownerId || null);
     setOwnerEmail(c._ownerEmail || null);
-
     setProfile(c.profile || INITIAL_PROFILE);
     setExpenses(c.expenses || INITIAL_EXPENSES);
     setCustomExpenses(c.customExpenses || []);
@@ -232,8 +189,6 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     setRetirement(c.retirement || INITIAL_RETIREMENT);
     setNineBoxState(c.nineBoxState || INITIAL_NINE_BOX);
     setChatHistory(c.chatHistory || []);
-
-    // Load CRM specific fields
     setCrmState({
       company: c.company || '',
       platform: c.platform || 'Personal',
@@ -244,37 +199,29 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       policies: c.policies || [],
       notes: c.notes || [],
       goals: c.goals || '',
-      milestones: {
-        createdAt: c.milestones?.createdAt || c.lastUpdated,
-        ...c.milestones
-      },
+      milestones: { createdAt: c.milestones?.createdAt || c.lastUpdated, ...c.milestones },
       nextAction: c.nextAction || '',
       portfolios: c.portfolios || []
     });
   };
 
   const promoteToSaved = (saved: Client) => {
-    // Only update identity fields to prevent race conditions with typing form data
     setClientId(saved.id);
     if (saved.referenceCode) setClientRef(saved.referenceCode);
     if (saved.lastUpdated) setLastUpdated(saved.lastUpdated);
-    // We assume the rest of the state (profile, etc) is already ahead or equal to saved because `saved` came from our state
   };
 
   const resetClient = () => {
     setClientId(null);
     setClientRef(null);
-    // Regenerate stable drafts for new session
-    draftId.current = safeUUID();
+    draftId.current = db.generateUuid(); // STRICT UUID
     draftRefCode.current = generateRefCode();
-
     setLastUpdated(new Date().toISOString());
     setFollowUp({ status: 'new' });
     setAppointments({});
     setDocuments([]);
     setOwnerId(null);
     setOwnerEmail(null);
-
     setProfile(INITIAL_PROFILE);
     setExpenses(INITIAL_EXPENSES);
     setCustomExpenses([]);
@@ -292,17 +239,24 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   };
 
   const generateClientObject = (): Client => {
-    // Derive the human-readable stage from the system status
-    // This prevents "new" overwriting "New Lead" on save if mismatched
+    if (!user) throw new Error("CRITICAL: Cannot save without active user session.");
+    
     const derivedStage = STATUS_TO_STAGE[followUp.status] || followUp.status || 'New Lead';
-
-    // Use stable draft ID if clientId is not yet set (prevents duplicates on re-save)
     const finalId = clientId || draftId.current;
+    
+    // Safety check: if draftId was somehow malformed, regenerate it
+    if (!db.isValidUuid(finalId)) {
+        draftId.current = db.generateUuid();
+    }
+    
+    const validId = clientId || draftId.current;
     const finalRef = clientRef || draftRefCode.current;
+    const currentOrgId = user.organizationId || 'org_default';
 
     return {
-      id: finalId,
+      id: validId,
       referenceCode: finalRef,
+      organizationId: currentOrgId,
       profile: { ...profile, children: childrenState },
       expenses,
       customExpenses,
@@ -318,25 +272,20 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       followUp,
       appointments,
       documents,
-      _ownerId: ownerId || undefined,
-      _ownerEmail: ownerEmail || undefined,
-      chatHistory, // Save history
-
-      // CRM Top-Level Shortcuts (Derived)
+      _ownerId: ownerId || user.id,
+      _ownerEmail: ownerEmail || user.email,
+      chatHistory,
       name: profile.name,
       email: profile.email,
       phone: profile.phone,
       jobTitle: profile.jobTitle || '',
       retirementAge: toNum(profile.retirementAge),
       tags: profile.tags || [],
-      
-      stage: derivedStage, // Use mapped value
+      stage: derivedStage,
       priority: followUp.priority || 'Medium',
       value: toNum(followUp.dealValue),
       lastContact: followUp.lastContactedAt || '',
       firstApptDate: appointments.firstApptDate,
-
-      // CRM State Fields
       company: crmState.company,
       platform: crmState.platform,
       contactStatus: crmState.contactStatus,
@@ -355,24 +304,14 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   return (
     <ClientContext.Provider value={{
       clientId, clientRef, lastUpdated, followUp, appointments, documents,
-      ownerId, ownerEmail,
-      profile, setProfile,
-      expenses, setExpenses,
-      customExpenses, setCustomExpenses,
-      children: childrenState, setChildren: setChildrenState,
-      cpfState, setCpfState,
-      cashflowState, setCashflowState,
-      insuranceState, setInsuranceState,
-      investorState, setInvestorState,
-      propertyState, setPropertyState,
-      wealthState, setWealthState,
-      retirement, setRetirement,
-      nineBoxState, setNineBoxState,
-      crmState, setCrmState,
-      age, cpfData, cashflowData,
-      setOwnerId,
-      chatHistory, setChatHistory,
-      loadClient, promoteToSaved, resetClient, generateClientObject
+      ownerId, ownerEmail, profile, setProfile, expenses, setExpenses,
+      customExpenses, setCustomExpenses, children: childrenState, setChildren: setChildrenState,
+      cpfState, setCpfState, cashflowState, setCashflowState,
+      insuranceState, setInsuranceState, investorState, setInvestorState,
+      propertyState, setPropertyState, wealthState, setWealthState,
+      retirement, setRetirement, nineBoxState, setNineBoxState,
+      crmState, setCrmState, age, cpfData, cashflowData, setOwnerId,
+      chatHistory, setChatHistory, loadClient, promoteToSaved, resetClient, generateClientObject
     }}>
       {children}
     </ClientContext.Provider>
@@ -381,8 +320,6 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 
 export const useClient = () => {
   const context = useContext(ClientContext);
-  if (context === undefined) {
-    throw new Error('useClient must be used within a ClientProvider');
-  }
+  if (context === undefined) throw new Error('useClient must be used within a ClientProvider');
   return context;
 };

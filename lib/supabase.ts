@@ -37,9 +37,9 @@ const rawUrl =
   getEnv('NEXT_PUBLIC_SUPABASE_URL') ||
   'https://koibycgvdasjphceqmqo.supabase.co'; 
 
-const SUPABASE_URL = rawUrl ? rawUrl.replace(/\/$/, '') : '';
+export const SUPABASE_URL = rawUrl ? rawUrl.replace(/\/$/, '') : '';
 
-const SUPABASE_ANON_KEY = 
+export const SUPABASE_ANON_KEY = 
   getEnv('VITE_SUPABASE_ANON_KEY') || 
   getEnv('REACT_APP_SUPABASE_ANON_KEY') || 
   getEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY') ||
@@ -59,22 +59,8 @@ if (!isConfigured) {
   console.log('Supabase configured with URL:', SUPABASE_URL);
 }
 
-// FORCE KEEPALIVE: This tells the browser to NOT kill the request if the tab closes/backgrounds.
-const fetchWithKeepAlive = (url: RequestInfo | URL, init?: RequestInit) => {
-  return fetch(url, { ...init, keepalive: true });
-};
-
 export const supabase = isConfigured 
-  ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-      global: {
-        fetch: fetchWithKeepAlive
-      },
-      auth: {
-        persistSession: true,
-        autoRefreshToken: true,
-        detectSessionInUrl: true
-      }
-    }) 
+  ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) 
   : null;
 
 export const isSupabaseConfigured = () => !!isConfigured;

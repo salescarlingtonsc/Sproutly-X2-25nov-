@@ -1,4 +1,3 @@
-
 import React from 'react';
 import { TAB_DEFINITIONS, TAB_GROUPS, canAccessTab } from '../../lib/config';
 import { UserProfile } from '../../types';
@@ -51,23 +50,13 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, user, isOpen
         {/* Scrollable Nav Area */}
         <div className="flex-1 overflow-y-auto py-6 px-3 space-y-8 custom-scrollbar">
           {TAB_GROUPS.map((group, groupIdx) => {
-            // Filter visible tabs based on permissions
             const visibleTabs = group.tabs.filter(tabId => {
                if (!user) return false;
-               
-               // Admin tab logic handled explicitly here for safety
                if (tabId === 'admin' && user.role !== 'admin' && user.role !== 'director' && !user.isAgencyAdmin && user.role !== 'manager') return false;
-               
                const accessible = canAccessTab(user, tabId);
-
-               // STRICT MODE: If user has a custom modules array (even empty),
-               // we HIDE tabs they don't have access to, rather than showing them as locked.
-               // This implements the "Strict Override" behavior requested.
                if (Array.isArray(user.modules)) {
                    return accessible;
                }
-
-               // STANDARD MODE: Show all tabs for the group, inaccessible ones will be rendered as "Locked" (Upsell opportunity)
                return true;
             });
 
@@ -120,7 +109,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, user, isOpen
         {/* Footer Area */}
         <div className="p-4 border-t border-gray-100 bg-gray-50/50">
            <div className="text-[10px] text-gray-400 font-medium text-center">
-              v2.5.0 • <span className="text-emerald-500">Online</span>
+              v6.0.0 • <span className="text-emerald-500 font-bold uppercase">Enterprise Standard</span>
            </div>
         </div>
       </div>

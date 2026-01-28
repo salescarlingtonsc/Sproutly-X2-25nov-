@@ -1,5 +1,5 @@
 import React, { memo, useState, useRef, useEffect } from 'react';
-import { Client } from '../../../types';
+import { Client, ContactStatus } from '../../../types';
 import EditableCell from './EditableCell';
 import StatusDropdown from './StatusDropdown';
 import { interpolateTemplate, DEFAULT_TEMPLATES } from '../../../lib/templates';
@@ -40,10 +40,12 @@ const CrmRow: React.FC<CrmRowProps> = memo(({
 
   // Stagnation Logic
   const isStale = (() => {
+    // FIX: Safe access to followUp.status
+    const status = client.followUp?.status || 'new';
     const terminalStatuses = ['case_closed', 'client', 'not_keen'];
-    if (terminalStatuses.includes(client.followUp.status)) return false;
+    if (terminalStatuses.includes(status)) return false;
     
-    const lastContact = client.followUp.lastContactedAt ? new Date(client.followUp.lastContactedAt).getTime() : 0;
+    const lastContact = client.followUp?.lastContactedAt ? new Date(client.followUp.lastContactedAt).getTime() : 0;
     const lastUpdated = client.lastUpdated ? new Date(client.lastUpdated).getTime() : 0;
     const mostRecentActivity = Math.max(lastContact, lastUpdated);
     
@@ -225,7 +227,7 @@ const CrmRow: React.FC<CrmRowProps> = memo(({
                   <EditableCell 
                     value={cellValue} type={col.type} isActive={isActive} isEditing={isEditing}
                     onEditStart={() => onSetEditing(client.id, col.id)}
-                    onEditStop={onStopEditing}
+                    onStopEditing={onStopEditing}
                     onChange={(v) => onUpdate(client.id, col.field, v, col.section)} 
                   />
                )}
