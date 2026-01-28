@@ -114,6 +114,8 @@ const CrmTab: React.FC<CrmTabProps> = ({
   const availableAdvisors = useMemo(() => {
     const map = new Map<string, string>();
     clients.forEach(c => {
+      // Defensive check for malformed client object
+      if (!c) return;
       const ownerId = c.advisorId || c._ownerId;
       if (ownerId) {
          let label = advisorMap[ownerId] || c._ownerEmail || `Advisor ${ownerId.substring(0, 4)}`;
@@ -135,7 +137,7 @@ const CrmTab: React.FC<CrmTabProps> = ({
 
   useEffect(() => {
     if (selectedClientId && clients.length > 0) {
-        const matchedClient = clients.find(c => c.id === selectedClientId);
+        const matchedClient = clients.find(c => c && c.id === selectedClientId);
         if (matchedClient) setActiveDetailClient(matchedClient);
     }
   }, [selectedClientId, clients]);
@@ -164,6 +166,9 @@ const CrmTab: React.FC<CrmTabProps> = ({
 
   const filteredClients = useMemo(() => {
     let filtered = clients.filter(client => {
+      // STRICT HARDENING: Skip null/undefined clients
+      if (!client) return false;
+
       const name = client.name || client.profile?.name || '';
       const company = client.company || '';
       const phone = client.phone || client.profile?.phone || '';
@@ -189,6 +194,9 @@ const CrmTab: React.FC<CrmTabProps> = ({
 
     if (sortConfig.key) {
         filtered.sort((a, b) => {
+            // Safety Check
+            if (!a || !b) return 0;
+
             let aVal: any = '';
             let bVal: any = '';
             switch (sortConfig.key) {
@@ -238,7 +246,8 @@ const CrmTab: React.FC<CrmTabProps> = ({
     STATUS_ORDER.forEach(s => groups[s] = []);
     groups['other'] = [];
     visibleClients.forEach(c => {
-        // DEFENSIVE ACCESS
+        // STRICT HARDENING: Skip missing or malformed records
+        if (!c) return;
         const status = c.followUp?.status || 'new';
         if (groups[status]) groups[status].push(c);
         else groups['other'].push(c);
@@ -528,6 +537,7 @@ const ClientRow: React.FC<{
             <td className="px-4 py-3" onClick={e => e.stopPropagation()}><input type="checkbox" checked={isSelected} onChange={onToggle} className="rounded border-slate-300 text-indigo-600 cursor-pointer" /></td>
             <td className="px-4 py-3"><div className="font-bold text-slate-800">{client.name}</div><div className="text-xs text-slate-400">{client.company}</div></td>
             {showAdvisor && <td className="px-4 py-3 text-xs font-medium text-slate-600 truncate max-w-[150px]">{advisorName || 'Unassigned'}</td>}
+            {/* Fix: use onStatusUpdate as specified in props destructuring */}
             <td className="px-4 py-3" onClick={e => e.stopPropagation()}><StatusDropdown client={client} onUpdate={onStatusUpdate} /></td>
             <td className="px-4 py-3"><div className="text-sm font-bold text-slate-700">{client.momentumScore || 50}/100</div><div className="text-xs text-slate-400">${(client.value || 0).toLocaleString()}</div></td>
             <td className="px-4 py-3 text-xs text-slate-500"><div>📞 {client.phone || '-'}</div><div>✉️ {client.email || '-'}</div></td>

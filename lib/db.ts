@@ -3,7 +3,7 @@ import { Client } from '../types';
 import { syncInspector, SyncCausality } from './syncInspector';
 import Dexie, { type EntityTable } from 'dexie';
 
-console.log("🚀 Sproutly DB v24.0: Bi-Directional Orchestrator");
+console.log("🚀 Sproutly DB v24.1: Hardened Bi-Directional Orchestrator");
 
 // --- DEXIE DURABILITY LAYER ---
 interface DBClient {
@@ -363,7 +363,10 @@ export const db = {
 
   getClients: async (_userId?: string) => {
       const records = await dbStore.clients.toArray();
-      return records.map(r => ({ ...r.data, id: r.id }));
+      // Hardened filter: ensure only valid records with data objects survive
+      return records
+          .filter(r => r && r.data)
+          .map(r => ({ ...r.data, id: r.id }));
   },
 
   saveClient: async (client: Client, userId?: string, causality?: SyncCausality) => {
