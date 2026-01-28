@@ -1,9 +1,9 @@
 import { supabase } from './supabase';
-import { Client } from '../types';
+import { Client, ContactStatus, Profile } from '../types';
 import { syncInspector, SyncCausality } from './syncInspector';
 import Dexie, { type EntityTable } from 'dexie';
 
-console.log("🚀 Sproutly DB v24.1: Hardened Bi-Directional Orchestrator");
+console.log("🚀 Sproutly DB v24.2: Self-Healing Bi-Directional Orchestrator");
 
 // --- DEXIE DURABILITY LAYER ---
 interface DBClient {
@@ -361,12 +361,45 @@ export const db = {
     if (error) throw error;
   },
 
-  getClients: async (_userId?: string) => {
+  /**
+   * INBOUND SYNC: Retrieves leads and ensures data integrity.
+   */
+  getClients: async (_userId?: string): Promise<Client[]> => {
       const records = await dbStore.clients.toArray();
-      // Hardened filter: ensure only valid records with data objects survive
+      // Hardened filter & Self-Healing: ensure every client strictly adheres to Client interface
       return records
           .filter(r => r && r.data)
-          .map(r => ({ ...r.data, id: r.id }));
+          .map(r => {
+            const raw = r.data as Client;
+            
+            // Mandatory Profile fields for TS compatibility
+            const profileFallback: Profile = {
+              name: 'Unnamed Lead',
+              dob: '',
+              gender: 'male',
+              email: '',
+              phone: '',
+              employmentStatus: 'employed',
+              grossSalary: '',
+              monthlyIncome: '',
+              takeHome: '',
+              retirementAge: '65',
+              customRetirementExpense: '',
+              monthlyInvestmentAmount: '',
+              referenceYear: new Date().getFullYear(),
+              referenceMonth: new Date().getMonth(),
+              children: [],
+              tags: []
+            };
+
+            return {
+              ...raw,
+              id: r.id,
+              // Self-healing: guarantee sub-objects exist and are fully populated
+              profile: raw.profile ? { ...profileFallback, ...raw.profile } : profileFallback,
+              followUp: raw.followUp || { status: 'new' as ContactStatus }
+            } as Client;
+          });
   },
 
   saveClient: async (client: Client, userId?: string, causality?: SyncCausality) => {

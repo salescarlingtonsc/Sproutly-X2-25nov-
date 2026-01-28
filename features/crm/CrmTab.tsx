@@ -314,7 +314,6 @@ const CrmTab: React.FC<CrmTabProps> = ({
         setAdvisorFilter={setAdvisorFilter}
         availableAdvisors={availableAdvisors}
         onStageClick={(stage) => setStageFilter(stage)}
-        onMomentumClick={(range) => setMomentumFilter(range)}
       />
 
       <div className="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">

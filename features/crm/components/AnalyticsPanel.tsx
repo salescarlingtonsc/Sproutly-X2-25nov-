@@ -32,7 +32,12 @@ export const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({
   }, [clients, advisorFilter]);
 
   const stats = useMemo(() => {
-      const activeLeads = filteredPanelClients.filter(c => !['client', 'case_closed', 'not_keen'].includes(c.followUp?.status || ''));
+      // Hardened Status Access
+      const activeLeads = filteredPanelClients.filter(c => {
+          const status = c?.followUp?.status || 'new';
+          return !['client', 'case_closed', 'not_keen'].includes(status);
+      });
+      
       const totalPipeline = filteredPanelClients.reduce((acc, c) => acc + (toNum(c.value) || 0), 0);
       const avgDeal = activeLeads.length > 0 ? totalPipeline / activeLeads.length : 0;
       const hotOpportunities = filteredPanelClients.filter(c => (c.momentumScore || 0) > 70);
