@@ -189,8 +189,7 @@ const CrmTab: React.FC<CrmTabProps> = ({
                             phone.includes(searchTerm) ||
                             (client.tags || []).some(t => t.toLowerCase().includes(searchTerm.toLowerCase()));
       
-      // STRICT OPTIONAL CHAINING
-      const currentStatus = client.followUp?.status || client.stage || 'new';
+      const currentStatus = client.followUp.status || client.stage || 'new';
       const matchesStage = stageFilter === 'All' || currentStatus === stageFilter || client.stage === stageFilter;
       const effectiveOwner = client.advisorId || client._ownerId;
       const matchesAdvisor = advisorFilter === 'All' || effectiveOwner === advisorFilter;
@@ -219,9 +218,8 @@ const CrmTab: React.FC<CrmTabProps> = ({
                     bVal = (advisorMap[bId] || b._ownerEmail || '').toLowerCase();
                     break;
                 case 'stage':
-                    // STRICT OPTIONAL CHAINING
-                    aVal = (a.stage || a.followUp?.status || '').toLowerCase();
-                    bVal = (b.stage || b.followUp?.status || '').toLowerCase();
+                    aVal = (a.stage || a.followUp.status || '').toLowerCase();
+                    bVal = (b.stage || b.followUp.status || '').toLowerCase();
                     break;
                 case 'pipeline':
                     aVal = a.value || 0;
@@ -255,8 +253,7 @@ const CrmTab: React.FC<CrmTabProps> = ({
     STATUS_ORDER.forEach(s => groups[s] = []);
     groups['other'] = [];
     visibleClients.forEach(c => {
-        // STRICT OPTIONAL CHAINING
-        const status = c.followUp?.status || 'new';
+        const status = c.followUp.status || 'new';
         if (groups[status]) groups[status].push(c);
         else groups['other'].push(c);
     });
@@ -305,7 +302,6 @@ const CrmTab: React.FC<CrmTabProps> = ({
           stage: newStageName,
           lastContact: now,
           lastUpdated: now,
-          // STRICT OPTIONAL CHAINING IN SPREAD
           followUp: { ...(client.followUp || { status: 'new' }), status: newStatus, lastContactedAt: now },
           notes: [{ id: `sys_${Date.now()}`, content: `Stage updated: ${client.stage || 'New'} ➔ ${newStageName}`, date: now, author: 'System' }, ...(client.notes || [])]
       };
@@ -499,7 +495,7 @@ const CrmTab: React.FC<CrmTabProps> = ({
       )}
 
       {/* ... MODALS ... */}
-      <CallSessionModal isOpen={isCallSessionOpen} onClose={() => setIsCallSessionOpen(false)} clients={clients} onUpdateClient={(c, changes) => onUpdateGlobalClient({...c, ...changes})} />
+      <CallSessionModal isOpen={isCallSessionOpen} onClose={() => setIsCallSessionOpen(false)} clients={sanitizedClients} onUpdateClient={(c, changes) => onUpdateGlobalClient({...c, ...changes})} />
       <Modal isOpen={isTemplateManagerOpen} onClose={() => setIsTemplateManagerOpen(false)} title="Personal Templates" footer={<button onClick={() => setIsTemplateManagerOpen(false)} className="px-4 py-2 text-xs font-bold text-slate-500 hover:bg-slate-100 rounded-lg">Close</button>}>
          <TemplateManager templates={templates} onUpdateTemplates={setTemplates} />
       </Modal>

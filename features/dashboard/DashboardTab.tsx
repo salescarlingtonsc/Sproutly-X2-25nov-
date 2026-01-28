@@ -322,7 +322,7 @@ const DashboardTab: React.FC<DashboardTabProps> = ({ user, clients, onLoadClient
             <div className={`${cardClasses} bg-emerald-50/50 border-emerald-100`}>
                 <p className="text-xs font-bold text-emerald-600 uppercase mb-1">Actionable Opps</p>
                 <p className="text-3xl font-black text-emerald-700">{kpiStats.actionableOpps}</p>
-                <div className="text-[10px] text-emerald-600 font-bold mt-2 uppercase">Momentum Score > 70</div>
+                <div className="text-[10px] text-emerald-600 font-bold mt-2 uppercase">Momentum Score &gt; 70</div>
             </div>
         </div>
 
