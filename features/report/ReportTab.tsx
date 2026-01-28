@@ -96,13 +96,17 @@ const ReportTab: React.FC<ReportTabProps> = ({ clients }) => {
 
     myClients.forEach(c => {
         const val = toNum(c.value);
-        if (c.followUp?.status === 'proposal') pipelineStages[0].value += val;
-        if (c.followUp?.status === 'pending_decision') pipelineStages[1].value += val;
+        const status = c.followUp?.status || c.stage || 'new';
+        if (status.toLowerCase() === 'proposal') pipelineStages[0].value += val;
+        if (status.toLowerCase() === 'pending_decision') pipelineStages[1].value += val;
     });
 
     // High Prob. Potential Clients (Top 5 by Momentum)
     const potentialClients = myClients
-        .filter(c => c.followUp?.status !== 'client' && c.followUp?.status !== 'case_closed')
+        .filter(c => {
+            const status = c.followUp?.status || c.stage || 'new';
+            return !['client', 'case_closed'].includes(status.toLowerCase());
+        })
         .sort((a,b) => (b.momentumScore || 0) - (a.momentumScore || 0))
         .slice(0, 5);
 

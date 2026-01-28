@@ -197,8 +197,12 @@ const PortfolioTab: React.FC<PortfolioTabProps> = ({ clients, onUpdateClient }) 
         contents: prompt
       });
       setAnalysisResult(res.text || "Analysis unavailable.");
-    } catch (e) {
-      toast.error("AI Analysis failed.");
+    } catch (e: any) {
+      if (e.name === 'AbortError' || e.message?.includes('aborted')) {
+          console.debug("Analysis aborted.");
+      } else {
+          toast.error("AI Analysis failed.");
+      }
     } finally {
       setIsAnalyzing(false);
     }

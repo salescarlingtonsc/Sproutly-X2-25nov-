@@ -1,14 +1,15 @@
-
 import React, { useState, useMemo } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, CartesianGrid, PieChart, Pie, Legend } from 'recharts';
 import { Client, Stage, Advisor, Product, Team } from '../../../types';
 import { LeadImporter } from './LeadImporter';
+import { ClientCard } from '../../crm/components/ClientCard';
 import Modal from '../../../components/ui/Modal';
 import Button from '../../../components/ui/Button';
 import { Activity } from '../../../lib/db/activities';
 import { fmtSGD } from '../../../lib/helpers';
 import { useToast } from '../../../contexts/ToastContext';
 import { generateDirectorBriefing } from '../../../lib/gemini';
+import { db } from '../../../lib/db';
 
 interface DirectorDashboardProps {
   clients: Client[];
@@ -19,7 +20,7 @@ interface DirectorDashboardProps {
   products: Product[];
   onUpdateClient: (client: Client) => void;
   onImport: (newClients: Client[]) => void;
-  onUpdateAdvisor: (advisor: Advisor) => Promise<void>; // Updated to Promise
+  onUpdateAdvisor: (advisor: Advisor) => Promise<void>; 
 }
 
 type TimeFilter = 'This Month' | 'Last Month' | 'This Quarter' | 'This Year' | 'All Time';
@@ -32,6 +33,10 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
   const [showImporter, setShowImporter] = useState(false);
   const [showGoalSetter, setShowGoalSetter] = useState(false);
   const [filterAdvisor, setFilterAdvisor] = useState<string>('all');
+  
+  // Search & Detail View State
+  const [leadSearch, setLeadSearch] = useState('');
+  const [viewingClient, setViewingClient] = useState<Client | null>(null);
   
   // Drill-down Modal States
   const [showActivityBreakdown, setShowActivityBreakdown] = useState(false);
@@ -55,17 +60,19 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
       return advisors.filter(a => a.teamId === myTeam.id);
   }, [advisors, teams, currentUser]);
 
-  // Active advisors only for dropdowns
   const activeManagedAdvisors = useMemo(() => {
       return managedAdvisors.filter(a => a.status === 'active' || a.status === 'approved');
   }, [managedAdvisors]);
 
   const managedClients = useMemo(() => {
-      const managedAdvisorIds = managedAdvisors.map(a => a.id);
-      return clients.filter(c => c.advisorId && managedAdvisorIds.includes(c.advisorId));
+      const managedAdvisorIds = new Set(managedAdvisors.map(a => a.id));
+      return clients.filter(c => {
+          const ownerId = c.advisorId || c._ownerId;
+          return !ownerId || managedAdvisorIds.has(ownerId);
+      });
   }, [clients, managedAdvisors]);
 
-  // --- Date Range Engine (The Truth Source) ---
+  // --- Date Range Engine ---
   const dateRange = useMemo(() => {
       const now = new Date();
       const start = new Date();
@@ -75,11 +82,11 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
       end.setHours(23,59,59,999);
 
       if (timeFilter === 'This Month') {
-          start.setDate(1); // 1st of current month
+          start.setDate(1); 
       } else if (timeFilter === 'Last Month') {
           start.setMonth(now.getMonth() - 1);
           start.setDate(1);
-          end.setDate(0); // Last day of previous month
+          end.setDate(0); 
       } else if (timeFilter === 'This Quarter') {
           const currQ = Math.floor(now.getMonth() / 3);
           start.setMonth(currQ * 3);
@@ -88,15 +95,14 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
           start.setMonth(0);
           start.setDate(1);
       } else {
-          start.setFullYear(2000); // All time
+          start.setFullYear(2000); 
       }
       return { start, end };
   }, [timeFilter]);
 
-  // --- Aggregated Metrics Calculation (Event-Based) ---
   const breakdownStats = useMemo(() => {
       return managedAdvisors.map(adv => {
-          const advClients = managedClients.filter(c => c.advisorId === adv.id);
+          const advClients = managedClients.filter(c => (c.advisorId || c._ownerId) === adv.id);
           
           let closureVol = 0;
           let contacted = 0;
@@ -105,40 +111,31 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
           let closed = 0;
 
           advClients.forEach(c => {
-              // 1. Sales Volume (Based on Sale Date)
               (c.sales || []).forEach(sale => {
-                  const saleDate = new Date(sale.date); // or inceptionDate
+                  const saleDate = new Date(sale.date);
                   if (saleDate >= dateRange.start && saleDate <= dateRange.end) {
                       closureVol += (sale.premiumAmount || 0);
                   }
               });
 
-              // 2. Closed Count (Client Level)
               if (c.milestones?.closedAt) {
                   const d = new Date(c.milestones.closedAt);
                   if (d >= dateRange.start && d <= dateRange.end) closed++;
               }
-
-              // 3. Contacted
               if (c.milestones?.contactedAt) {
                   const d = new Date(c.milestones.contactedAt);
                   if (d >= dateRange.start && d <= dateRange.end) contacted++;
               }
-
-              // 4. Appt Set
               if (c.milestones?.appointmentSetAt) {
                   const d = new Date(c.milestones.appointmentSetAt);
                   if (d >= dateRange.start && d <= dateRange.end) apptSet++;
               }
-
-              // 5. Appt Met
               if (c.milestones?.appointmentMetAt) {
                   const d = new Date(c.milestones.appointmentMetAt);
                   if (d >= dateRange.start && d <= dateRange.end) apptMet++;
               }
           });
 
-          // Ratios
           const efficiency = contacted > 0 ? (apptSet / contacted) * 100 : 0;
           const closeRate = apptMet > 0 ? (closed / apptMet) * 100 : 0;
 
@@ -155,7 +152,6 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
       }).sort((a, b) => b.closureVol - a.closureVol); 
   }, [managedAdvisors, managedClients, dateRange]);
 
-  // --- Top Level Totals ---
   const totalClosureVol = breakdownStats.reduce((acc, curr) => acc + curr.closureVol, 0);
   const totalContacted = breakdownStats.reduce((acc, curr) => acc + curr.contacted, 0);
   const totalApptSet = breakdownStats.reduce((acc, curr) => acc + curr.apptSet, 0);
@@ -165,7 +161,6 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
   const avgEfficiency = totalContacted > 0 ? (totalApptSet / totalContacted * 100) : 0;
   const avgCloseRate = totalApptMet > 0 ? (totalClosed / totalApptMet * 100) : 0;
 
-  // --- Funnel Data ---
   const funnelData = [
     { name: 'Contacted', value: totalContacted, fill: '#3b82f6' },
     { name: 'Appt Set', value: totalApptSet, fill: '#8b5cf6' },
@@ -173,7 +168,6 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
     { name: 'Closed', value: totalClosed, fill: '#10b981' },
   ];
 
-  // --- Activity Stats ---
   const activityStats = useMemo(() => {
       const stats: Record<string, { duration: number, lastActive: string }> = {};
       let totalSeconds = 0;
@@ -212,7 +206,6 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
     return `${hrs}h ${mins}m`;
   };
 
-  // --- Product Logic (Event Based) ---
   const productStats = useMemo(() => {
       const providerRevenue: Record<string, number> = {};
       const productPerformance: Record<string, { count: number, revenue: number, name: string, provider: string }> = {};
@@ -240,7 +233,6 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
       return { providerData, topProducts };
   }, [managedClients, products, dateRange]);
 
-  // --- Pipeline Velocity (All Time only for accuracy of averages) ---
   const velocityData = React.useMemo(() => {
     const stageDurations: Record<string, number[]> = {};
     const stagesOrdered = ['New Lead', 'Picked Up', 'NPU', 'Appt Set', 'Appt Met', 'Pending Decision'];
@@ -268,13 +260,11 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
     }).filter(d => d.avgDays > 0);
   }, [managedClients]);
 
-  // --- Agent Efficiency ---
   const agentEfficiency = useMemo(() => {
     return managedAdvisors.map(advisor => {
-        const advisorClients = clients.filter(c => c.advisorId === advisor.id);
+        const advisorClients = clients.filter(c => (c.advisorId || c._ownerId) === advisor.id);
         let newLeadDurations: number[] = [];
         advisorClients.forEach(c => {
-            // Check milestones for contactedAt to get accurate efficiency regardless of time filter
             if (c.milestones?.createdAt && c.milestones?.contactedAt) {
                 const diff = new Date(c.milestones.contactedAt).getTime() - new Date(c.milestones.createdAt).getTime();
                 if (diff > 0) newLeadDurations.push(diff / (1000 * 3600));
@@ -298,51 +288,44 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
     }).sort((a,b) => a.avgResponseHours - b.avgResponseHours);
   }, [managedAdvisors, clients]);
 
-  // --- Lead Management Logic ---
   const handleAssign = (clientId: string, newAdvisorId: string) => {
     const client = clients.find(c => c.id === clientId);
     const advisor = advisors.find(a => a.id === newAdvisorId);
     
-    // IMPORTANT: Stamp the advisor's email so ClientCard displays correct custodian name immediately
     if (client && advisor) {
         onUpdateClient({ 
             ...client, 
             advisorId: newAdvisorId,
-            _ownerId: newAdvisorId, // RLS Owner
-            _ownerEmail: advisor.email // Visual Display Owner
+            _ownerId: newAdvisorId, 
+            _ownerEmail: advisor.email 
         });
+        // Fixed: Pass correct causality object to requestFlush
+        db.requestFlush(newAdvisorId, { owner: 'UI', module: 'DirectorDashboard', reason: 'admin_assignment' });
         toast.success(`Assigned to ${advisor.name}`);
     }
   };
 
-  // --- Goal Setting Logic ---
   const handleGoalChange = (advisorId: string, val: string) => {
-      // Allow raw string to support typing (clearing to empty string, typing decimals etc)
       setGoalUpdates(prev => ({ ...prev, [advisorId]: val }));
   };
 
   const handleSaveGoals = async () => {
       setIsSavingGoals(true);
       try {
-          // Process updates
           const promises = Object.keys(goalUpdates).map(advisorId => {
               const advisor = managedAdvisors.find(a => a.id === advisorId);
               const rawVal = goalUpdates[advisorId];
               const numVal = rawVal === '' ? 0 : parseFloat(String(rawVal));
-              
               if (advisor && !isNaN(numVal)) {
-                  // Ensure we use the parsed number for the update
                   return onUpdateAdvisor({ ...advisor, annualGoal: numVal });
               }
               return Promise.resolve();
           });
-          
           await Promise.all(promises);
           toast.success("Annual targets updated for team.");
           setShowGoalSetter(false);
           setGoalUpdates({});
       } catch (e: any) {
-          console.error("Failed to save goals:", e);
           toast.error("Failed to save goals: " + e.message);
       } finally {
           setIsSavingGoals(false);
@@ -351,7 +334,6 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
 
   const handleGenerateInsight = async () => {
     setIsThinking(true);
-    // Prepare stats summary for AI
     const statsForAi = {
         totalClosureVol,
         totalContacted,
@@ -365,21 +347,43 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
     setIsThinking(false);
   };
 
-  const filteredLeadList = filterAdvisor === 'all' 
-    ? managedClients 
-    : managedClients.filter(c => c.advisorId === filterAdvisor);
+  const filteredLeadList = useMemo(() => {
+    let list = filterAdvisor === 'all' 
+      ? managedClients 
+      : managedClients.filter(c => (c.advisorId || c._ownerId) === filterAdvisor);
+    
+    if (leadSearch) {
+        const lower = leadSearch.toLowerCase();
+        list = list.filter(c => 
+            (c.name || '').toLowerCase().includes(lower) ||
+            (c.profile?.name || '').toLowerCase().includes(lower) ||
+            (c.company || '').toLowerCase().includes(lower) ||
+            (c.phone || '').includes(lower)
+        );
+    }
+    return list;
+  }, [filterAdvisor, managedClients, leadSearch]);
+
+  const handleDeleteClient = async (id: string) => {
+      try {
+          await db.deleteClient(id);
+          toast.success("Client deleted.");
+          setViewingClient(null);
+      } catch (e) {
+          toast.error("Delete failed.");
+      }
+  };
 
   return (
     <div className="p-8 bg-slate-50 min-h-full animate-fade-in">
       {showImporter && (
         <LeadImporter 
-          advisors={activeManagedAdvisors} // Use Active List
+          advisors={activeManagedAdvisors} 
           onClose={() => setShowImporter(false)} 
           onImport={onImport} 
         />
       )}
 
-      {/* ... (Breakdown Modals Omitted for Brevity - Keeping same as original) ... */}
       {showActivityBreakdown && (
           <Modal isOpen={showActivityBreakdown} onClose={() => setShowActivityBreakdown(false)} title="Team Activity Breakdown" footer={<Button variant="ghost" onClick={() => setShowActivityBreakdown(false)}>Close</Button>}>
              <div className="max-h-96 overflow-y-auto">
@@ -507,6 +511,26 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
           </Modal>
       )}
 
+      {viewingClient && (
+          <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[100] flex justify-center p-4 animate-fade-in overflow-y-auto" onClick={() => setViewingClient(null)}>
+              <div className="w-full max-w-2xl min-h-0 h-fit my-auto animate-scale-in flex flex-col" onClick={e => e.stopPropagation()}>
+                  <div className="bg-white rounded-2xl shadow-2xl overflow-hidden flex flex-col border border-slate-200 max-h-[90dvh]">
+                      <ClientCard 
+                          client={viewingClient} 
+                          products={products}
+                          onUpdate={(updated) => {
+                              onUpdateClient(updated);
+                              setViewingClient(updated);
+                          }}
+                          currentUser={currentUser}
+                          onDelete={handleDeleteClient}
+                          onClose={() => setViewingClient(null)}
+                      />
+                  </div>
+              </div>
+          </div>
+      )}
+
       <div className="max-w-6xl mx-auto">
         <header className="mb-8 flex flex-col md:flex-row md:items-end justify-between gap-4">
           <div>
@@ -519,7 +543,6 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
           </div>
           
           <div className="flex gap-4">
-             {/* Time Filter */}
              <div className="bg-white rounded-lg border border-slate-200 p-1 flex shadow-sm">
                  {['This Month', 'Last Month', 'This Quarter', 'This Year', 'All Time'].map(tf => (
                     <button
@@ -555,7 +578,6 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
 
         {activeTab === 'analytics' && (
           <>
-            {/* Top Level Stats */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-10">
               <div 
                 className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-all cursor-pointer group"
@@ -613,7 +635,7 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
                     <BarChart data={funnelData} layout="vertical" margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
                        <XAxis type="number" hide />
                        <YAxis dataKey="name" type="category" width={80} tick={{fontSize: 12}} />
-                       <Tooltip cursor={{fill: 'transparent'}} contentStyle={{borderRadius: '8px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)'}} />
+                       <Tooltip cursor={{fill: '#f8fafc'}} contentStyle={{borderRadius: '8px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)'}} />
                        <Bar dataKey="value" barSize={30} radius={[0, 4, 4, 0]}>
                           {funnelData.map((entry, index) => (
                             <Cell key={`cell-${index}`} fill={entry.fill} />
@@ -624,16 +646,12 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
                 </div>
               </div>
 
-              {/* DYNAMIC AI COACHING CARD */}
               <div className="bg-slate-900 p-6 rounded-2xl text-white shadow-lg flex flex-col relative overflow-hidden group">
-                {/* Visual Effect */}
                 <div className="absolute top-0 right-0 w-48 h-48 bg-indigo-500/20 rounded-full blur-[60px] group-hover:bg-indigo-500/30 transition-all duration-1000"></div>
-                
                 <h3 className="font-semibold text-white mb-4 flex items-center gap-2 relative z-10">
                    <span className="text-2xl">🧠</span>
                    Strategic Director
                 </h3>
-                
                 <div className="flex-1 relative z-10">
                    {isThinking ? (
                        <div className="flex flex-col items-center justify-center h-40 animate-pulse">
@@ -664,7 +682,6 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
                        </div>
                    )}
                 </div>
-                
                 <button 
                     onClick={handleGenerateInsight}
                     disabled={isThinking}
@@ -677,7 +694,6 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
           </>
         )}
 
-        {/* ... (Rest of the tabs: products, activity, leads remain unchanged) ... */}
         {activeTab === 'products' && (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col">
@@ -733,7 +749,6 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
             </div>
         )}
 
-        {/* ACTIVITY TRACKER */}
         {activeTab === 'activity' && (
             <div className="space-y-6">
                 <div className="bg-white p-8 rounded-2xl border border-slate-200 shadow-sm">
@@ -817,16 +832,27 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
             </div>
         )}
 
-        {/* LEADS TAB */}
         {activeTab === 'leads' && (
           <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
              <div className="p-4 border-b border-slate-100 flex items-center justify-between">
                 <div className="flex items-center gap-4">
                   <h3 className="font-bold text-slate-800">Lead Assignment</h3>
+                  
+                  <div className="relative">
+                      <input 
+                          type="text" 
+                          placeholder="Search Client..." 
+                          className="pl-8 pr-4 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-indigo-100 w-48 transition-all"
+                          value={leadSearch}
+                          onChange={(e) => setLeadSearch(e.target.value)}
+                      />
+                      <svg className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+                  </div>
+
                   <select 
                     value={filterAdvisor} 
                     onChange={e => setFilterAdvisor(e.target.value)}
-                    className="bg-slate-50 border border-slate-200 rounded-lg text-sm px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-slate-900/10"
+                    className="bg-slate-50 border border-slate-200 rounded-lg text-sm px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-slate-900/10 cursor-pointer"
                   >
                     <option value="all">All My Agents</option>
                     {activeManagedAdvisors.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
@@ -854,11 +880,15 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
                  </thead>
                  <tbody className="divide-y divide-slate-100">
                    {filteredLeadList.map(client => {
-                     const currentAdvisor = advisors.find(a => a.id === client.advisorId);
+                     const currentAdvisor = advisors.find(a => a.id === (client.advisorId || client._ownerId));
                      return (
-                       <tr key={client.id} className="hover:bg-slate-50/50 transition-colors">
-                         <td className="px-6 py-3">
-                           <div className="font-medium text-slate-900">{client.name}</div>
+                       <tr 
+                          key={client.id} 
+                          className="hover:bg-slate-50/50 transition-colors cursor-pointer group"
+                          onClick={() => setViewingClient(client)}
+                       >
+                         <td className="px-6 py-3 group-hover:text-indigo-600 transition-colors">
+                           <div className="font-medium text-slate-900 group-hover:text-indigo-600">{client.name}</div>
                            <div className="text-xs text-slate-400">{client.company}</div>
                          </td>
                          <td className="px-6 py-3">
@@ -875,9 +905,9 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
                                <span>{currentAdvisor?.name || 'Unassigned'}</span>
                             </div>
                          </td>
-                         <td className="px-6 py-3">
+                         <td className="px-6 py-3" onClick={(e) => e.stopPropagation()}>
                            <select 
-                             value={client.advisorId || ''}
+                             value={client.advisorId || client._ownerId || ''}
                              onChange={(e) => handleAssign(client.id, e.target.value)}
                              className="bg-white border border-slate-200 text-slate-600 text-xs rounded-lg px-2 py-1.5 focus:ring-2 focus:ring-indigo-500 outline-none"
                            >
@@ -890,6 +920,9 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
                        </tr>
                      );
                    })}
+                   {filteredLeadList.length === 0 && (
+                       <tr><td colSpan={5} className="p-8 text-center text-slate-400 italic">No clients found matching criteria.</td></tr>
+                   )}
                  </tbody>
                </table>
              </div>

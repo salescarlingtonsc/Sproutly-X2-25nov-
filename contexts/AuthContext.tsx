@@ -1,7 +1,8 @@
-
 import React, { createContext, useContext, useEffect, useState, useRef } from 'react';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { UserProfile, SubscriptionTier } from '../types';
+import { db } from '../lib/db'; 
+import { syncInspector } from '../lib/syncInspector';
 
 interface AuthContextType {
   user: UserProfile | null;
@@ -28,11 +29,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isRecoveryMode, setIsRecoveryMode] = useState(false);
   const loadingTimeoutRef = useRef<any>(null);
 
-  // Hardcoded Admin Email for override
   const ADMIN_EMAIL = 'sales.carlingtonsc@gmail.com';
 
   useEffect(() => {
-    // 1. INSTANT HYDRATION FROM LOCAL STORAGE (Speed)
     const cachedUser = localStorage.getItem(USER_CACHE_KEY);
     let hasCache = false;
 
@@ -50,23 +49,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
 
-    // 2. SAFETY TIMEOUT (Prevent infinite loading screens)
     loadingTimeoutRef.current = setTimeout(() => {
       if (isLoading) {
         console.warn("🛡️ Auth Backstop: Supabase check timed out. Unblocking UI.");
         setIsLoading(false);
       }
-    }, 5000);
+    }, 6000);
 
     const checkSession = async () => {
       try {
-        // Use getSession instead of getUser for speed + token check
         const { data: { session }, error } = await supabase.auth.getSession();
-        
         if (error) throw error;
 
         if (session?.user) {
-          // If we didn't have cache, show SOMETHING immediately while we fetch the full profile
+          if (session.access_token) db.updateTokenCache(session.access_token);
+
           if (!hasCache) {
              const fallbackUser: UserProfile = {
                 id: session.user.id,
@@ -83,10 +80,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
              setUser(fallbackUser);
              setIsLoading(false);
           }
-          // Now fetch the real profile from DB
           loadUserProfile(session.user.id, session.user.email!);
         } else {
-          // No session, clear everything
           if (hasCache) {
              localStorage.removeItem(USER_CACHE_KEY);
              setUser(null);
@@ -103,21 +98,34 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     checkSession();
 
-    // 3. PROACTIVE REFRESH ON APP SWITCHING (The Fix)
-    // When user switches apps (visibility change) or focuses window, check token validity immediately.
     const handleFocus = async () => {
         if (!supabase) return;
-        const { data } = await supabase.auth.getSession();
-        if (data.session) {
-            // If token expires in less than 60 minutes, force refresh now to be safe
-            const expiresAt = data.session.expires_at; // Unix timestamp in seconds
-            const now = Math.floor(Date.now() / 1000);
-            const timeRemaining = expiresAt ? expiresAt - now : 0;
-            
-            if (timeRemaining < 3600) { // 1 hour buffer
-                console.log("⚡ Proactive Session Refresh triggered on wake.");
-                await supabase.auth.refreshSession();
+        
+        // 1. NON-BLOCKING Heartbeat
+        // We use console.debug here for the absolute minimum noise
+        try {
+            const { data } = await supabase.auth.getSession();
+            if (data.session) {
+                if (data.session.access_token) db.updateTokenCache(data.session.access_token);
+                
+                const expiresAt = data.session.expires_at; 
+                const now = Math.floor(Date.now() / 1000);
+                const timeRemaining = expiresAt ? expiresAt - now : 0;
+                
+                if (timeRemaining < 3600) { 
+                    syncInspector.log('info', 'AUTH_CHECK', "Proactive Session Refresh triggered.");
+                    const { data: refreshed } = await supabase.auth.refreshSession();
+                    if (refreshed.session?.access_token) db.updateTokenCache(refreshed.session.access_token);
+                } else {
+                    syncInspector.log('info', 'AUTH_CHECK', `Session valid (${Math.floor(timeRemaining/60)}m remaining).`);
+                }
+            } else {
+                // Heartbeat failure is informational ONLY, not a system error
+                syncInspector.log('info', 'AUTH_PENDING', "Wake Heartbeat: No session yet. Waiting for resume grace period.");
             }
+        } catch (e: any) {
+            // INFORMATION ONLY during wake
+            console.debug('Wake heartbeat bypassed.', e.message);
         }
     };
 
@@ -127,6 +135,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (session?.access_token) db.updateTokenCache(session.access_token);
+
       if (event === 'SIGNED_IN' && session?.user) {
         await loadUserProfile(session.user.id, session.user.email!);
       } else if (event === 'SIGNED_OUT') {
@@ -135,8 +145,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setIsLoading(false);
       } else if (event === 'PASSWORD_RECOVERY') {
         setIsRecoveryMode(true);
-      } else if (event === 'TOKEN_REFRESHED') {
-        // Token refreshed successfully
       }
     });
 
@@ -159,14 +167,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           .maybeSingle();
 
       if (fetchError) {
-          // Detect infinite recursion in RLS policies (Database bug)
           if (fetchError.message.includes('stack depth') || fetchError.message.includes('recursion')) {
               console.error("🚨 CRITICAL: Database Recursion Loop Detected in Auth.");
           }
           throw fetchError;
       }
 
-      // Merge DB data with local override logic
       const isAdminByData = profileData?.role === 'admin' || profileData?.is_admin === true;
       const finalRole = (isHardcodedAdmin || isAdminByData) ? 'admin' : (profileData?.role || 'advisor');
       const finalIsAdmin = isHardcodedAdmin || isAdminByData;

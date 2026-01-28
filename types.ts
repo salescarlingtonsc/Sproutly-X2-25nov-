@@ -286,7 +286,7 @@ export interface Client {
   wealthState: WealthState;
   investorState: InvestorState;
   insuranceState: InsuranceState;
-  nineBoxState?: NineBoxState; // NEW
+  nineBoxState?: NineBoxState; 
   lastUpdated: string;
   followUp: {
     status: ContactStatus;
@@ -305,6 +305,7 @@ export interface Client {
   _ownerId?: string;
   _ownerEmail?: string;
   advisorId?: string;
+  organizationId?: string; // ADDED: Allows Managers to view clients based on Org ID match
   chatHistory?: ChatMessage[];
   
   // CRM Root Shortcuts

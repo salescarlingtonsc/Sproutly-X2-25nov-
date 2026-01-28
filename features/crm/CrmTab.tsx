@@ -70,11 +70,13 @@ const CrmTab: React.FC<CrmTabProps> = ({
   const [viewMode, setViewMode] = useState<'cards' | 'list'>('list');
   const [isGrouped, setIsGrouped] = useState(false);
   
+  // PAGINATION STATE
+  const [displayCount, setDisplayCount] = useState(50);
+  const PAGE_SIZE = 50;
+  
   const [sortConfig, setSortConfig] = useState<{ key: string; direction: 'asc' | 'desc' }>({ key: 'lastUpdated', direction: 'desc' });
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [isBulkAssignOpen, setIsBulkAssignOpen] = useState(false);
-  const [bulkAssignTarget, setBulkAssignTarget] = useState('');
   const [isBulkProcessing, setIsBulkProcessing] = useState(false);
 
   const [products, setProducts] = useState<Product[]>(MOCK_PRODUCTS);
@@ -85,9 +87,25 @@ const CrmTab: React.FC<CrmTabProps> = ({
   const [isCallSessionOpen, setIsCallSessionOpen] = useState(false);
   const [isTemplateManagerOpen, setIsTemplateManagerOpen] = useState(false);
   const [isImportOpen, setIsImportOpen] = useState(false);
-  const [isQuantumThinking, setIsQuantumThinking] = useState(false);
   const [advisorMap, setAdvisorMap] = useState<Record<string, string>>({});
   const [templates, setTemplates] = useState<WhatsAppTemplate[]>(DEFAULT_TEMPLATES.map(t => ({id: t.id, label: t.label, content: t.content})));
+
+  const isAdmin = user?.role === 'admin' || user?.is_admin === true || user?.role === 'director';
+
+  // --- FRONT-END FIREWALL: SANITIZE RAW CLIENTS IMMEDIATELY ---
+  const sanitizedClients = useMemo(() => {
+      return (clients || []).map(c => {
+          if (!c) return null;
+          // Force inject missing objects to prevent "undefined is not an object"
+          return {
+              ...c,
+              followUp: c.followUp || { status: 'new' }, 
+              profile: c.profile || { name: 'Unknown', email: '', phone: '' },
+              appointments: c.appointments || {},
+              notes: c.notes || []
+          };
+      }).filter(c => c !== null) as Client[];
+  }, [clients]);
 
   useEffect(() => {
     const resolveNames = async () => {
@@ -110,7 +128,7 @@ const CrmTab: React.FC<CrmTabProps> = ({
 
   const availableAdvisors = useMemo(() => {
     const map = new Map<string, string>();
-    clients.forEach(c => {
+    sanitizedClients.forEach(c => {
       const ownerId = c.advisorId || c._ownerId;
       if (ownerId) {
          let label = advisorMap[ownerId] || c._ownerEmail || `Advisor ${ownerId.substring(0, 4)}`;
@@ -118,7 +136,7 @@ const CrmTab: React.FC<CrmTabProps> = ({
       }
     });
     return Array.from(map.entries()).map(([id, name]) => ({ id, name })).sort((a,b) => a.name.localeCompare(b.name));
-  }, [clients, advisorMap]);
+  }, [sanitizedClients, advisorMap]);
 
   const showAdvisorCol = availableAdvisors.length > 1;
 
@@ -131,19 +149,25 @@ const CrmTab: React.FC<CrmTabProps> = ({
   }, [user?.organizationId]);
 
   useEffect(() => {
-    if (selectedClientId && clients.length > 0) {
-        const matchedClient = clients.find(c => c.id === selectedClientId);
+    if (selectedClientId && sanitizedClients.length > 0) {
+        const matchedClient = sanitizedClients.find(c => c.id === selectedClientId);
         if (matchedClient) setActiveDetailClient(matchedClient);
     }
-  }, [selectedClientId, clients]);
+  }, [selectedClientId, sanitizedClients]);
 
   const handleClearFilters = () => {
       setSearchTerm('');
       setStageFilter('All');
       setMomentumFilter('All');
       setAdvisorFilter('All');
+      setDisplayCount(PAGE_SIZE);
       toast.info("All search filters cleared.");
   };
+
+  // Reset pagination on filter change
+  useEffect(() => {
+      setDisplayCount(PAGE_SIZE);
+  }, [searchTerm, stageFilter, advisorFilter, momentumFilter, isGrouped]);
 
   const handleSort = (key: string) => {
     let direction: 'asc' | 'desc' = 'asc';
@@ -154,7 +178,8 @@ const CrmTab: React.FC<CrmTabProps> = ({
   };
 
   const filteredClients = useMemo(() => {
-    let filtered = clients.filter(client => {
+    let filtered = sanitizedClients.filter(client => {
+      // Access is safe here due to sanitizedClients firewall
       const name = client.name || client.profile?.name || '';
       const company = client.company || '';
       const phone = client.phone || client.profile?.phone || '';
@@ -164,7 +189,8 @@ const CrmTab: React.FC<CrmTabProps> = ({
                             phone.includes(searchTerm) ||
                             (client.tags || []).some(t => t.toLowerCase().includes(searchTerm.toLowerCase()));
       
-      const currentStatus = client.followUp?.status || client.stage || '';
+      // STRICT OPTIONAL CHAINING
+      const currentStatus = client.followUp?.status || client.stage || 'new';
       const matchesStage = stageFilter === 'All' || currentStatus === stageFilter || client.stage === stageFilter;
       const effectiveOwner = client.advisorId || client._ownerId;
       const matchesAdvisor = advisorFilter === 'All' || effectiveOwner === advisorFilter;
@@ -193,6 +219,7 @@ const CrmTab: React.FC<CrmTabProps> = ({
                     bVal = (advisorMap[bId] || b._ownerEmail || '').toLowerCase();
                     break;
                 case 'stage':
+                    // STRICT OPTIONAL CHAINING
                     aVal = (a.stage || a.followUp?.status || '').toLowerCase();
                     bVal = (b.stage || b.followUp?.status || '').toLowerCase();
                     break;
@@ -213,20 +240,28 @@ const CrmTab: React.FC<CrmTabProps> = ({
         });
     }
     return filtered;
-  }, [clients, searchTerm, stageFilter, advisorFilter, momentumFilter, sortConfig, advisorMap]);
+  }, [sanitizedClients, searchTerm, stageFilter, advisorFilter, momentumFilter, sortConfig, advisorMap]);
+
+  // Virtual Pagination Slice
+  const visibleClients = useMemo(() => {
+      return filteredClients.slice(0, displayCount);
+  }, [filteredClients, displayCount]);
+
+  const hasMore = filteredClients.length > displayCount;
 
   const groupedClients = useMemo(() => {
     if (!isGrouped) return null;
     const groups: Record<string, Client[]> = {};
     STATUS_ORDER.forEach(s => groups[s] = []);
     groups['other'] = [];
-    filteredClients.forEach(c => {
+    visibleClients.forEach(c => {
+        // STRICT OPTIONAL CHAINING
         const status = c.followUp?.status || 'new';
         if (groups[status]) groups[status].push(c);
         else groups['other'].push(c);
     });
     return groups;
-  }, [filteredClients, isGrouped]);
+  }, [visibleClients, isGrouped]);
 
   const handleToggleSelect = (id: string) => {
       const newSet = new Set(selectedIds);
@@ -235,15 +270,43 @@ const CrmTab: React.FC<CrmTabProps> = ({
       setSelectedIds(newSet);
   };
 
+  const handleBulkDelete = async () => {
+      const count = selectedIds.size;
+      const isConfirmed = await confirm({
+          title: `Delete ${count} Leads?`,
+          message: `This will permanently remove ${count} selected dossiers from the database. This action is irreversible.`,
+          confirmText: "Yes, Delete Forever",
+          isDestructive: true
+      });
+
+      if (!isConfirmed) return;
+
+      setIsBulkProcessing(true);
+      try {
+          const idsArray = Array.from(selectedIds);
+          for (const id of idsArray) {
+              await deleteClient(id);
+          }
+          setSelectedIds(new Set());
+          toast.success(`Successfully removed ${count} leads.`);
+      } catch (e: any) {
+          toast.error("Bulk deletion failed.");
+      } finally {
+          setIsBulkProcessing(false);
+      }
+  };
+
   const handleStatusChange = (client: Client, newStatus: ContactStatus) => {
       const now = new Date().toISOString();
-      const newStageName = STATUS_CONFIG[newStatus]?.label || client.stage;
+      const newStageName = STATUS_CONFIG[newStatus]?.label || client.stage || 'New Lead';
+      
       const updatedClient = {
           ...client,
           stage: newStageName,
           lastContact: now,
           lastUpdated: now,
-          followUp: { ...client.followUp, status: newStatus, lastContactedAt: now },
+          // STRICT OPTIONAL CHAINING IN SPREAD
+          followUp: { ...(client.followUp || { status: 'new' }), status: newStatus, lastContactedAt: now },
           notes: [{ id: `sys_${Date.now()}`, content: `Stage updated: ${client.stage || 'New'} ➔ ${newStageName}`, date: now, author: 'System' }, ...(client.notes || [])]
       };
       onUpdateGlobalClient(updatedClient);
@@ -252,9 +315,9 @@ const CrmTab: React.FC<CrmTabProps> = ({
   const isFiltered = searchTerm !== '' || stageFilter !== 'All' || momentumFilter !== 'All' || (advisorFilter !== 'All' && availableAdvisors.length > 1);
 
   return (
-    <div className="p-6 md:p-8 animate-fade-in pb-24 md:pb-8">
+    <div className="p-6 md:p-8 animate-fade-in pb-24 md:pb-8 relative">
       <AnalyticsPanel 
-        clients={clients}
+        clients={sanitizedClients} // Pass sanitized clients to analytics
         advisorFilter={advisorFilter}
         setAdvisorFilter={setAdvisorFilter}
         availableAdvisors={availableAdvisors}
@@ -308,7 +371,7 @@ const CrmTab: React.FC<CrmTabProps> = ({
           <div className="flex flex-col items-center justify-center py-20 bg-white rounded-2xl border-2 border-dashed border-slate-100 text-center animate-fade-in">
               <div className="text-6xl mb-4 grayscale opacity-20">👤</div>
               <h3 className="text-xl font-bold text-slate-800 mb-2">No Clients Found</h3>
-              <p className="text-slate-500 max-w-sm mx-auto mb-8">
+              <p className="text-slate-50 max-w-sm mx-auto mb-8">
                   {isFiltered 
                     ? "Adjust your search parameters or reset filters to see more results." 
                     : "Your client book is currently empty. Start by importing leads or creating a new profile."}
@@ -319,8 +382,9 @@ const CrmTab: React.FC<CrmTabProps> = ({
           </div>
       ) : (
           viewMode === 'cards' ? (
+            <>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-                {filteredClients.map(client => (
+                {visibleClients.map(client => (
                     <div key={client.id} className="relative group">
                         <div className={`absolute top-2 left-2 z-10 ${selectedIds.has(client.id) ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} transition-opacity`}>
                             <input type="checkbox" checked={selectedIds.has(client.id)} onChange={() => handleToggleSelect(client.id)} className="w-5 h-5 rounded border-slate-300 text-indigo-600 cursor-pointer shadow-sm" />
@@ -331,8 +395,19 @@ const CrmTab: React.FC<CrmTabProps> = ({
                     </div>
                 ))}
             </div>
+            {hasMore && (
+                <div className="mt-8 text-center">
+                    <button 
+                        onClick={() => setDisplayCount(c => c + PAGE_SIZE)} 
+                        className="px-6 py-3 bg-white border border-slate-200 text-slate-600 font-bold rounded-xl shadow-sm hover:bg-slate-50 transition-all text-xs uppercase tracking-widest"
+                    >
+                        Load More Leads ({filteredClients.length - visibleClients.length} remaining)
+                    </button>
+                </div>
+            )}
+            </>
           ) : (
-            <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+            <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
                <div className="overflow-x-auto">
                    <table className="w-full text-left text-sm">
                        <thead className="bg-slate-50 border-b border-slate-100 sticky top-0 z-20">
@@ -356,18 +431,71 @@ const CrmTab: React.FC<CrmTabProps> = ({
                                    return (
                                        <React.Fragment key={statusKey}>
                                            <tr className="bg-slate-50/80"><td colSpan={showAdvisorCol ? 8 : 7} className="px-4 py-2 border-y border-slate-200/50"><div className="flex items-center gap-2"><span className={`text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded ${config.bg} ${config.text}`}>{config.label}</span><span className="text-xs text-slate-400 font-bold">{group.length}</span></div></td></tr>
-                                           {group.map(client => <ClientRow key={client.id} client={client} isSelected={selectedIds.has(client.id)} onToggle={() => handleToggleSelect(client.id)} onClick={() => setActiveDetailClient(client)} onStatusUpdate={handleStatusChange} onWhatsApp={() => setActiveWhatsAppClient(client)} onRecordSale={() => setActiveSaleClient(client)} onLoadProfile={() => loadClient(client, true)} onDelete={async () => { const c = await confirm({title:"Delete?", message:"Permanently remove lead?"}); if(c) deleteClient(client.id); }} canDelete={true} advisorName={advisorMap[client.advisorId || client._ownerId || ''] || client._ownerEmail} showAdvisor={showAdvisorCol} />)}
+                                           {group.map(client => <ClientRow key={client.id} client={client} isSelected={selectedIds.has(client.id)} onToggle={() => handleToggleSelect(client.id)} onClick={() => setActiveDetailClient(client)} onStatusUpdate={handleStatusChange} onWhatsApp={() => setActiveWhatsAppClient(client)} onRecordSale={() => setActiveSaleClient(client)} onLoadProfile={() => loadClient(client, true)} onDelete={async () => { const c = await confirm({title:"Delete?", message:"Permanently remove lead?"}); if(c) deleteClient(client.id); }} canDelete={isAdmin} advisorName={advisorMap[client.advisorId || client._ownerId || ''] || client._ownerEmail} showAdvisor={showAdvisorCol} />)}
                                        </React.Fragment>
                                    );
                                })
                            ) : (
-                               filteredClients.map(client => <ClientRow key={client.id} client={client} isSelected={selectedIds.has(client.id)} onToggle={() => handleToggleSelect(client.id)} onClick={() => setActiveDetailClient(client)} onStatusUpdate={handleStatusChange} onWhatsApp={() => setActiveWhatsAppClient(client)} onRecordSale={() => setActiveSaleClient(client)} onLoadProfile={() => loadClient(client, true)} onDelete={async () => { const c = await confirm({title:"Delete?", message:"Permanently remove lead?"}); if(c) deleteClient(client.id); }} canDelete={true} advisorName={advisorMap[client.advisorId || client._ownerId || ''] || client._ownerEmail} showAdvisor={showAdvisorCol} />)
+                               visibleClients.map(client => <ClientRow key={client.id} client={client} isSelected={selectedIds.has(client.id)} onToggle={() => handleToggleSelect(client.id)} onClick={() => setActiveDetailClient(client)} onStatusUpdate={handleStatusChange} onWhatsApp={() => setActiveWhatsAppClient(client)} onRecordSale={() => setActiveSaleClient(client)} onLoadProfile={() => loadClient(client, true)} onDelete={async () => { const c = await confirm({title:"Delete?", message:"Permanently remove lead?"}); if(c) deleteClient(client.id); }} canDelete={isAdmin} advisorName={advisorMap[client.advisorId || client._ownerId || ''] || client._ownerEmail} showAdvisor={showAdvisorCol} />)
                            )}
                        </tbody>
                    </table>
                </div>
+               
+               {hasMore && !isGrouped && (
+                   <div className="p-4 bg-slate-50 border-t border-slate-100 text-center">
+                        <button 
+                            onClick={() => setDisplayCount(c => c + PAGE_SIZE)} 
+                            className="text-xs font-bold text-slate-500 hover:text-indigo-600 transition-colors uppercase tracking-widest"
+                        >
+                            Show More Leads ({filteredClients.length - visibleClients.length} hidden)
+                        </button>
+                   </div>
+               )}
             </div>
           )
+      )}
+
+      {/* BULK ACTIONS BAR */}
+      {selectedIds.size > 0 && (
+          <div className="fixed bottom-10 left-1/2 -translate-x-1/2 z-[5000] animate-slide-in-up">
+              <div className="bg-slate-900 rounded-2xl shadow-2xl p-4 flex items-center gap-6 border border-white/10 ring-4 ring-black/5">
+                  <div className="flex flex-col">
+                      <span className="text-[10px] font-black text-indigo-400 uppercase tracking-widest">Bulk Actions</span>
+                      <span className="text-sm font-bold text-white whitespace-nowrap">{selectedIds.size} Leads Selected</span>
+                  </div>
+                  
+                  <div className="h-8 w-px bg-white/10"></div>
+                  
+                  <div className="flex items-center gap-3">
+                      <button 
+                        onClick={() => setSelectedIds(new Set())}
+                        className="px-4 py-2 text-xs font-bold text-slate-400 hover:text-white transition-colors"
+                      >
+                        Deselect
+                      </button>
+                      <button 
+                        onClick={handleBulkDelete}
+                        disabled={isBulkProcessing}
+                        className="px-5 py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-black transition-all shadow-lg active:scale-95 disabled:opacity-50 flex items-center gap-2"
+                      >
+                        {isBulkProcessing ? (
+                            <>
+                                <span className="animate-spin text-lg">↻</span>
+                                Deleting...
+                            </>
+                        ) : (
+                            <>
+                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                </svg>
+                                Delete Selected
+                            </>
+                        )}
+                      </button>
+                  </div>
+              </div>
+          </div>
       )}
 
       {/* ... MODALS ... */}
@@ -417,6 +545,7 @@ const ClientRow: React.FC<{
             <td className="px-4 py-3" onClick={e => e.stopPropagation()}><input type="checkbox" checked={isSelected} onChange={onToggle} className="rounded border-slate-300 text-indigo-600 cursor-pointer" /></td>
             <td className="px-4 py-3"><div className="font-bold text-slate-800">{client.name}</div><div className="text-xs text-slate-400">{client.company}</div></td>
             {showAdvisor && <td className="px-4 py-3 text-xs font-medium text-slate-600 truncate max-w-[150px]">{advisorName || 'Unassigned'}</td>}
+            {/* Fix: use onStatusUpdate as specified in props destructuring */}
             <td className="px-4 py-3" onClick={e => e.stopPropagation()}><StatusDropdown client={client} onUpdate={onStatusUpdate} /></td>
             <td className="px-4 py-3"><div className="text-sm font-bold text-slate-700">{client.momentumScore || 50}/100</div><div className="text-xs text-slate-400">${(client.value || 0).toLocaleString()}</div></td>
             <td className="px-4 py-3 text-xs text-slate-500"><div>📞 {client.phone || '-'}</div><div>✉️ {client.email || '-'}</div></td>
@@ -448,6 +577,15 @@ const ClientRow: React.FC<{
                             <path strokeLinecap="round" strokeLinejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" />
                         </svg>
                     </button>
+                    {canDelete && (
+                        <button 
+                            onClick={(e) => { e.stopPropagation(); onDelete(); }} 
+                            className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors" 
+                            title="Delete Lead"
+                        >
+                            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                        </button>
+                    )}
                 </div>
             </td>
         </tr>

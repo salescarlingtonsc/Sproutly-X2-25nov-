@@ -1,10 +1,11 @@
-
 import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { syncInspector, SyncLogEntry, SyncSnapshot } from '../../lib/syncInspector';
 import { db } from '../../lib/db';
 import { useAuth } from '../../contexts/AuthContext';
-import { supabase } from '../../lib/supabase';
 import { useToast } from '../../contexts/ToastContext';
+// Added missing Button import
+import Button from '../../components/ui/Button';
 
 interface SyncInspectorModalProps {
   isOpen: boolean;
@@ -16,7 +17,6 @@ const SyncInspectorModal: React.FC<SyncInspectorModalProps> = ({ isOpen, onClose
   const toast = useToast();
   const [logs, setLogs] = useState<SyncLogEntry[]>([]);
   const [snapshot, setSnapshot] = useState<SyncSnapshot>(syncInspector.getSnapshot());
-  const [filter, setFilter] = useState<'ALL' | 'ERRORS' | 'CLOUD'>('ALL');
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -24,213 +24,89 @@ const SyncInspectorModal: React.FC<SyncInspectorModalProps> = ({ isOpen, onClose
       setLogs(syncInspector.getLogs());
       setSnapshot(syncInspector.getSnapshot());
     }
-
-    const handleLog = (e: any) => setLogs([...e.detail.logs]);
-    const handleSnap = (e: any) => setSnapshot({ ...e.detail.snapshot });
-
-    window.addEventListener('sproutly:sync_log', handleLog);
-    window.addEventListener('sproutly:sync_snapshot', handleSnap);
-
+    const hLog = (e: any) => setLogs([...e.detail.logs]);
+    const hSnap = (e: any) => setSnapshot({ ...e.detail.snapshot });
+    window.addEventListener('sproutly:sync_log', hLog);
+    window.addEventListener('sproutly:sync_snapshot', hSnap);
     return () => {
-      window.removeEventListener('sproutly:sync_log', handleLog);
-      window.removeEventListener('sproutly:sync_snapshot', handleSnap);
+      window.removeEventListener('sproutly:sync_log', hLog);
+      window.removeEventListener('sproutly:sync_snapshot', hSnap);
     };
   }, [isOpen]);
 
-  const cloudTest = async () => {
-    if (!supabase) return;
-    const t0 = Date.now();
-    
-    const log = (label: string, extra?: any) => {
-      syncInspector.log('info', 'NETWORK_ONLINE', `[TEST] ${label}`, extra);
-    };
-
-    try {
-      log('START');
-
-      // 1) Session check
-      const s0 = Date.now();
-      const { data: sData, error: sErr } = await supabase.auth.getSession();
-      log('SESSION_DONE', { ms: Date.now() - s0, hasSession: !!sData?.session, err: sErr?.message });
-
-      // 2) Quick read ping
-      const r0 = Date.now();
-      const { data: rData, error: rErr } = await supabase.from('clients').select('id').limit(1);
-      log('READ_PING_DONE', { ms: Date.now() - r0, count: rData?.length ?? 0, err: rErr?.message });
-
-      // 3) Write ping
-      if (sData?.session?.user?.id) {
-          const id = crypto?.randomUUID?.() ?? `test-${Math.random()}`;
-          const w0 = Date.now();
-          const { data: wData, error: wErr } = await supabase
-            .from('clients')
-            .upsert({
-              id,
-              user_id: sData.session.user.id,
-              data: { _ping: true, ts: new Date().toISOString() },
-              updated_at: new Date().toISOString()
-            })
-            .select('id, updated_at')
-            .single();
-
-          log('WRITE_PING_DONE', { ms: Date.now() - w0, data: wData, err: wErr?.message });
-          
-          if (!wErr) {
-              await supabase.from('clients').delete().eq('id', id);
-          }
-      } else {
-          log('SKIP_WRITE_NO_USER');
-      }
-
-      log('END_OK');
-    } catch (e: any) {
-      log('CRASH', { name: e?.name, message: e?.message });
-    }
-  };
-
-  const getDiagnosis = () => {
-    // 1. Check for recent wake-up (App Switch / YouTube Return)
-    // We look for the RECOVERY_TRIGGER log within the last 15 seconds
-    const recentWakeUp = logs.find(l => l.code === 'RECOVERY_TRIGGER' && (Date.now() - new Date(l.ts).getTime() < 15000));
-    
-    if (!snapshot.online) {
-        return "⚠️ Device Offline. SOLUTION: Connect to Wi-Fi/4G. Changes are safe locally.";
-    }
-    
-    if (snapshot.lastSessionErr) {
-        return "🔒 Session Expired (Background Timeout). SOLUTION: Refresh page to renew token.";
-    }
-
-    // 2. Check for "Zombie Lock" (Flushing for > 10s without success)
-    const isZombie = snapshot.isFlushing && (Date.now() - (snapshot.lastSaveAttemptAt || 0) > 12000);
-    if (isZombie) {
-        return "🧟 Connection Zombie. The background switch froze the upload. SOLUTION: Click 'Flush Queue' to reset.";
-    }
-    
-    if (recentWakeUp) {
-        if (snapshot.queueCount > 0) return "⚡ App Waking Up. Auto-syncing... If stuck >5s, click 'Flush Queue'.";
-        return "⚡ App Waking Up. System check complete. Connection Restored.";
-    }
-
-    if (snapshot.lastCloudErr && snapshot.queueCount > 0) {
-        return "☁️ Cloud Sync Error. SOLUTION: Click 'Flush Queue' to retry immediately.";
-    }
-    
-    if (snapshot.queueCount > 0 && snapshot.isFlushing) {
-        return "🔄 Syncing... Uploading pending changes to cloud.";
-    }
-    
-    if (snapshot.queueCount > 0 && !snapshot.isFlushing) {
-        return "⏳ Pending Sync. SOLUTION: Queue idle. Click 'Flush Queue' to force upload.";
-    }
-    
-    return "✅ System Healthy. All changes synced.";
-  };
-
-  const filteredLogs = logs.filter(l => {
-    if (filter === 'ERRORS') return l.level === 'error' || l.level === 'warn';
-    if (filter === 'CLOUD') return l.code.includes('CLOUD') || l.code.includes('OUTBOX') || l.message.includes('[TEST]');
-    return true;
-  });
-
-  const handleFlush = () => {
-    if (user?.id) db.flushCloudQueue(user.id);
-  };
-
-  const handleCopyLogs = () => {
-    const report = syncInspector.exportLogsMarkdown();
-    navigator.clipboard.writeText(report);
-    toast.success("Diagnostic Report Copied to Clipboard!");
-  };
-
-  const diagnosis = getDiagnosis();
-  
-  // Dynamic Styles based on Diagnosis State
-  const diagStyle = diagnosis.includes('Waking Up') 
-    ? 'bg-indigo-900/80 border-indigo-500 text-indigo-200 animate-pulse'
-    : diagnosis.includes('Zombie') || diagnosis.includes('Error') || diagnosis.includes('Offline') || diagnosis.includes('Expired')
-        ? 'bg-red-900/50 border-red-500 text-red-100'
-        : 'bg-emerald-900/30 border-emerald-500/30 text-emerald-200';
-
   if (!isOpen) return null;
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-[10001] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="bg-slate-900 text-white w-full max-w-3xl rounded-2xl shadow-2xl flex flex-col max-h-[85vh] overflow-hidden border border-slate-700">
+      <div className="bg-slate-900 text-white w-full max-w-4xl rounded-2xl shadow-2xl flex flex-col max-h-[85vh] overflow-hidden border border-slate-700">
         
-        {/* Header */}
         <div className="p-4 border-b border-slate-700 flex justify-between items-center bg-slate-800">
-          <div className="flex items-center gap-3">
-            <h2 className="font-bold text-lg">☁️ Sync Inspector</h2>
-            <div className={`px-2 py-0.5 rounded text-[10px] font-black uppercase ${snapshot.online ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'}`}>
-              {snapshot.online ? 'Online' : 'Offline'}
-            </div>
-            <div className={`px-2 py-0.5 rounded text-[10px] font-black uppercase ${snapshot.queueCount === 0 ? 'bg-slate-700 text-slate-400' : 'bg-amber-500/20 text-amber-400'}`}>
-              Queue: {snapshot.queueCount}
+          <div className="flex items-center gap-4">
+            <h2 className="font-bold text-lg">☁️ Causal Sync Inspector</h2>
+            <div className={`px-2 py-0.5 rounded text-[9px] font-black uppercase ${snapshot.isFlushing ? 'bg-indigo-500 text-white animate-pulse' : 'bg-slate-700 text-slate-400'}`}>
+                {snapshot.isFlushing ? 'Active Flush' : 'Idle'}
             </div>
           </div>
           <button onClick={onClose} className="text-slate-400 hover:text-white">✕</button>
         </div>
 
-        {/* Diagnosis Bar (Dynamic Color) */}
-        <div className={`p-3 border-b text-xs font-mono font-bold transition-colors duration-300 ${diagStyle}`}>
-          {diagnosis}
-        </div>
-
-        {/* Controls */}
-        <div className="p-2 border-b border-slate-700 flex gap-2 overflow-x-auto">
-          <button onClick={() => setFilter('ALL')} className={`px-3 py-1 text-xs rounded transition-colors ${filter === 'ALL' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}>All Logs</button>
-          <button onClick={() => setFilter('ERRORS')} className={`px-3 py-1 text-xs rounded transition-colors ${filter === 'ERRORS' ? 'bg-red-900/50 text-red-200' : 'text-slate-400 hover:text-white'}`}>Errors Only</button>
-          <button onClick={() => setFilter('CLOUD')} className={`px-3 py-1 text-xs rounded transition-colors ${filter === 'CLOUD' ? 'bg-blue-900/50 text-blue-200' : 'text-slate-400 hover:text-white'}`}>Cloud Traffic</button>
-          
-          <div className="flex-1"></div>
-          
-          <button onClick={cloudTest} className="px-3 py-1 text-xs bg-indigo-900 hover:bg-indigo-800 text-indigo-100 rounded font-bold border border-indigo-700">Cloud Test</button>
-          <button onClick={handleFlush} className="px-3 py-1 text-xs bg-emerald-900 hover:bg-emerald-800 text-emerald-100 rounded font-bold border border-emerald-700">Flush Queue</button>
-          <button onClick={handleCopyLogs} className="px-3 py-1 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded font-bold flex items-center gap-2">
-             <span>📋</span> Copy Report for Support
-          </button>
-          <button onClick={() => syncInspector.clearLogs()} className="px-3 py-1 text-xs bg-slate-800 hover:bg-red-900 text-slate-400 hover:text-white rounded">Clear</button>
-        </div>
-
-        {/* Log Stream */}
-        <div className="flex-1 overflow-y-auto p-4 bg-black/20 custom-scrollbar font-mono text-xs" ref={scrollRef}>
-          {filteredLogs.length === 0 ? (
-            <div className="text-slate-600 italic text-center mt-10">No logs matching filter.</div>
-          ) : (
-            filteredLogs.map(log => {
-              const isRecovery = log.code === 'RECOVERY_TRIGGER';
-              const isError = log.level === 'error';
-              const isZombie = log.code === 'TIMEOUT_ABORTED' || log.code === 'LOCKED';
-              
-              return (
-                <div key={log.id} className={`mb-1 flex gap-3 hover:bg-white/5 p-1 rounded ${isRecovery ? 'bg-indigo-900/40 border-l-2 border-indigo-400 pl-2' : ''} ${isError ? 'bg-red-900/20' : ''} ${isZombie ? 'bg-amber-900/20' : ''}`}>
-                  <span className="text-slate-500 shrink-0">{log.ts.split('T')[1].replace('Z','')}</span>
-                  <span className={`shrink-0 w-32 font-bold ${
-                    log.level === 'error' ? 'text-red-400' :
-                    log.level === 'warn' ? 'text-amber-400' :
-                    log.level === 'success' ? 'text-emerald-400' :
-                    isRecovery ? 'text-indigo-300' :
-                    'text-blue-300'
-                  }`}>[{log.code}]</span>
-                  <span className={`${isRecovery ? 'text-indigo-200 font-bold' : isError ? 'text-red-200' : 'text-slate-300'} break-all`}>
-                    {log.message}
-                  </span>
+        {snapshot.lastViolation && (
+            <div className="p-4 bg-red-900/40 border-b border-red-500/50 animate-pulse">
+                <h4 className="text-[10px] font-black text-red-400 uppercase tracking-widest mb-1">State Machine Violation Detected</h4>
+                <p className="text-sm font-bold text-white mb-2">{snapshot.lastViolation.message}</p>
+                <div className="bg-black/40 p-3 rounded font-mono text-[10px] text-red-200">
+                    <div>Module: {snapshot.lastViolation.causality?.module}</div>
+                    <details className="mt-2">
+                        <summary className="cursor-pointer opacity-70">View Stack Trace</summary>
+                        <pre className="mt-2 text-red-400/70">{snapshot.lastViolation.causality?.stack}</pre>
+                    </details>
                 </div>
-              );
-            })
-          )}
+            </div>
+        )}
+
+        <div className="grid grid-cols-4 border-b border-slate-700 bg-slate-800/30">
+            <Metric label="Queue" value={snapshot.queueCount} />
+            <Metric label="Latency" value={snapshot.flushLockAgeMs > 0 ? `${(snapshot.flushLockAgeMs/1000).toFixed(1)}s` : '0s'} />
+            <Metric label="Last Module" value={snapshot.lastSource} />
+            <Metric label="Status" value={snapshot.online ? 'Online' : 'Offline'} color={snapshot.online ? 'text-emerald-400' : 'text-red-400'} />
         </div>
 
-        {/* Footer Stats */}
-        <div className="p-3 bg-slate-800 border-t border-slate-700 text-[10px] text-slate-400 flex justify-between">
-           <span>Last Save: {snapshot.lastSaveOkAt ? new Date(snapshot.lastSaveOkAt).toLocaleTimeString() : 'Never'}</span>
-           <span>Last Cloud Sync: {snapshot.lastCloudOkAt ? new Date(snapshot.lastCloudOkAt).toLocaleTimeString() : 'Never'}</span>
-           <span>Session Status: {snapshot.lastSessionErr ? 'STALE' : 'OK'}</span>
+        <div className="flex-1 overflow-y-auto p-4 bg-black/40 custom-scrollbar font-mono text-[11px]" ref={scrollRef}>
+          {logs.map((log) => (
+            <div key={log.id} className={`mb-1 p-1 rounded flex gap-3 ${log.level === 'violation' ? 'bg-red-500/10 border border-red-500/20' : 'hover:bg-white/5'}`}>
+              <span className="text-slate-600 shrink-0">{log.ts.split('T')[1].slice(0, 8)}</span>
+              <span className={`shrink-0 w-24 font-black uppercase text-[9px] px-1.5 rounded-sm h-fit ${
+                log.causality?.module === 'AutoSaver' ? 'text-blue-400 bg-blue-400/10' :
+                log.causality?.module === 'SyncRecovery' ? 'text-purple-400 bg-purple-400/10' :
+                'text-slate-400 bg-slate-400/10'
+              }`}>
+                {log.causality?.module || 'System'}
+              </span>
+              <span className="text-slate-300 flex-1">{log.message}</span>
+              <span className="text-slate-500 text-[9px] uppercase font-bold">{log.code}</span>
+            </div>
+          ))}
+        </div>
+
+        <div className="p-4 border-t border-slate-700 bg-slate-800/30 flex justify-between">
+           <Button size="sm" variant="danger" onClick={() => { db.resetLocks(); toast.success("Locks reset"); }}>Emergency Unlock</Button>
+           <div className="flex gap-2">
+               <Button size="sm" variant="ghost" onClick={() => { navigator.clipboard.writeText(syncInspector.exportJson()); toast.success("Copied"); }}>Export JSON</Button>
+               {/* Fixed: Used user.id from auth context */}
+               <Button size="sm" variant="accent" onClick={() => user && db.requestFlush(user.id, { owner: 'UI', module: 'Inspector', reason: 'Manual force' })}>Force Flush</Button>
+           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };
+
+const Metric = ({ label, value, color }: any) => (
+    <div className="p-4 border-r border-slate-700 last:border-0 text-center">
+        <div className="text-[9px] text-slate-500 uppercase tracking-widest mb-1">{label}</div>
+        <div className={`text-sm font-bold truncate ${color || 'text-slate-200'}`}>{value}</div>
+    </div>
+);
 
 export default SyncInspectorModal;

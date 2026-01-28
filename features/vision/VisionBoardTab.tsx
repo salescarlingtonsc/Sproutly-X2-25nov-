@@ -47,7 +47,12 @@ const VisionBoardTab = () => {
       clearInterval(interval);
       setVideoUrl(url);
     } catch (e: any) {
-      alert("Visualization Failed: " + e.message);
+      // Silently handle aborts
+      if (e.name === 'AbortError' || e.message?.includes('aborted') || e.message?.includes('cancelled')) {
+          console.debug('Vision generation cancelled.');
+      } else {
+          alert("Visualization Failed: " + e.message);
+      }
     } finally {
       setLoading(false);
       setStatusMsg('');
