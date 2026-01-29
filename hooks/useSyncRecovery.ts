@@ -11,30 +11,30 @@ export const useSyncRecovery = (userId?: string, onRecovery?: (source: string) =
       if (isRecoveringRef.current) return;
       isRecoveringRef.current = true;
 
-      const qCount = await db.getQueueCount();
-      const { data } = await supabase!.auth.getSession();
+      // Arm the orchestrator for the next event
+      db.notifyResume(source);
 
-      syncInspector.log('info', 'RESUME_EVENT', `Recovery Signal: ${source}. Queue: ${qCount}`, {
-          owner: 'Lifecycle',
-          module: 'SyncRecovery',
-          reason: source
-      }, {
-          reason: source,
+      const qCount = await db.getQueueCount();
+      const orchestratorState = db.getOrchestratorState();
+      const { data: { session } } = await supabase!.auth.getSession();
+
+      const meta = {
+          source,
           visibility: document.visibilityState,
           online: navigator.onLine,
           queueCount: qCount,
-          hasSession: !!data.session,
-          isFlushing: db.isFlushing()
-      });
+          hasSession: !!session,
+          ...orchestratorState
+      };
 
-      syncInspector.log('info', 'RECOVERY_TRIGGER', `Signal Detected: ${source}, Queue: ${qCount}`, {
+      syncInspector.log('info', 'RESUME_BOUNDARY', `Lifecycle Signal: ${source}`, {
           owner: 'Lifecycle',
           module: 'SyncRecovery',
           reason: source
-      }, { queueCount: qCount });
+      }, meta);
 
-      // Rely on gated Orchestrator to manage the debounce/warm-up.
-      if (userId) {
+      // If we have items, force flush immediately
+      if (userId && qCount > 0) {
           db.scheduleFlush(`recovery_${source}`);
       }
 
@@ -43,11 +43,8 @@ export const useSyncRecovery = (userId?: string, onRecovery?: (source: string) =
     };
 
     const handleVisibility = () => {
-        if (document.visibilityState === 'visible') {
-            triggerRecovery('visibility_visible');
-        }
+        if (document.visibilityState === 'visible') triggerRecovery('visibility_visible');
     };
-
     const handleOnline = () => triggerRecovery('network_online');
 
     window.addEventListener('online', handleOnline);

@@ -29,70 +29,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isRecoveryMode, setIsRecoveryMode] = useState(false);
   const loadingTimeoutRef = useRef<any>(null);
 
-  const ADMIN_EMAIL = 'sales.carlingtonsc@gmail.com';
-
   useEffect(() => {
     const cachedUser = localStorage.getItem(USER_CACHE_KEY);
-    let hasCache = false;
-
     if (cachedUser) {
       try {
-        const parsed = JSON.parse(cachedUser);
-        setUser(parsed);
+        setUser(JSON.parse(cachedUser));
         setIsLoading(false); 
-        hasCache = true;
       } catch (e) {}
     }
 
-    if (!isSupabaseConfigured() || !supabase) {
-      setIsLoading(false);
-      return;
-    }
-
-    loadingTimeoutRef.current = setTimeout(() => {
-      if (isLoading) {
-        console.warn("🛡️ Auth Backstop: Supabase check timed out. Unblocking UI.");
-        setIsLoading(false);
-      }
-    }, 6000);
-
     const checkSession = async () => {
+      if (!supabase) return;
       try {
-        const { data: { session }, error } = await supabase.auth.getSession();
-        if (error) throw error;
-
+        const { data: { session } } = await supabase.auth.getSession();
         if (session?.user) {
           if (session.access_token) db.updateTokenCache(session.access_token);
-
-          if (!hasCache) {
-             const fallbackUser: UserProfile = {
-                id: session.user.id,
-                email: session.user.email!,
-                role: 'advisor',
-                status: 'approved',
-                subscriptionTier: 'free', 
-                is_admin: false,
-                organizationId: 'org_default',
-                extraSlots: 0, 
-                modules: [],
-                name: session.user.user_metadata?.full_name || session.user.email?.split('@')[0]
-             };
-             setUser(fallbackUser);
-             setIsLoading(false);
-          }
           loadUserProfile(session.user.id, session.user.email!);
         } else {
-          if (hasCache) {
-             localStorage.removeItem(USER_CACHE_KEY);
-             setUser(null);
-          }
           setIsLoading(false);
         }
-      } catch (err: any) {
-        console.error("Session check failed:", err.message);
+      } catch (err) {
         setIsLoading(false);
-      } finally {
-        if (loadingTimeoutRef.current) clearTimeout(loadingTimeoutRef.current);
       }
     };
 
@@ -101,42 +58,35 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const handleFocus = async () => {
         if (!supabase) return;
         
-        // 1. NON-BLOCKING Heartbeat
-        // We use console.debug here for the absolute minimum noise
+        // Notify Orchestrator of resume
+        db.notifyResume('focus');
+        
+        syncInspector.log('info', 'RESUME_BOUNDARY', 'Auth Pulse: Focus Detected', { owner: 'Lifecycle', module: 'AuthContext', reason: 'focus' });
         try {
             const { data } = await supabase.auth.getSession();
             if (data.session) {
                 if (data.session.access_token) db.updateTokenCache(data.session.access_token);
-                
-                const expiresAt = data.session.expires_at; 
+                const expiresAt = data.session.expires_at || 0;
                 const now = Math.floor(Date.now() / 1000);
-                const timeRemaining = expiresAt ? expiresAt - now : 0;
-                
-                if (timeRemaining < 3600) { 
-                    syncInspector.log('info', 'AUTH_CHECK', "Proactive Session Refresh triggered.");
+                if (expiresAt - now < 3600) { 
                     const { data: refreshed } = await supabase.auth.refreshSession();
                     if (refreshed.session?.access_token) db.updateTokenCache(refreshed.session.access_token);
-                } else {
-                    syncInspector.log('info', 'AUTH_CHECK', `Session valid (${Math.floor(timeRemaining/60)}m remaining).`);
                 }
-            } else {
-                // Heartbeat failure is informational ONLY, not a system error
-                syncInspector.log('info', 'AUTH_PENDING', "Wake Heartbeat: No session yet. Waiting for resume grace period.");
             }
-        } catch (e: any) {
-            // INFORMATION ONLY during wake
-            console.debug('Wake heartbeat bypassed.', e.message);
-        }
+        } catch (e) {}
     };
 
     window.addEventListener('focus', handleFocus);
     document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'visible') handleFocus();
+        if (document.visibilityState === 'visible') {
+            db.notifyResume('visibility');
+            syncInspector.log('info', 'RESUME_BOUNDARY', 'Auth Pulse: Visibility Visible', { owner: 'Lifecycle', module: 'AuthContext', reason: 'visibility' });
+            handleFocus();
+        }
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (session?.access_token) db.updateTokenCache(session.access_token);
-
       if (event === 'SIGNED_IN' && session?.user) {
         await loadUserProfile(session.user.id, session.user.email!);
       } else if (event === 'SIGNED_OUT') {
@@ -151,119 +101,49 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return () => {
       subscription.unsubscribe();
       window.removeEventListener('focus', handleFocus);
-      if (loadingTimeoutRef.current) clearTimeout(loadingTimeoutRef.current);
     };
   }, []);
 
   const loadUserProfile = async (uid: string, email: string) => {
     try {
       if (!supabase) return;
-      const isHardcodedAdmin = email === ADMIN_EMAIL;
-      
-      const { data: profileData, error: fetchError } = await supabase
-          .from('profiles')
-          .select('subscription_tier, role, is_admin, extra_slots, status, modules, organization_id, name')
-          .eq('id', uid)
-          .maybeSingle();
-
-      if (fetchError) {
-          if (fetchError.message.includes('stack depth') || fetchError.message.includes('recursion')) {
-              console.error("🚨 CRITICAL: Database Recursion Loop Detected in Auth.");
-          }
-          throw fetchError;
-      }
-
-      const isAdminByData = profileData?.role === 'admin' || profileData?.is_admin === true;
-      const finalRole = (isHardcodedAdmin || isAdminByData) ? 'admin' : (profileData?.role || 'advisor');
-      const finalIsAdmin = isHardcodedAdmin || isAdminByData;
-      const finalTier = finalRole === 'admin' ? 'diamond' : ((profileData?.subscription_tier as SubscriptionTier) || 'free');
-      
+      const { data: profileData } = await supabase.from('profiles').select('*').eq('id', uid).maybeSingle();
+      const finalRole = profileData?.role || 'advisor';
       const newUserProfile: UserProfile = {
         id: uid,
         email: email,
-        subscriptionTier: finalTier,
+        subscriptionTier: (profileData?.subscription_tier as SubscriptionTier) || 'free',
         role: finalRole,
         status: (profileData?.status || 'approved') as any,
         extraSlots: profileData?.extra_slots || 0,
         modules: profileData?.modules || [],
-        is_admin: finalIsAdmin,
-        isAgencyAdmin: finalIsAdmin,
+        is_admin: profileData?.is_admin || false,
         organizationId: profileData?.organization_id || 'org_default',
         name: profileData?.name
       };
-
       setUser(newUserProfile);
       localStorage.setItem(USER_CACHE_KEY, JSON.stringify(newUserProfile));
       setIsLoading(false);
-
     } catch (e) {
-      console.error('Profile loading error:', e);
       setIsLoading(false);
     }
   };
 
-  const signInWithEmail = async (email: string) => {
-    if (!supabase) return { error: { message: 'Supabase not configured' } };
-    return await supabase.auth.signInWithOtp({ email, options: { shouldCreateUser: true } });
-  };
-
-  const signInWithPassword = async (email: string, password: string) => {
-    if (!supabase) return { error: { message: 'Supabase not configured' } };
-    return await supabase.auth.signInWithPassword({ email, password });
-  };
-  
-  const signUpWithPassword = async (email: string, password: string) => {
-     if (!supabase) return { data: null, error: { message: 'Supabase not configured' } };
-     return await supabase.auth.signUp({ 
-       email, 
-       password,
-       options: { emailRedirectTo: window.location.origin }
-     });
-  };
-
-  const signInWithGoogle = async () => {
-    if (!supabase) return { error: { message: 'Supabase not configured' } };
-    return await supabase.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: window.location.origin } });
-  };
-  
-  const resetPassword = async (email: string) => {
-    if (!supabase) return { data: null, error: { message: 'Supabase not configured' } };
-    return await supabase.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin });
-  };
-
+  const signInWithEmail = async (email: string) => supabase!.auth.signInWithOtp({ email, options: { shouldCreateUser: true } });
+  const signInWithPassword = async (email: string, password: string) => supabase!.auth.signInWithPassword({ email, password });
+  const signUpWithPassword = async (email: string, password: string) => supabase!.auth.signUp({ email, password, options: { emailRedirectTo: window.location.origin } });
+  const signInWithGoogle = async () => supabase!.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: window.location.origin } });
+  const resetPassword = async (email: string) => supabase!.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin });
   const updatePassword = async (password: string) => {
-    if (!supabase) return { data: null, error: { message: 'Supabase not configured' } };
-    const result = await supabase.auth.updateUser({ password });
-    if (!result.error) {
-        setIsRecoveryMode(false);
-    }
+    const result = await supabase!.auth.updateUser({ password });
+    if (!result.error) setIsRecoveryMode(false);
     return result;
   };
+  const resendVerificationEmail = async (email: string) => supabase!.auth.resend({ type: 'signup', email });
+  const signOut = async () => { if (supabase) await supabase.auth.signOut(); localStorage.removeItem(USER_CACHE_KEY); setUser(null); };
+  const refreshProfile = async () => { if (user) await loadUserProfile(user.id, user.email); };
 
-  const resendVerificationEmail = async (email: string) => {
-    if (!supabase) return { data: null, error: { message: 'Supabase not configured' } };
-    return await supabase.auth.resend({ 
-      type: 'signup', 
-      email, 
-      options: { emailRedirectTo: window.location.origin } 
-    });
-  };
-
-  const signOut = async () => {
-    if (supabase) await supabase.auth.signOut();
-    localStorage.removeItem(USER_CACHE_KEY); 
-    setUser(null);
-  };
-
-  const refreshProfile = async () => {
-    if (user) await loadUserProfile(user.id, user.email);
-  };
-
-  return (
-    <AuthContext.Provider value={{ user, isLoading, isRecoveryMode, signInWithEmail, signInWithPassword, signUpWithPassword, signInWithGoogle, resetPassword, updatePassword, resendVerificationEmail, signOut, refreshProfile }}>
-      {children}
-    </AuthContext.Provider>
-  );
+  return <AuthContext.Provider value={{ user, isLoading, isRecoveryMode, signInWithEmail, signInWithPassword, signUpWithPassword, signInWithGoogle, resetPassword, updatePassword, resendVerificationEmail, signOut, refreshProfile }}>{children}</AuthContext.Provider>;
 };
 
 export const useAuth = () => {

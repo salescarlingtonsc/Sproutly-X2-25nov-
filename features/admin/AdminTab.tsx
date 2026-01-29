@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { adminDb } from '../../lib/db/admin';
@@ -14,6 +14,7 @@ import DbRepairModal from './components/DbRepairModal';
 import SaveDiagnosticsModal from './components/SaveDiagnosticsModal';
 import { Client, Advisor, Team, Product, AppSettings, Subscription } from '../../types';
 import { DEFAULT_SETTINGS } from '../../lib/config';
+import { isAbortError } from '../../lib/helpers';
 
 const AdminTab: React.FC = () => {
   const { user } = useAuth();
@@ -24,13 +25,33 @@ const AdminTab: React.FC = () => {
   const [showDiagnostics, setShowDiagnostics] = useState(false);
 
   // Data
-  const [clients, setClients] = useState<Client[]>([]);
-  const [advisors, setAdvisors] = useState<Advisor[]>([]);
+  const [rawClients, setRawClients] = useState<Client[]>([]);
+  const [rawAdvisors, setRawAdvisors] = useState<Advisor[]>([]);
   const [teams, setTeams] = useState<Team[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [subscription, setSubscription] = useState<Subscription>({ planId: 'free', status: 'active', seats: 1, nextBillingDate: new Date().toISOString() });
   const [activities, setActivities] = useState<any[]>([]);
+
+  // --- FRONT-END FIREWALL: SANITIZE ALL DATA ON RECEPTION ---
+  const clients = useMemo(() => {
+    return (rawClients || []).map(c => ({
+      ...c,
+      profile: c?.profile || { name: 'Unknown', email: '', phone: '', tags: [] },
+      followUp: c?.followUp || { status: 'new' },
+      notes: c?.notes || [],
+      sales: c?.sales || []
+    })) as Client[];
+  }, [rawClients]);
+
+  const advisors = useMemo(() => {
+    return (rawAdvisors || []).map(a => ({
+      ...a,
+      name: a?.name || a?.email?.split('@')[0] || 'Unknown Advisor',
+      avatar: (a?.name || a?.email || '?')[0].toUpperCase(),
+      modules: a?.modules || []
+    })) as Advisor[];
+  }, [rawAdvisors]);
 
   useEffect(() => {
     loadAdminData();
@@ -47,13 +68,11 @@ const AdminTab: React.FC = () => {
     if (!user) return;
     if (!silent) setLoading(true);
 
-    // UX: Warn if slow, but DO NOT CRASH.
     const slowTimer = setTimeout(() => {
         if (!silent) toast.info("Database is waking up... this may take a moment.");
     }, 12000); 
 
     try {
-        // 1. Fetch System Settings (Products, Teams, Config)
         const sys = await adminDb.getSystemSettings(user.organizationId);
         if (sys) {
             setProducts(sys.products || []);
@@ -62,7 +81,6 @@ const AdminTab: React.FC = () => {
             if (sys.subscription) setSubscription(sys.subscription);
         }
 
-        // 2. Fetch Advisors (Profiles)
         if (supabase) {
             let query = supabase.from('profiles').select('*');
             if (user.role !== 'admin' && user.organizationId) {
@@ -70,58 +88,42 @@ const AdminTab: React.FC = () => {
             }
             const { data: profiles } = await query;
             if (profiles) {
-                setAdvisors(profiles.map((p: any) => {
-                    let status = p.status;
-                    if (status === 'active') status = 'approved';
-                    if (!status || (status !== 'approved' && status !== 'rejected')) status = 'pending';
-
-                    let displayName = p.name;
-                    if (!displayName || displayName.trim() === '') {
-                        const safeEmail = p.email || 'unknown';
-                        const emailName = safeEmail.split('@')[0];
-                        displayName = emailName.charAt(0).toUpperCase() + emailName.slice(1);
-                    }
-
-                    return {
-                        id: p.id,
-                        email: p.email,
-                        name: displayName,
-                        role: p.role || 'advisor',
-                        status: status, 
-                        bandingPercentage: p.banding_percentage || 0,
-                        annualGoal: p.annual_goal || 0,
-                        subscriptionTier: p.subscription_tier,
-                        organizationId: p.organization_id || 'org_default',
-                        teamId: p.reporting_to,
-                        avatar: (displayName || p.email || '?')[0].toUpperCase(),
-                        joinedAt: p.created_at,
-                        modules: p.modules,
-                        isAgencyAdmin: p.role === 'director' || p.is_admin,
-                        is_admin: p.is_admin,
-                        extraSlots: p.extra_slots
-                    };
-                }));
+                setRawAdvisors(profiles.map((p: any) => ({
+                    id: p.id,
+                    email: p.email,
+                    name: p.name,
+                    role: p.role || 'advisor',
+                    status: p.status === 'active' ? 'approved' : (p.status || 'pending'), 
+                    bandingPercentage: p.banding_percentage || 0,
+                    annualGoal: p.annual_goal || 0,
+                    subscriptionTier: p.subscription_tier,
+                    organizationId: p.organization_id || 'org_default',
+                    teamId: p.reporting_to,
+                    joinedAt: p.created_at,
+                    modules: p.modules,
+                    isAgencyAdmin: p.role === 'director' || p.is_admin,
+                    is_admin: p.is_admin,
+                    extraSlots: p.extra_slots
+                })));
             }
         }
 
-        // 3. Fetch Clients
-        const allClients = await db.getClients();
-        setClients(allClients);
+        const allClients = await db.getClients(user.id, user.role);
+        setRawClients(allClients);
 
-        // 4. Fetch Activities (Safe wrapper to prevent timeout crash)
         try {
             const recentActivity = await Promise.race([
                 fetchGlobalActivity(100),
-                new Promise((resolve) => setTimeout(() => resolve([]), 5000)) // 5s timeout fallback
+                new Promise((resolve) => setTimeout(() => resolve([]), 5000))
             ]);
             setActivities(recentActivity as any[]);
-        } catch (e) {
-            console.warn("Activity fetch failed or timed out (non-critical)");
-        }
+        } catch (e) {}
 
     } catch (e: any) {
-        console.error("Admin load error", e);
-        if (!silent) toast.error("Failed to load some admin data. Check connection.");
+        if (!isAbortError(e)) {
+            console.error("Admin load error", e);
+            if (!silent) toast.error("Failed to load admin data.");
+        }
     } finally {
         clearTimeout(slowTimer);
         if (!silent) setLoading(false);
@@ -158,10 +160,10 @@ const AdminTab: React.FC = () => {
       }).eq('id', advisor.id);
 
       if (error) {
-          toast.error("Update failed: " + error.message);
+          toast.error("Update failed.");
       } else {
-          setAdvisors(prev => prev.map(a => a.id === advisor.id ? advisor : a));
-          toast.success("Advisor profile updated.");
+          setRawAdvisors(prev => prev.map(a => a.id === advisor.id ? advisor : a));
+          toast.success("Profile updated.");
       }
   };
 
@@ -171,7 +173,7 @@ const AdminTab: React.FC = () => {
       if (data) {
           await handleUpdateAdvisor({ ...advisor, id: data.id });
       } else {
-          toast.info("Invite sent (Simulated)");
+          toast.info("Invite sent.");
       }
       loadAdminData();
   };
@@ -180,7 +182,7 @@ const AdminTab: React.FC = () => {
       if (!supabase) return;
       const { error } = await supabase.from('profiles').update({ status: 'rejected' }).eq('id', id);
       if (!error) {
-          setAdvisors(prev => prev.map(a => a.id === id ? { ...a, status: 'rejected' } : a));
+          setRawAdvisors(prev => prev.map(a => a.id === id ? { ...a, status: 'rejected' } : a));
           toast.success("Advisor suspended.");
       }
   };
@@ -195,11 +197,10 @@ const AdminTab: React.FC = () => {
           toast.success(`Imported ${newClients.length} leads.`);
           loadAdminData();
       } catch (e: any) {
-          toast.error("Import failed: " + e.message);
+          toast.error("Import failed.");
       }
   };
 
-  // Safe Fallback for User Object
   const currentAdvisor: Advisor = user ? {
       ...user,
       name: user.name || user.email?.split('@')[0] || 'Admin',
@@ -210,7 +211,6 @@ const AdminTab: React.FC = () => {
 
   return (
     <div className="flex flex-col h-full bg-slate-50">
-        {/* HEADER ALWAYS VISIBLE */}
         <div className="bg-white border-b border-slate-200 px-6 py-2 flex items-center justify-between shadow-sm shrink-0 z-20">
             <div className="flex items-center gap-1 overflow-x-auto">
                 <NavButton active={activeView === 'dashboard'} onClick={() => setActiveView('dashboard')} icon="📊" label="Dashboard" />
@@ -221,19 +221,8 @@ const AdminTab: React.FC = () => {
             </div>
             
             <div className="flex gap-2">
-                <button 
-                    onClick={() => setShowDiagnostics(true)} 
-                    className="bg-indigo-50 text-indigo-600 px-3 py-1.5 rounded-lg text-xs font-bold border border-indigo-200 hover:bg-indigo-100 transition-colors flex items-center gap-1"
-                >
-                    <span>🩺</span> Save Logs
-                </button>
-
-                <button 
-                    onClick={() => setShowDbRepair(true)} 
-                    className="bg-red-50 text-red-600 px-3 py-1.5 rounded-lg text-xs font-bold border border-red-200 hover:bg-red-100 transition-colors flex items-center gap-1 shadow-sm"
-                >
-                    <span>🛠️</span> DB Repair
-                </button>
+                <button onClick={() => setShowDiagnostics(true)} className="bg-indigo-50 text-indigo-600 px-3 py-1.5 rounded-lg text-xs font-bold border border-indigo-200 hover:bg-indigo-100 transition-colors flex items-center gap-1">🩺 Save Logs</button>
+                <button onClick={() => setShowDbRepair(true)} className="bg-red-50 text-red-600 px-3 py-1.5 rounded-lg text-xs font-bold border border-red-200 hover:bg-red-100 transition-colors flex items-center gap-1 shadow-sm">🛠️ DB Repair</button>
             </div>
         </div>
 
@@ -246,50 +235,10 @@ const AdminTab: React.FC = () => {
                 </div>
             ) : (
                 <>
-                    {activeView === 'dashboard' && (
-                        <DirectorDashboard 
-                            clients={clients} 
-                            advisors={advisors}
-                            teams={teams}
-                            currentUser={currentAdvisor}
-                            activities={activities}
-                            products={products}
-                            onUpdateClient={async (c) => { await db.saveClient(c); loadAdminData(true); }}
-                            onImport={handleClientImport}
-                            onUpdateAdvisor={handleUpdateAdvisor}
-                        />
-                    )}
-                    {activeView === 'users' && (
-                        <div className="p-6">
-                            <UserManagement 
-                                advisors={advisors}
-                                teams={teams}
-                                currentUser={currentAdvisor}
-                                onUpdateAdvisor={handleUpdateAdvisor}
-                                onDeleteAdvisor={handleDeleteAdvisor}
-                                onUpdateTeams={(newTeams) => handleUpdateSettings({ teams: newTeams })}
-                                onAddAdvisor={handleAddAdvisor}
-                            />
-                        </div>
-                    )}
-                    {activeView === 'settings' && (
-                        <AdminSettings 
-                            products={products}
-                            settings={settings}
-                            advisors={advisors}
-                            onUpdateProducts={(p) => handleUpdateSettings({ products: p })}
-                            onUpdateSettings={(s) => handleUpdateSettings({ appSettings: s })}
-                            onUpdateAdvisors={() => { loadAdminData(true); }}
-                        />
-                    )}
-                    {activeView === 'billing' && (
-                        <SubscriptionManager 
-                            subscription={subscription}
-                            onUpdateSubscription={(s) => handleUpdateSettings({ subscription: s })}
-                            currentUser={currentAdvisor}
-                            onUpdateUser={handleUpdateAdvisor}
-                        />
-                    )}
+                    {activeView === 'dashboard' && <DirectorDashboard clients={clients} advisors={advisors} teams={teams} currentUser={currentAdvisor} activities={activities} products={products} onUpdateClient={async (c) => { await db.saveClient(c, user!.id); loadAdminData(true); }} onImport={handleClientImport} onUpdateAdvisor={handleUpdateAdvisor} />}
+                    {activeView === 'users' && <div className="p-6"><UserManagement advisors={advisors} teams={teams} currentUser={currentAdvisor} onUpdateAdvisor={handleUpdateAdvisor} onDeleteAdvisor={handleDeleteAdvisor} onUpdateTeams={(newTeams) => handleUpdateSettings({ teams: newTeams })} onAddAdvisor={handleAddAdvisor} /></div>}
+                    {activeView === 'settings' && <AdminSettings products={products} settings={settings} advisors={advisors} onUpdateProducts={(p) => handleUpdateSettings({ products: p })} onUpdateSettings={(s) => handleUpdateSettings({ appSettings: s })} onUpdateAdvisors={() => { loadAdminData(true); }} />}
+                    {activeView === 'billing' && <SubscriptionManager subscription={subscription} onUpdateSubscription={(s) => handleUpdateSettings({ subscription: s })} currentUser={currentAdvisor} onUpdateUser={handleUpdateAdvisor} />}
                     {activeView === 'ai' && <AiKnowledgeManager />}
                 </>
             )}
@@ -302,12 +251,7 @@ const AdminTab: React.FC = () => {
 };
 
 const NavButton = ({ active, onClick, icon, label }: any) => (
-    <button 
-        onClick={onClick}
-        className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all ${active ? 'bg-slate-900 text-white shadow-md' : 'text-slate-500 hover:bg-slate-100'}`}
-    >
-        <span>{icon}</span> {label}
-    </button>
+    <button onClick={onClick} className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all ${active ? 'bg-slate-900 text-white shadow-md' : 'text-slate-500 hover:bg-slate-100'}`}><span>{icon}</span> {label}</button>
 );
 
 export default AdminTab;

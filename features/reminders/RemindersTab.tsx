@@ -102,7 +102,8 @@ const RemindersTab: React.FC = () => {
       setClients(prev => prev.map(old => old.id === updatedC.id ? updatedC : old));
       setSelectedClient(updatedC);
       loadClient(updatedC);
-      db.saveClient(updatedC);
+      // Added user.id to db.saveClient call
+      db.saveClient(updatedC, user!.id);
   };
 
   const isContactedToday = (client: Client) => {
@@ -148,7 +149,8 @@ const RemindersTab: React.FC = () => {
             author: 'System' 
           }, ...(client.notes || [])]
       };
-      await db.saveClient(updatedClient);
+      // Added user.id to db.saveClient call
+      await db.saveClient(updatedClient, user!.id);
       handleUpdateClient(updatedClient);
       toast.success("Appointment cleared!");
   };
@@ -169,7 +171,8 @@ const RemindersTab: React.FC = () => {
             lastUpdated: now,
             notes: [{ id: `wish_${Date.now()}`, content: 'Sent Birthday Wish 🎂', date: now, author: 'System' }, ...(client.notes || [])]
         };
-        await db.saveClient(updatedClient);
+        // Added user.id to db.saveClient call
+        await db.saveClient(updatedClient, user!.id);
         handleUpdateClient(updatedClient);
     }
     

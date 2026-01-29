@@ -7,7 +7,6 @@ import { fmtDateTime, fmtSGD, toNum } from '../../../lib/helpers';
 import { logActivity } from '../../../lib/db/activities';
 import { useToast } from '../../../contexts/ToastContext';
 import { useDialog } from '../../../contexts/DialogContext'; 
-import { db } from '../../../lib/db';
 import { AddSaleModal } from './AddSaleModal';
 import ClosureDeckModal from './ClosureDeckModal'; 
 import { adminDb } from '../../../lib/db/admin';
@@ -99,7 +98,6 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
   const [waTemplates, setWaTemplates] = useState(DEFAULT_TEMPLATES);
   const [isPolishing, setIsPolishing] = useState(false);
 
-  const isOwner = client._ownerId === currentUser?.id;
   const canDeleteClient = currentUser?.email === 'sales.carlingtonsc@gmail.com' || currentUser?.role === 'admin' || currentUser?.is_admin === true || currentUser?.role === 'director';
 
   const campaignTag = (client.tags || []).find(t => t.startsWith('Campaign: '));
@@ -128,12 +126,10 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
           return;
       }
       if (field === 'nextFollowUpDate') {
-          /* Fixed: Ensure 'status' is preserved when spreading to satisfy the required 'status' property on followUp */
           onUpdate({ ...client, followUp: { status: client.followUp?.status || 'new', ...client.followUp, nextFollowUpDate: val } });
           return;
       }
       if (field === 'firstApptDate') {
-          // FIX: Ensure appointments exist before spreading
           onUpdate({ 
               ...client, 
               firstApptDate: val,
@@ -144,7 +140,6 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
       if (field === 'stage' && val !== client.stage) {
           const statusKey = REVERSE_STATUS_MAP[val] || val;
           const logEntry = { id: `sys_${now.getTime()}`, content: `Stage updated: ${client.stage || 'New'} ➔ ${val}`, date: now.toISOString(), author: 'System' };
-          // FIX: Ensure followUp exists before spreading
           onUpdate({ ...client, stage: val, followUp: { ...(client.followUp || {status: 'new'}), status: statusKey as ContactStatus, lastContactedAt: now.toISOString() }, notes: [logEntry, ...(client.notes || [])], lastUpdated: now.toISOString() });
           logActivity(client.id, 'status_change', `Stage changed to ${val}`);
       } else {
@@ -190,7 +185,7 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
     const logEntry = { id: `call_${Date.now()}`, content: `Outgoing Call initiated to ${rawPhone}`, date: now, author: 'Me' };
     const updatedClient = { ...client, lastContact: now, lastUpdated: now, notes: [logEntry, ...(client.notes || [])] };
 
-    try { await db.saveClient(updatedClient, currentUser?.id); } catch(e) {}
+    // Standard persistence through provided onUpdate pipeline
     onUpdate(updatedClient);
     
     setTimeout(() => { window.location.href = `tel:${rawPhone}`; }, 250);
@@ -218,7 +213,7 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
     const logEntry = { id: `book_${Date.now()}`, content: `Calendar Invitation Sent: ${title}`, date: now, author: 'Me' };
     const updatedClient = { ...client, lastUpdated: now, notes: [logEntry, ...(client.notes || [])] };
 
-    try { await db.saveClient(updatedClient, currentUser?.id); } catch(e) {}
+    // Standard persistence through provided onUpdate pipeline
     onUpdate(updatedClient);
     
     setTimeout(() => { window.open(url, '_blank'); }, 250);
@@ -416,7 +411,6 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onUpdate, curren
              onSend={async (label, content) => {
                 const now = new Date().toISOString();
                 const updatedClient = { ...client, lastContact: now, lastUpdated: now, notes: [{ id: `wa_${Date.now()}`, content: `Outreach Dispatched: ${label}`, date: now, author: 'Me' }, ...(client.notes || [])] };
-                try { await db.saveClient(updatedClient, currentUser?.id); } catch(e) {}
                 onUpdate(updatedClient);
              }}
           />

@@ -1,21 +1,7 @@
-
 import { GoogleGenAI, Type, Modality } from "@google/genai";
+import { isAbortError } from "./helpers";
 
 const getAI = () => new GoogleGenAI({ apiKey: process.env.API_KEY });
-
-/**
- * Checks if an error is a browser-level abort caused by app switching
- */
-const isAbortError = (error: any) => {
-  const msg = error?.message || String(error);
-  return (
-    error?.name === 'AbortError' || 
-    msg.includes('aborted') || 
-    msg.includes('cancelled') || 
-    msg.includes('The operation was aborted') ||
-    msg.includes('fetch failed')
-  );
-};
 
 // --- STRATEGIC OUTREACH PROTOCOL ENGINE ---
 export const generateAutomatedPitch = async (clientData: any) => {
@@ -225,7 +211,7 @@ export const analyzeMarketIntel = async (rawText: string) => {
     });
     return JSON.parse(response.text || '{}');
   } catch (e) {
-    if (isAbortError(e)) throw e; // Caller handles re-trying
+    if (isAbortError(e)) throw e;
     console.error("Market Intel Error", e);
     throw new Error("Failed to process intelligence.");
   }
@@ -388,7 +374,7 @@ export const chatWithFinancialContext = async (history: any[], userMessage: stri
     const result = await chat.sendMessage({ message: `Context: ${JSON.stringify(clientState)}. User: ${userMessage}` });
     return result.text;
   } catch (e) {
-    if (isAbortError(e)) return null; // Silent for chat
+    if (isAbortError(e)) return null; 
     throw e;
   }
 };

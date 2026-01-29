@@ -91,14 +91,25 @@ const DashboardTab: React.FC<DashboardTabProps> = ({ user, clients, onLoadClient
 
   const handleManualRefresh = async () => {
       setIsRefreshing(true);
-      await db.getClients(user.id);
-      // Let the event listener handle the state update in App.tsx
+      await db.getClients(user.id, user.role);
       setTimeout(() => setIsRefreshing(false), 1000);
   };
 
+  // --- LEAD ISOLATION FIREWALL ---
+  const isolatedClients = useMemo(() => {
+    const isAdmin = user.role === 'admin' || user.is_admin === true || user.role === 'director';
+    const isManager = user.role === 'manager';
+
+    return (clients || []).filter(c => {
+        if (isAdmin || isManager) return true;
+        // Advisors see only what they own
+        return c._ownerId === user.id || c.advisorId === user.id;
+    });
+  }, [clients, user]);
+
   const availableAdvisors = useMemo(() => {
       const map = new Map<string, string>();
-      clients.forEach(c => {
+      isolatedClients.forEach(c => {
           const id = c.advisorId || c._ownerId;
           if (id) {
               const label = c._ownerEmail || `Advisor ${id.slice(0, 4)}`;
@@ -106,18 +117,16 @@ const DashboardTab: React.FC<DashboardTabProps> = ({ user, clients, onLoadClient
           }
       });
       return Array.from(map.entries()).map(([id, name]) => ({ id, name }));
-  }, [clients]);
+  }, [isolatedClients]);
 
   const filteredClients = useMemo(() => {
-      if (selectedAdvisor === 'All') return clients;
-      return clients.filter(c => (c.advisorId || c._ownerId) === selectedAdvisor);
-  }, [clients, selectedAdvisor]);
+      if (selectedAdvisor === 'All') return isolatedClients;
+      return isolatedClients.filter(c => (c.advisorId || c._ownerId) === selectedAdvisor);
+  }, [isolatedClients, selectedAdvisor]);
 
   // --- TOP LEVEL KPI BLOCK ---
   const kpiStats = useMemo(() => {
-      // Aggressive safety filter for active leads
       const activeLeads = filteredClients.filter(c => {
-          // STRICT OPTIONAL CHAINING TO PREVENT CRASH
           const status = c.followUp?.status || c.stage || 'new';
           return !['client', 'case_closed', 'not_keen'].includes(status.toLowerCase());
       });

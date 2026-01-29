@@ -1,4 +1,3 @@
-
 export const toNum = (val: any, def = 0): number => {
   const n = parseFloat(String(val).replace(/[^0-9.-]/g, ''));
   return isNaN(n) ? def : n;
@@ -16,8 +15,7 @@ export const monthNames = [
 
 export const parseDob = (iso: string): Date | null => {
   if (!iso) return null;
-  // Parse manually to avoid UTC shifts
-  const cleanIso = iso.substring(0, 10); // Handle "YYYY-MM-DDTHH:mm..."
+  const cleanIso = iso.substring(0, 10);
   if (/^\d{4}-\d{2}-\d{2}$/.test(cleanIso)) {
       const [y, m, d] = cleanIso.split('-').map(Number);
       if (!isNaN(y) && !isNaN(m) && !isNaN(d)) {
@@ -36,32 +34,21 @@ export const monthsSinceDob = (dob: Date, refYear: number, refMonth: number): nu
 
 export const getAge = (dobIso: string): number => {
   if (!dobIso) return 0;
-  
   const today = new Date();
   let birthDate: Date;
-
-  // AGGRESSIVE FIX: Ignore timezones completely.
-  // Take the first 10 characters (YYYY-MM-DD) and force Local Time construction.
-  // This prevents '1997-01-01' (UTC) becoming '1996-12-31' (Local).
   const cleanDob = String(dobIso).substring(0, 10);
-
   if (/^\d{4}-\d{2}-\d{2}$/.test(cleanDob)) {
       const [y, m, d] = cleanDob.split('-').map(Number);
       birthDate = new Date(y, m - 1, d);
   } else {
       birthDate = new Date(dobIso);
   }
-
   if (isNaN(birthDate.getTime())) return 0;
-
   let age = today.getFullYear() - birthDate.getFullYear();
   const m = today.getMonth() - birthDate.getMonth();
-  
-  // Precise day check
   if (m < 0 || (m === 0 && today.getDate() < birthDate.getDate())) {
       age--;
   }
-  
   return Math.max(0, age);
 };
 
@@ -100,7 +87,24 @@ export const convert24to12 = (time24: string): string => {
 };
 
 export const generateRefCode = (): string => {
-  // Generates a unique REF code like: REF-9A2B-X7Y1
   const segment = () => Math.random().toString(36).substr(2, 4).toUpperCase();
   return `REF-${segment()}-${segment()}`;
+};
+
+/**
+ * Checks if an error is a browser-level cancellation caused by network interruption
+ * or explicit AbortController usage during app lifecycle changes.
+ */
+export const isAbortError = (error: any): boolean => {
+  if (!error) return false;
+  const msg = (error?.message || String(error)).toLowerCase();
+  const name = (error?.name || '').toLowerCase();
+  return (
+    name === 'aborterror' || 
+    msg.includes('aborted') || 
+    msg.includes('cancelled') || 
+    msg.includes('operation was aborted') ||
+    msg.includes('fetch failed') ||
+    msg.includes('network request failed')
+  );
 };

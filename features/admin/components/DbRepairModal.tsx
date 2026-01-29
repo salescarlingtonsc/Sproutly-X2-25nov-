@@ -18,9 +18,10 @@ interface DbRepairModalProps {
 
 const DbRepairModal: React.FC<DbRepairModalProps> = ({ isOpen, onClose }) => {
   const { user } = useAuth();
+  const toast = useToast();
   const [showInspector, setShowInspector] = React.useState(false);
   
-  const SCRIPT_SQL = `-- ENTERPRISE SCHEMA v6.3 (SYNTAX HARDENED + LAST CONTACT FIX)
+  const SCRIPT_SQL = `-- ENTERPRISE SCHEMA v6.4 (SYNTAX HARDENED + STRICT ISOLATION)
 -- Run this in the Supabase SQL Editor to restore lead visibility and fix numeric conversion errors.
 
 -- 1. CLEANUP: Clear old problematic policies
@@ -79,18 +80,17 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='clients' AND column_name='updated_at') THEN
         ALTER TABLE public.clients ADD COLUMN updated_at timestamptz DEFAULT now();
     END IF;
-    -- FIX: Missing column causing sync errors
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='clients' AND column_name='last_contact_at') THEN
         ALTER TABLE public.clients ADD COLUMN last_contact_at timestamptz;
     END IF;
 END $$;
 
 -- 4. SECURITY FUNCTIONS (Non-Recursive Enterprise Standard)
-CREATE OR REPLACE FUNCTION public.check_is_admin()
+CREATE OR REPLACE FUNCTION public.check_is_privileged()
 RETURNS boolean AS $$
     SELECT EXISTS (
         SELECT 1 FROM public.profiles
-        WHERE id = auth.uid() AND (role = 'admin' OR role = 'director' OR is_admin = true)
+        WHERE id = auth.uid() AND (role = 'admin' OR role = 'director' OR role = 'manager' OR is_admin = true)
     );
 $$ LANGUAGE sql SECURITY DEFINER SET search_path = public;
 
@@ -100,7 +100,6 @@ RETURNS text AS $$
 $$ LANGUAGE sql SECURITY DEFINER SET search_path = public;
 
 -- 5. DATA RECOVERY: Sync new columns from the JSON blob
--- PATCH v6.2: Using NULLIF to prevent crash on empty strings in numeric fields
 UPDATE public.clients 
 SET 
   name = COALESCE(data->'profile'->>'name', data->>'name'),
@@ -125,22 +124,23 @@ WHERE name IS NULL OR org_id = 'org_default' OR last_contact_at IS NULL;
 -- Ensure every profile has an org ID
 UPDATE public.profiles SET organization_id = 'org_default' WHERE organization_id IS NULL;
 
--- 6. APPLY ENTERPRISE RLS POLICIES
+-- 6. APPLY ENTERPRISE RLS POLICIES (HARDENED ISOLATION)
 ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "profiles_enterprise_select" ON public.profiles FOR SELECT USING (true);
-CREATE POLICY "profiles_enterprise_all" ON public.profiles FOR ALL USING (check_is_admin() OR auth.uid() = id);
+CREATE POLICY "profiles_enterprise_all" ON public.profiles FOR ALL USING (check_is_privileged() OR auth.uid() = id);
 
 ALTER TABLE clients ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "clients_enterprise_visibility" ON public.clients 
 FOR ALL USING (
+    -- Rule 1: Owner can always see their own
     user_id = auth.uid() OR 
-    org_id = get_my_org_id() OR 
-    check_is_admin()
+    -- Rule 2: Privileged users see based on ORG match
+    (check_is_privileged() AND org_id = get_my_org_id())
 );
 
 ALTER TABLE activities ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "activities_enterprise_access" ON public.activities 
-FOR ALL USING (user_id = auth.uid() OR check_is_admin());
+FOR ALL USING (user_id = auth.uid() OR check_is_privileged());
 
 -- 7. PERFORMANCE BOOSTERS
 CREATE INDEX IF NOT EXISTS idx_clients_org_search ON clients(org_id, name);
@@ -152,35 +152,52 @@ CREATE INDEX IF NOT EXISTS idx_clients_last_contact ON clients(last_contact_at D
 ANALYZE;`;
 
   const runRepro = async () => {
-      if (!user) {
-          alert("Please log in to run diagnostics.");
-          return;
-      }
-
-      // DETERMINISTIC REPRO: Use strict UUID
-      const reproId = db.generateUuid();
-      const now = new Date().toISOString();
-
-      syncInspector.log('info', 'INIT', `Starting Deterministic Repro for ID: ${reproId}`, {
-          owner: 'UI',
-          module: 'DbRepairModal',
-          reason: 'Manual Repro'
-      });
-
-      // 1. Queue the record
-      await db.saveClient({
-          id: reproId,
-          name: `Repro Test ${reproId.substring(0, 5)}`,
-          profile: { name: `Repro ${reproId.substring(0, 5)}` } as any,
-          lastUpdated: now
-      } as any, user.id, {
-          owner: 'UI',
-          module: 'DbRepairModal',
-          reason: 'Manual Repro Trigger'
-      });
+      const causality: SyncCausality = { owner: 'UI', module: 'DbRepairModal', reason: 'Manual Repro' };
       
-      // 2. Alert user for app switch
-      alert("REPRO SAVE SUCCESSFUL: Record enqueued.\n\nNOW IMMEDIATELY switch apps for 5 seconds, then return here to verify Foreground Sync Recovery.");
+      try {
+          syncInspector.log('info', 'REPRO_STEP' as any, 'enter', causality);
+          
+          syncInspector.log('info', 'REPRO_STEP' as any, 'session_check_start', causality);
+          const hasSession = !!user;
+          syncInspector.log('info', 'REPRO_STEP' as any, 'session_check_result', causality, { hasSession });
+
+          if (!user) {
+              alert("Please log in to run diagnostics.");
+              return;
+          }
+
+          // DETERMINISTIC REPRO: Use strict UUID
+          const reproId = db.generateUuid();
+          const now = new Date().toISOString();
+
+          syncInspector.log('info', 'REPRO_STEP' as any, 'before_saveClient', causality, { id: reproId });
+
+          // 1. Queue the record
+          await db.saveClient({
+              id: reproId,
+              name: `Repro Test ${reproId.substring(0, 5)}`,
+              profile: { name: `Repro ${reproId.substring(0, 5)}` } as any,
+              lastUpdated: now
+          } as any, user.id, {
+              owner: 'UI',
+              module: 'DbRepairModal',
+              reason: 'Manual Repro Trigger'
+          });
+          
+          syncInspector.log('info', 'REPRO_STEP' as any, 'after_saveClient', causality, { id: reproId });
+
+          // Explicit call to check flush path
+          db.scheduleFlush('Manual Repro Flush');
+          syncInspector.log('info', 'REPRO_STEP' as any, 'after_scheduleFlush', causality);
+
+          syncInspector.log('info', 'REPRO_STEP' as any, 'done', causality);
+          
+          // 2. Alert user for app switch
+          alert("REPRO SAVE SUCCESSFUL: Record enqueued.\n\nNOW IMMEDIATELY switch apps for 5 seconds, then return here to verify Foreground Sync Recovery.");
+      } catch (err: any) {
+          syncInspector.log('error', 'REPRO_ERR' as any, err.message, causality, { stack: err.stack });
+          toast.error("Repro logic crashed. Check Inspector.");
+      }
   };
 
   if (!isOpen) return null;

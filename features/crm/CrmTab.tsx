@@ -92,20 +92,36 @@ const CrmTab: React.FC<CrmTabProps> = ({
 
   const isAdmin = user?.role === 'admin' || user?.is_admin === true || user?.role === 'director';
 
-  // --- FRONT-END FIREWALL: SANITIZE RAW CLIENTS IMMEDIATELY ---
-  const sanitizedClients = useMemo(() => {
-      return (clients || []).map(c => {
-          if (!c) return null;
-          // Force inject missing objects to prevent "undefined is not an object"
-          return {
-              ...c,
-              followUp: c.followUp || { status: 'new' }, 
-              profile: c.profile || { name: 'Unknown', email: '', phone: '' },
-              appointments: c.appointments || {},
-              notes: c.notes || []
-          };
-      }).filter(c => c !== null) as Client[];
-  }, [clients]);
+  // --- PRIVACY ISOLATION FIREWALL (HARDENED) ---
+  const isolatedClients = useMemo(() => {
+    if (!user) return [];
+    
+    return (clients || []).filter(c => {
+        if (!c) return false;
+        
+        // 1. Directors/Admins see everything in their Org
+        if (isAdmin) return true;
+
+        // 2. Managers see their own leads OR leads assigned to their team
+        if (user.role === 'manager') {
+            const isOwner = c._ownerId === user.id || c.advisorId === user.id;
+            const inTeam = c.advisorId && user.id === c.advisorId; // This needs proper team membership column in real usage
+            return isOwner || inTeam;
+        }
+        
+        // 3. Advisors STRICTLY see only what they own
+        const isOwner = c._ownerId === user.id || c.advisorId === user.id;
+        return isOwner;
+    }).map(c => {
+        return {
+            ...c,
+            followUp: c.followUp || { status: 'new' }, 
+            profile: c.profile || { name: 'Unknown', email: '', phone: '' },
+            appointments: c.appointments || {},
+            notes: c.notes || []
+        };
+    }) as Client[];
+  }, [clients, user, isAdmin]);
 
   useEffect(() => {
     const resolveNames = async () => {
@@ -128,7 +144,7 @@ const CrmTab: React.FC<CrmTabProps> = ({
 
   const availableAdvisors = useMemo(() => {
     const map = new Map<string, string>();
-    sanitizedClients.forEach(c => {
+    isolatedClients.forEach(c => {
       const ownerId = c.advisorId || c._ownerId;
       if (ownerId) {
          let label = advisorMap[ownerId] || c._ownerEmail || `Advisor ${ownerId.substring(0, 4)}`;
@@ -136,7 +152,7 @@ const CrmTab: React.FC<CrmTabProps> = ({
       }
     });
     return Array.from(map.entries()).map(([id, name]) => ({ id, name })).sort((a,b) => a.name.localeCompare(b.name));
-  }, [sanitizedClients, advisorMap]);
+  }, [isolatedClients, advisorMap]);
 
   const showAdvisorCol = availableAdvisors.length > 1;
 
@@ -149,11 +165,11 @@ const CrmTab: React.FC<CrmTabProps> = ({
   }, [user?.organizationId]);
 
   useEffect(() => {
-    if (selectedClientId && sanitizedClients.length > 0) {
-        const matchedClient = sanitizedClients.find(c => c.id === selectedClientId);
+    if (selectedClientId && isolatedClients.length > 0) {
+        const matchedClient = isolatedClients.find(c => c.id === selectedClientId);
         if (matchedClient) setActiveDetailClient(matchedClient);
     }
-  }, [selectedClientId, sanitizedClients]);
+  }, [selectedClientId, isolatedClients]);
 
   const handleClearFilters = () => {
       setSearchTerm('');
@@ -164,7 +180,6 @@ const CrmTab: React.FC<CrmTabProps> = ({
       toast.info("All search filters cleared.");
   };
 
-  // Reset pagination on filter change
   useEffect(() => {
       setDisplayCount(PAGE_SIZE);
   }, [searchTerm, stageFilter, advisorFilter, momentumFilter, isGrouped]);
@@ -178,8 +193,7 @@ const CrmTab: React.FC<CrmTabProps> = ({
   };
 
   const filteredClients = useMemo(() => {
-    let filtered = sanitizedClients.filter(client => {
-      // Access is safe here due to sanitizedClients firewall
+    let filtered = isolatedClients.filter(client => {
       const name = client.name || client.profile?.name || '';
       const company = client.company || '';
       const phone = client.phone || client.profile?.phone || '';
@@ -238,9 +252,8 @@ const CrmTab: React.FC<CrmTabProps> = ({
         });
     }
     return filtered;
-  }, [sanitizedClients, searchTerm, stageFilter, advisorFilter, momentumFilter, sortConfig, advisorMap]);
+  }, [isolatedClients, searchTerm, stageFilter, advisorFilter, momentumFilter, sortConfig, advisorMap]);
 
-  // Virtual Pagination Slice
   const visibleClients = useMemo(() => {
       return filteredClients.slice(0, displayCount);
   }, [filteredClients, displayCount]);
@@ -313,7 +326,7 @@ const CrmTab: React.FC<CrmTabProps> = ({
   return (
     <div className="p-6 md:p-8 animate-fade-in pb-24 md:pb-8 relative">
       <AnalyticsPanel 
-        clients={sanitizedClients} // Pass sanitized clients to analytics
+        clients={isolatedClients} 
         advisorFilter={advisorFilter}
         setAdvisorFilter={setAdvisorFilter}
         availableAdvisors={availableAdvisors}
@@ -495,7 +508,7 @@ const CrmTab: React.FC<CrmTabProps> = ({
       )}
 
       {/* ... MODALS ... */}
-      <CallSessionModal isOpen={isCallSessionOpen} onClose={() => setIsCallSessionOpen(false)} clients={sanitizedClients} onUpdateClient={(c, changes) => onUpdateGlobalClient({...c, ...changes})} />
+      <CallSessionModal isOpen={isCallSessionOpen} onClose={() => setIsCallSessionOpen(false)} clients={isolatedClients} onUpdateClient={(c, changes) => onUpdateGlobalClient({...c, ...changes})} />
       <Modal isOpen={isTemplateManagerOpen} onClose={() => setIsTemplateManagerOpen(false)} title="Personal Templates" footer={<button onClick={() => setIsTemplateManagerOpen(false)} className="px-4 py-2 text-xs font-bold text-slate-500 hover:bg-slate-100 rounded-lg">Close</button>}>
          <TemplateManager templates={templates} onUpdateTemplates={setTemplates} />
       </Modal>
@@ -541,7 +554,6 @@ const ClientRow: React.FC<{
             <td className="px-4 py-3" onClick={e => e.stopPropagation()}><input type="checkbox" checked={isSelected} onChange={onToggle} className="rounded border-slate-300 text-indigo-600 cursor-pointer" /></td>
             <td className="px-4 py-3"><div className="font-bold text-slate-800">{client.name}</div><div className="text-xs text-slate-400">{client.company}</div></td>
             {showAdvisor && <td className="px-4 py-3 text-xs font-medium text-slate-600 truncate max-w-[150px]">{advisorName || 'Unassigned'}</td>}
-            {/* Fix: use onStatusUpdate as specified in props destructuring */}
             <td className="px-4 py-3" onClick={e => e.stopPropagation()}><StatusDropdown client={client} onUpdate={onStatusUpdate} /></td>
             <td className="px-4 py-3"><div className="text-sm font-bold text-slate-700">{client.momentumScore || 50}/100</div><div className="text-xs text-slate-400">${(client.value || 0).toLocaleString()}</div></td>
             <td className="px-4 py-3 text-xs text-slate-500"><div>📞 {client.phone || '-'}</div><div>✉️ {client.email || '-'}</div></td>

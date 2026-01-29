@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { Client, ContactStatus } from '../../../types';
 import { fetchActivities, Activity } from '../../../lib/db/activities';
@@ -7,7 +6,7 @@ import { supabase } from '../../../lib/supabase';
 import { db } from '../../../lib/db';
 import { useAuth } from '../../../contexts/AuthContext';
 import { useToast } from '../../../contexts/ToastContext';
-import { useDialog } from '../../../contexts/DialogContext'; // Added
+import { useDialog } from '../../../contexts/DialogContext'; 
 import FileUploader from '../../../components/common/FileUploader';
 import StatusDropdown from './StatusDropdown';
 import Button from '../../../components/ui/Button';
@@ -39,7 +38,7 @@ const ClientDrawer: React.FC<ClientDrawerProps> = ({
 }) => {
   const { user: currentUser } = useAuth();
   const toast = useToast();
-  const { confirm } = useDialog(); // Use custom dialog
+  const { confirm } = useDialog(); 
   const [activeTab, setActiveTab] = useState<'details' | 'files' | 'activity'>('details');
   const [activities, setActivities] = useState<Activity[]>([]);
   const [files, setFiles] = useState<any[]>([]);
@@ -51,9 +50,8 @@ const ClientDrawer: React.FC<ClientDrawerProps> = ({
 
   const isAdmin = currentUser?.role === 'admin' || currentUser?.is_admin === true;
   const isDirector = currentUser?.role === 'director';
-  const canDeleteClient = isAdmin || isDirector; // Strict delete permission
+  const canDeleteClient = isAdmin || isDirector; 
 
-  // ... (keep useEffect, fetchAdvisors, loadTabContent, handleFileUpload, handleDeleteActivity, handleReassign) ...
   useEffect(() => {
     if (isOpen && client.id) {
         loadTabContent();
@@ -100,7 +98,6 @@ const ClientDrawer: React.FC<ClientDrawerProps> = ({
           return;
       }
 
-      // Use Custom Confirm
       const isConfirmed = await confirm({
           title: "Delete Log?",
           message: "This will permanently remove this activity record.",
@@ -133,7 +130,6 @@ const ClientDrawer: React.FC<ClientDrawerProps> = ({
     const selectedAdvisor = advisors.find(a => a.id === newOwnerId);
     const email = selectedAdvisor?.email || 'New Advisor';
     
-    // Use Custom Confirm
     const isConfirmed = await confirm({
         title: "Transfer Client?",
         message: `Initialize portfolio handover of ${client.profile.name} to ${email}?`,
@@ -145,9 +141,15 @@ const ClientDrawer: React.FC<ClientDrawerProps> = ({
     setIsReassigning(true);
     if (onTransferStart) onTransferStart(client.id);
     try {
+        // transferOwnership is a special direct Supabase operation that doesn't 
+        // follow standard saveClient pattern because it mutates metadata (ownership).
         await db.transferOwnership(client.id, newOwnerId);
+        
+        // After DB transfer, update local fields to trigger a standard saveClient sync 
+        // which will ensure the data part of the record is also updated for the new owner.
         onUpdateField(client.id, '_ownerId', newOwnerId, 'root');
         onUpdateField(client.id, '_ownerEmail', email, 'root');
+        
         toast.success(`Handover Protocol Executed: ${email.split('@')[0]} is now custodian.`);
         if (onForceRefresh) onForceRefresh();
         setTimeout(() => {
@@ -163,7 +165,6 @@ const ClientDrawer: React.FC<ClientDrawerProps> = ({
   };
 
   const handleDeleteClient = async () => {
-      // Use Custom Confirm
       const isConfirmed = await confirm({
           title: "Delete Client Dossier?",
           message: "Permanently discard this client dossier? This cannot be undone.",

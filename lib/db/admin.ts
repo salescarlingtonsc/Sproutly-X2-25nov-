@@ -1,6 +1,6 @@
-
 import { supabase } from '../supabase';
 import { Product, Team, AppSettings, Subscription, MarketNewsItem } from '../../types';
+import { isAbortError } from '../helpers';
 
 export interface SystemSettings {
   products: Product[];
@@ -82,8 +82,8 @@ export const adminDb = {
 
         return null;
     } catch (e: any) {
-        // Silently swallow abort errors or network interruptions during page load/unload
-        if (e.message?.includes('aborted') || e.message?.includes('fetch failed')) {
+        // Use hardened isAbortError to swallow harmless lifecycle interruptions
+        if (isAbortError(e)) {
             console.debug("Settings load aborted/failed silently.");
             return null;
         }

@@ -53,12 +53,11 @@ const App: React.FC = () => {
 
   const refreshClients = useCallback(async () => {
     if (user) {
-      const data = await db.getClients();
+      const data = await db.getClients(user.id, user.role);
       setClients(data.filter((c: any) => c.profile?.name || c.name));
     }
   }, [user]);
 
-  // INITIAL CLOUD SYNC: Restore leads on boot
   useEffect(() => {
     if (user) {
         db.pullFromCloud().then(() => {
@@ -68,18 +67,11 @@ const App: React.FC = () => {
   }, [user, refreshClients]);
 
   useEffect(() => {
-    db.getClients().then(data => {
-        if (data && data.length > 0) setClients(data.filter((c: any) => c.name || c.profile?.name));
-    });
-  }, []);
-
-  useEffect(() => {
       const h = () => refreshClients();
       window.addEventListener('sproutly:data_synced', h);
       return () => window.removeEventListener('sproutly:data_synced', h);
   }, [refreshClients]);
 
-  // Handle centralized recovery hook
   useSyncRecovery(user?.id, refreshClients);
 
   const handleSave = async () => {
@@ -89,6 +81,7 @@ const App: React.FC = () => {
 
     setSaveStatus('saving');
     try {
+      // Logic: Save -> Queue -> Orchestrator (Auto-Flush)
       const saved = await db.saveClient(clientObj, user.id, { owner: 'UI', module: 'App', reason: 'Manual Save' });
       setClients(prev => {
         const idx = prev.findIndex(c => c.id === saved.id);
@@ -96,7 +89,6 @@ const App: React.FC = () => {
         return [saved, ...prev];
       });
       promoteToSaved(saved);
-      db.scheduleFlush('Manual Save Trigger');
       setSaveStatus('saved');
       setLastSavedTime(new Date());
       setTimeout(() => setSaveStatus(s => s === 'saved' ? 'idle' : s), 3000);
@@ -104,6 +96,24 @@ const App: React.FC = () => {
       setSaveStatus('error');
     }
   };
+
+  /**
+   * Unified persistence gateway for global client updates.
+   * Ensures UI state and Database state are always coupled.
+   */
+  const handleUpdateGlobalClient = useCallback(async (c: Client, reason: string = 'Update') => {
+    if (!user) return;
+    
+    // 1. Immediate UI update for responsiveness
+    setClients(prev => prev.map(old => old.id === c.id ? c : old));
+    
+    // 2. Persist to Orchestrator (Save -> Queue -> Flush)
+    try {
+        await db.saveClient(c, user.id, { owner: 'UI', module: 'CRM', reason });
+    } catch (e) {
+        console.error("Global update persistence failed", e);
+    }
+  }, [user]);
 
   const handleLoadClient = (client: Client, redirect: boolean = true) => {
     loadClient(client);
@@ -126,11 +136,11 @@ const App: React.FC = () => {
       {(() => {
         switch (activeTab) {
           case 'dashboard': return <DashboardTab user={user} clients={clients} onLoadClient={handleLoadClient} onNewClient={() => { resetClient(); setActiveTab('profile'); }} setActiveTab={setActiveTab} />;
-          case 'crm': return <CrmTab clients={clients} profile={user} selectedClientId={clientId} newClient={() => { resetClient(); setActiveTab('profile'); }} saveClient={handleSave} loadClient={handleLoadClient} deleteClient={async (id) => { await db.deleteClient(id); setClients(c => c.filter(x => x.id !== id)); }} onRefresh={refreshClients} onUpdateGlobalClient={(c) => { setClients(prev => prev.map(old => old.id === c.id ? c : old)); db.saveClient(c, user.id, { owner: 'UI', module: 'CRM', reason: 'Update' }); db.scheduleFlush('CRM Update'); }} />;
+          case 'crm': return <CrmTab clients={clients} profile={user} selectedClientId={clientId} newClient={() => { resetClient(); setActiveTab('profile'); }} saveClient={handleSave} loadClient={handleLoadClient} deleteClient={async (id) => { await db.deleteClient(id); setClients(c => c.filter(x => x.id !== id)); }} onRefresh={refreshClients} onUpdateGlobalClient={handleUpdateGlobalClient} />;
           case 'profile': return <ProfileTab clients={clients} onLoadClient={handleLoadClient} onNewProfile={resetClient} />;
           case 'reminders': return <RemindersTab />;
           case 'market': return <MarketNewsTab />;
-          case 'portfolio': return <PortfolioTab clients={clients} onUpdateClient={(c) => { setClients(prev => prev.map(old => old.id === c.id ? c : old)); db.saveClient(c, user.id, { owner: 'UI', module: 'Portfolio', reason: 'Valuation update' }); db.scheduleFlush('Portfolio Valuation Update'); }} />;
+          case 'portfolio': return <PortfolioTab clients={clients} onUpdateClient={(c) => handleUpdateGlobalClient(c, 'Portfolio valuation update')} />;
           case 'life_events': return <LifeEventsTab />;
           case 'children': return <ChildrenTab />;
           case 'cpf': return <CpfTab />;

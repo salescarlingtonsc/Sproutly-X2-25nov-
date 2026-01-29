@@ -69,11 +69,13 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onClose, o
 
   useEffect(() => {
     const loadData = async () => {
+        if (!user) return;
         const settings = await adminDb.getSystemSettings(user?.organizationId);
         if (settings?.appSettings?.campaigns) {
             setCampaignOptions(settings.appSettings.campaigns);
         }
-        const allClients = await db.getClients(); 
+        // Added user.id and user.role to getClients call for multi-tenant isolation
+        const allClients = await db.getClients(user.id, user.role); 
         const phones = new Set(allClients.map(c => (c.phone || '').replace(/\D/g, '')).filter(p => p.length > 0));
         setExistingPhones(phones);
     };
