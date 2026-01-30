@@ -75,13 +75,25 @@ const CrmRow: React.FC<CrmRowProps> = memo(({
   }, [showWhatsAppMenu]);
 
   const getClientValue = (client: Client, col: any) => {
-     if (col.section === 'profile') return (client.profile as any)?.[col.field];
-     if (col.section === 'followUp') return (client.followUp as any)?.[col.field];
-     if (col.section === 'appointments') return (client.appointments as any)?.[col.field];
-     if (col.section === 'investorState') return (client.investorState as any)?.[col.field];
-     if (col.section === 'dynamic') return (client.fieldValues as any)?.[col.field];
-     if (col.section === 'meta') return (client as any)?.[col.field];
-     return '';
+     let val: any = '';
+     if (col.section === 'profile') val = (client.profile as any)?.[col.field];
+     else if (col.section === 'followUp') val = (client.followUp as any)?.[col.field];
+     else if (col.section === 'appointments') val = (client.appointments as any)?.[col.field];
+     else if (col.section === 'investorState') val = (client.investorState as any)?.[col.field];
+     else if (col.section === 'dynamic') val = (client.fieldValues as any)?.[col.field];
+     else if (col.section === 'meta') val = (client as any)?.[col.field];
+     else val = (client as any)?.[col.field];
+     
+     // SAFEGUARD: Prevent rendering objects/arrays directly to avoid React Error #31
+     if (val === null || val === undefined) return '';
+     if (Array.isArray(val)) {
+         return val.length > 0 ? `${val.length} items` : '';
+     }
+     if (typeof val === 'object') {
+         return JSON.stringify(val);
+     }
+     
+     return val;
   };
 
   const handleTemplateSelect = (template: DBTemplate) => {

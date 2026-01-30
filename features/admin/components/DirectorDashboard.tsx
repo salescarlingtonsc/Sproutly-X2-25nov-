@@ -48,11 +48,28 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
   const [aiInsight, setAiInsight] = useState<{bottleneck: string, coaching_tip: string, strategic_observation: string} | null>(null);
   const [isThinking, setIsThinking] = useState(false);
 
+  // FIX: Ensure the current user is always available in the list, even if they are a manager without a team or assigned elsewhere
   const managedAdvisors = useMemo(() => {
-      if (currentUser?.isAgencyAdmin) return advisors;
+      // 1. Super Admin or Agency Admin sees everyone
+      if (currentUser?.isAgencyAdmin || currentUser?.role === 'admin') return advisors;
+      
+      let list: Advisor[] = [];
+      
+      // 2. If Manager/Lead, show their team members
       const myTeam = teams?.find(t => t.leaderId === currentUser?.id);
-      if (!myTeam) return []; 
-      return advisors.filter(a => a.teamId === myTeam.id);
+      if (myTeam) {
+          list = advisors.filter(a => a.teamId === myTeam.id);
+      }
+      
+      // 3. ALWAYS include self (for assigning leads to self)
+      // Check if self is already in list (avoid duplicates)
+      const selfInList = list.some(a => a.id === currentUser?.id);
+      if (!selfInList) {
+          const self = advisors.find(a => a.id === currentUser?.id) || currentUser;
+          list.push(self);
+      }
+      
+      return list;
   }, [advisors, teams, currentUser]);
 
   const activeManagedAdvisors = useMemo(() => {

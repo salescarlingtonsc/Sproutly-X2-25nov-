@@ -8,7 +8,7 @@ import { INITIAL_PROFILE, INITIAL_CRM_STATE, INITIAL_EXPENSES, INITIAL_CPF, INIT
 import { useAuth } from '../../../contexts/AuthContext';
 import { adminDb } from '../../../lib/db/admin';
 import { db } from '../../../lib/db';
-import { generateRefCode } from '../../../lib/helpers';
+import { generateRefCode, fmtSGD } from '../../../lib/helpers';
 
 interface LeadImporterProps {
   advisors: Advisor[];
@@ -82,6 +82,13 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onClose, o
     loadData();
   }, [user]);
 
+  // FIX: Auto-select advisor if only 1 exists (e.g. Self)
+  useEffect(() => {
+      if (advisors.length === 1 && !targetAdvisorId) {
+          setTargetAdvisorId(advisors[0].id);
+      }
+  }, [advisors, targetAdvisorId]);
+
   const handleParse = () => {
     if (!rawText.trim()) {
         toast.error("Please paste some data first.");
@@ -146,6 +153,63 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onClose, o
 
     if (isHeaderless) {
         setTimeout(() => executeAiMapping(finalHeaders, finalRows, newMappings), 100);
+    }
+  };
+
+  const handleAiAutoMap = async () => {
+    setIsMappingAi(true);
+    try {
+        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        
+        const sampleRows = rows.slice(0, 3).map(r => r.join(' | ')).join('\n');
+        
+        // Robust Prompt Engineering: Explicitly asking for Integer Indices and clarifying Value vs Age
+        const prompt = `
+            You are a Data Mapping Assistant.
+            
+            CSV Headers: ${JSON.stringify(headers)}
+            Sample Rows:
+            ${sampleRows}
+            
+            Target CRM Fields: ${JSON.stringify(DESTINATION_FIELDS.map(f => f.key))}
+            
+            INSTRUCTIONS:
+            1. Map each CRM Field to the correct CSV Column Index (Integer).
+            2. "value" refers to Deal Value / Revenue (e.g. $5000). DO NOT map "Age" or "Serial No" to "value".
+            3. "retirementAge" is for "Age" columns related to retirement planning.
+            4. Return a JSON object: { "crm_field": column_index }.
+            
+            Example JSON: { "name": 0, "phone": 1, "value": 5 }
+        `;
+
+        const response = await ai.models.generateContent({
+            model: 'gemini-3-flash-preview',
+            contents: prompt,
+            config: { responseMimeType: "application/json" }
+        });
+
+        const rawText = response.text || '{}';
+        // Cleanup JSON markdown if present (Flash model sometimes adds it despite mimeType)
+        const jsonStr = rawText.replace(/```json|```/g, '').trim();
+        const mappingResult = JSON.parse(jsonStr);
+        
+        const newMappings = { ...mappings };
+        
+        Object.entries(mappingResult).forEach(([key, val]) => {
+            // Validate: Must be a number and within range
+            const idx = Number(val);
+            if (!isNaN(idx) && idx >= 0 && idx < headers.length) {
+                newMappings[key] = String(idx);
+            }
+        });
+        
+        setMappings(newMappings);
+        toast.success("AI Auto-Map Complete");
+    } catch (e) {
+        console.error("AI Mapping Error", e);
+        toast.error("AI Mapping failed. Please select manually.");
+    } finally {
+        setIsMappingAi(false);
     }
   };
 
@@ -380,14 +444,18 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onClose, o
                     <div>
                         <label className="block text-xs font-bold text-slate-700 uppercase mb-2">Assign To Advisor</label>
                         <select 
-                            className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm font-bold text-slate-900 outline-none focus:ring-2 focus:ring-indigo-500"
+                            className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm font-bold text-slate-900 outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer"
                             value={targetAdvisorId}
                             onChange={(e) => setTargetAdvisorId(e.target.value)}
                         >
                             <option value="">-- Select Target --</option>
-                            {advisors.map(adv => (
-                                <option key={adv.id} value={adv.id}>{adv.name} ({adv.email})</option>
-                            ))}
+                            {advisors.length > 0 ? (
+                                advisors.map(adv => (
+                                    <option key={adv.id} value={adv.id}>{adv.name} ({adv.email})</option>
+                                ))
+                            ) : (
+                                <option disabled>No advisors found</option>
+                            )}
                         </select>
                     </div>
                     <div>
@@ -405,26 +473,31 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onClose, o
                     </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-4 max-h-[400px] overflow-y-auto custom-scrollbar">
-                    {DESTINATION_FIELDS.map(field => (
-                        <div key={field.key} className="space-y-1">
-                            <label className={`text-[10px] font-bold uppercase ${field.required && !mappings[field.key] ? 'text-red-500' : 'text-slate-500'}`}>
-                                {field.label} {field.required && '*'}
-                            </label>
-                            <select
-                                className={`w-full p-2 rounded border text-xs ${mappings[field.key] ? 'bg-indigo-50 border-indigo-200 text-indigo-800' : 'border-slate-300'}`}
-                                value={mappings[field.key] || ''}
-                                onChange={(e) => setMappings({...mappings, [field.key]: e.target.value})}
-                            >
-                                <option value="">(Skip)</option>
-                                {headers.map((h, i) => (
-                                    <option key={i} value={i}>
-                                        {h} {rows[0] ? `(${rows[0][i]?.substring(0, 15)}...)` : ''}
-                                    </option>
-                                ))}
-                            </select>
-                        </div>
-                    ))}
+                <div>
+                    <button onClick={handleAiAutoMap} disabled={isMappingAi} className="w-full py-2 bg-indigo-50 text-indigo-600 font-bold rounded-lg text-xs hover:bg-indigo-100 mb-2 border border-indigo-100 shadow-sm transition-all">
+                        {isMappingAi ? 'Scanning Structure...' : '✨ Magic AI Auto-Map'}
+                    </button>
+                    <div className="grid grid-cols-2 gap-4 max-h-[300px] overflow-y-auto custom-scrollbar pt-2">
+                        {DESTINATION_FIELDS.map(field => (
+                            <div key={field.key} className="space-y-1">
+                                <label className={`text-[10px] font-bold uppercase ${field.required && !mappings[field.key] ? 'text-red-500' : 'text-slate-500'}`}>
+                                    {field.label} {field.required && '*'}
+                                </label>
+                                <select
+                                    className={`w-full p-2 rounded border text-xs ${mappings[field.key] ? 'bg-indigo-50 border-indigo-200 text-indigo-800' : 'border-slate-300'}`}
+                                    value={mappings[field.key] || ''}
+                                    onChange={(e) => setMappings({...mappings, [field.key]: e.target.value})}
+                                >
+                                    <option value="">(Skip)</option>
+                                    {headers.map((h, i) => (
+                                        <option key={i} value={i}>
+                                            {h} {rows[0] ? `(${rows[0][i]?.substring(0, 15)}...)` : ''}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                        ))}
+                    </div>
                 </div>
             </div>
         )}
@@ -467,6 +540,14 @@ export const LeadImporter: React.FC<LeadImporterProps> = ({ advisors, onClose, o
                                                 // Check top-level (e.g. source, campaign, platform) then profile
                                                 let val = (client as any)[f.key];
                                                 if (!val && client.profile) val = (client.profile as any)[f.key];
+                                                
+                                                // SAFEGUARD FOR OBJECTS/ARRAYS (Prevents Error #31)
+                                                if (f.key === 'notes' && Array.isArray(val)) {
+                                                    val = val[0]?.content || ''; // Show first note or empty
+                                                } else if (typeof val === 'object' && val !== null) {
+                                                    val = JSON.stringify(val);
+                                                }
+
                                                 return (
                                                     <td key={f.key} className="p-3 whitespace-nowrap max-w-[200px] truncate">
                                                         {val || '-'}

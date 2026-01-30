@@ -6,6 +6,9 @@
 // 2026+: $8,000
 export const CPF_WAGE_CEILING = 7400; // 2025 ceiling
 
+// Basic Healthcare Sum (BHS) 2025
+export const CPF_BHS_LIMIT = 74000;
+
 export const getCpfRates = (age: number) => {
   if (age <= 35) return { employee: 0.20, employer: 0.17 };
   if (age <= 45) return { employee: 0.20, employer: 0.17 };
@@ -17,15 +20,15 @@ export const getCpfRates = (age: number) => {
   return { employee: 0.05, employer: 0.075 };
 };
 
-// Returns the CPF allocation rates for OA, SA, MA based on age (2025 rates)
-// These percentages are of the total CPF contribution
+// Returns the CPF allocation rates for OA, SA, MA based on age (2025 Allocation Rates)
+// Returns exact % of WAGE (not ratio of contribution)
 export const getCpfAllocation = (age: number) => {
-  if (age <= 35) return { oa: 0.6216, sa: 0.1622, ma: 0.2162 }; // Total: 37%
-  if (age <= 45) return { oa: 0.5676, sa: 0.1892, ma: 0.2432 }; // Total: 37%
-  if (age <= 50) return { oa: 0.5135, sa: 0.2162, ma: 0.2703 }; // Total: 37%
-  if (age <= 55) return { oa: 0.4324, sa: 0.2703, ma: 0.2973 }; // Total: 37%
-  if (age <= 60) return { oa: 0.2973, sa: 0.3514, ma: 0.3514 }; // Total: 32.5%
-  if (age <= 65) return { oa: 0.1362, sa: 0.3915, ma: 0.4723 }; // Total: 23.5%
-  if (age <= 70) return { oa: 0.1212, sa: 0.3030, ma: 0.5758 }; // Total: 16.5%
-  return { oa: 0.08, sa: 0.265, ma: 0.655 }; // Total: 12.5% (>70)
+  if (age <= 35) return { oa: 0.23, sa: 0.06, ma: 0.08 };       // Total 37%
+  if (age <= 45) return { oa: 0.21, sa: 0.07, ma: 0.09 };       // Total 37%
+  if (age <= 50) return { oa: 0.19, sa: 0.08, ma: 0.10 };       // Total 37%
+  if (age <= 55) return { oa: 0.15, sa: 0.115, ma: 0.105 };     // Total 37%
+  if (age <= 60) return { oa: 0.12, sa: 0.035, ma: 0.17 };      // Total 32.5%
+  if (age <= 65) return { oa: 0.035, sa: 0.025, ma: 0.175 };    // Total 23.5%
+  if (age <= 70) return { oa: 0.01, sa: 0.01, ma: 0.145 };      // Total 16.5%
+  return { oa: 0.01, sa: 0.01, ma: 0.105 };                     // Total 12.5% (>70)
 };

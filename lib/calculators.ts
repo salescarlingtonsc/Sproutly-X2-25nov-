@@ -1,6 +1,6 @@
 
 import { toNum, monthsSinceDob, parseDob } from './helpers';
-import { CPF_WAGE_CEILING, getCpfRates, getCpfAllocation } from './cpfRules';
+import { CPF_WAGE_CEILING, CPF_BHS_LIMIT, getCpfRates, getCpfAllocation } from './cpfRules';
 import { CpfData, Child, EducationSettings, Profile, CashflowData } from '../types';
 
 export const computeCpf = (grossSalary: any, age: number): CpfData => {
@@ -15,13 +15,20 @@ export const computeCpf = (grossSalary: any, age: number): CpfData => {
   const employerContrib = cpfableSalary * rates.employer;
   const totalContrib = employeeContrib + employerContrib;
   
+  // Calculate account specific values based on Wage %
+  // Note: There might be slight rounding differences vs CPF calculator due to float precision, 
+  // but using direct wage % is the official method.
+  const oa = cpfableSalary * allocation.oa;
+  const sa = cpfableSalary * allocation.sa;
+  const ma = cpfableSalary * allocation.ma;
+
   return {
     employee: employeeContrib,
     employer: employerContrib,
     total: totalContrib,
-    oa: totalContrib * allocation.oa,
-    sa: totalContrib * allocation.sa,
-    ma: totalContrib * allocation.ma,
+    oa,
+    sa,
+    ma,
     takeHome: gross - employeeContrib, // Take-home based on actual salary
     cpfableSalary: cpfableSalary, // The salary amount CPF was calculated on
     excessSalary: Math.max(0, gross - CPF_WAGE_CEILING) // Amount above ceiling
@@ -118,6 +125,7 @@ export const projectComprehensiveWealth = (inputs: WealthProjectionInputs) => {
   // CONSTANTS (2025 Baseline)
   const CURRENT_FRS = 205800; // Full Retirement Sum 2025
   const FRS_INFLATION = 0.035; // FRS grows ~3.5% annually for projection of the standard
+  const BHS_INFLATION = 0.04; // BHS grows roughly 4-5% annually
   
   // CPF Life Standard Plan Estimator
   // Based on ~$1,700 payout for $205,800 RA in 2025.
@@ -152,6 +160,34 @@ export const projectComprehensiveWealth = (inputs: WealthProjectionInputs) => {
       const actualCashSavings = Math.max(0, monthlyCashSavings - monthlyInvestment);
       cash += actualCashSavings * 12;
       investments += monthlyInvestment * 12;
+    }
+
+    // --- 2b. MEDISAVE CAP CHECK (BHS OVERFLOW) ---
+    // BHS stops increasing at age 65
+    let currentBHS = CPF_BHS_LIMIT;
+    if (age < 65) {
+       // Inflate BHS from 2025 baseline
+       currentBHS = CPF_BHS_LIMIT * Math.pow(1 + BHS_INFLATION, y);
+    } else {
+       // Fixed at age 65 value (calculated based on projection)
+       const yearsTo65 = 65 - currentAge;
+       currentBHS = CPF_BHS_LIMIT * Math.pow(1 + BHS_INFLATION, yearsTo65);
+    }
+
+    if (cpfMa > currentBHS) {
+        const overflow = cpfMa - currentBHS;
+        cpfMa = currentBHS; // Cap MA
+        
+        // Overflow logic: Usually goes to SA. If SA Full (FRS), goes to OA.
+        // For simplicity in this projection, we flow to SA first as that's standard for accumulating RA.
+        // Note: In reality, if SA > FRS, it might flow to OA, but for retirement planning, SA/RA is the target bucket.
+        if (cpfRa > 0) {
+             // If RA exists (post-55), overflow usually flows to RA up to ERS, or OA. 
+             // We'll add to RA/SA bucket for simplicity of net worth
+             cpfRa += overflow;
+        } else {
+             cpfSa += overflow;
+        }
     }
 
     // --- 3. KEY EVENTS ---

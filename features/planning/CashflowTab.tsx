@@ -522,7 +522,7 @@ const CashflowTab: React.FC = () => {
          </SectionCard>
       </div>
 
-      {/* 4. ADDITIONAL STREAMS & WITHDRAWALS (Existing Code Omitted for brevity, assumed same) */}
+      {/* 4. ADDITIONAL STREAMS & WITHDRAWALS */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
          <SectionCard title="Additional Incomes" action={<button onClick={addIncome} className="text-xs bg-emerald-100 text-emerald-700 px-2 py-1 rounded hover:bg-emerald-200 transition-colors">＋ Add Stream</button>}>
             <div className="space-y-3">
@@ -535,6 +535,21 @@ const CashflowTab: React.FC = () => {
                      </div>
                      <div className="flex gap-2 items-center flex-wrap">
                         <select value={i.type} onChange={(e) => updateIncomeItem(i.id, 'type', e.target.value)} className="bg-white border border-emerald-200 rounded px-1 py-0.5 text-[10px]"><option value="recurring">Recurring</option><option value="onetime">One-Time</option></select>
+                        
+                        {/* NEW: Frequency Dropdown */}
+                        {i.type === 'recurring' && (
+                            <select 
+                                value={i.frequency || 'monthly'} 
+                                onChange={(e) => updateIncomeItem(i.id, 'frequency', e.target.value)} 
+                                className="bg-white border border-emerald-200 rounded px-1 py-0.5 text-[10px]"
+                            >
+                               <option value="monthly">Monthly</option>
+                               <option value="quarterly">Quarterly</option>
+                               <option value="semi_annual">Half-Yearly</option>
+                               <option value="yearly">Yearly</option>
+                            </select>
+                        )}
+
                         <div className="flex items-center gap-1 ml-auto">
                            <span className="text-[10px] text-gray-500">Start:</span>
                            <input type="number" value={i.startAge} onChange={(e) => updateIncomeItem(i.id, 'startAge', e.target.value)} className="w-8 bg-white border border-emerald-200 rounded px-1 py-0.5 text-center text-xs" />
@@ -559,6 +574,21 @@ const CashflowTab: React.FC = () => {
                      </div>
                      <div className="flex gap-2 items-center flex-wrap">
                         <select value={w.type} onChange={(e) => updateWithdrawalItem(w.id, 'type', e.target.value)} className="bg-white border border-red-200 rounded px-1 py-0.5 text-[10px]"><option value="onetime">One-Time</option><option value="recurring">Recurring</option></select>
+                        
+                        {/* NEW: Frequency Dropdown */}
+                        {w.type === 'recurring' && (
+                            <select 
+                                value={w.frequency || 'monthly'} 
+                                onChange={(e) => updateWithdrawalItem(w.id, 'frequency', e.target.value)} 
+                                className="bg-white border border-red-200 rounded px-1 py-0.5 text-[10px]"
+                            >
+                               <option value="monthly">Monthly</option>
+                               <option value="quarterly">Quarterly</option>
+                               <option value="semi_annual">Half-Yearly</option>
+                               <option value="yearly">Yearly</option>
+                            </select>
+                        )}
+
                         <div className="flex items-center gap-1 ml-auto">
                            <span className="text-[10px] text-gray-500">Start:</span>
                            <input type="number" value={w.startAge} onChange={(e) => updateWithdrawalItem(w.id, 'startAge', e.target.value)} className="w-8 bg-white border border-red-200 rounded px-1 py-0.5 text-center text-xs" />

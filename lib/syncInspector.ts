@@ -45,7 +45,13 @@ export type SyncLogCode =
   | 'CLOUD_CONFIRM_OK'
   | 'RECOVERY_TRIGGER'
   | 'RESUME_BOUNDARY'
-  | 'RESUME_EVENT';
+  | 'RESUME_EVENT'
+  | 'SYNC_ABORT_DIAGNOSIS'
+  | 'APP_HIDDEN'
+  | 'APP_VISIBLE'
+  | 'NETWORK_ABORT'
+  | 'TRAFFIC_SHAPING'
+  | 'REPRO_STEP';
 
 export interface SyncLogEntry {
   id: number;
@@ -79,6 +85,7 @@ const STATE = {
   pendingFlush: false,
   hasActiveTimer: false,
   flushStart: 0,
+  queueCount: 0,
   lastSource: 'System',
   lastReason: 'Init',
   lastViolation: null as SyncLogEntry | null
@@ -105,9 +112,11 @@ export const syncInspector = {
     if (code === 'FLUSH_START') {
       STATE.isFlushing = true;
       STATE.flushStart = Date.now();
-    } else if (code === 'FLUSH_END') {
+    } else if (code === 'FLUSH_END' || code === 'FLUSH_ABORTED') {
       STATE.isFlushing = false;
       STATE.flushStart = 0;
+      // If we finished and the queue is empty, clear pending
+      if (STATE.queueCount === 0) STATE.pendingFlush = false;
     } else if (code === 'SCHEDULE_FLUSH_SET') {
       STATE.hasActiveTimer = true;
       STATE.pendingFlush = true;
@@ -124,6 +133,15 @@ export const syncInspector = {
     if (LOG_BUFFER.length > MAX_LOGS) LOG_BUFFER.pop();
     
     window.dispatchEvent(new CustomEvent('sproutly:sync_log', { detail: { logs: LOG_BUFFER } }));
+    window.dispatchEvent(new CustomEvent('sproutly:sync_snapshot', { detail: { snapshot: syncInspector.getSnapshot() } }));
+  },
+
+  updateQueueCount: (count: number) => {
+    STATE.queueCount = count;
+    // Auto-clear pending state if queue is gone and no timer is running
+    if (count === 0 && STATE.pendingFlush && !STATE.hasActiveTimer) {
+        STATE.pendingFlush = false;
+    }
     window.dispatchEvent(new CustomEvent('sproutly:sync_snapshot', { detail: { snapshot: syncInspector.getSnapshot() } }));
   },
 
@@ -145,7 +163,7 @@ export const syncInspector = {
       hasActiveTimer: STATE.hasActiveTimer,
       lastViolation: STATE.lastViolation,
       flushLockAgeMs: STATE.flushStart > 0 ? Date.now() - STATE.flushStart : 0,
-      queueCount: 0, 
+      queueCount: STATE.queueCount, 
       lastSource: STATE.lastSource,
       lastReason: STATE.lastReason
     };

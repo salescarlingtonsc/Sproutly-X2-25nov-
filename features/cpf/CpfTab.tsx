@@ -4,6 +4,7 @@ import { useClient } from '../../contexts/ClientContext';
 import { useAi } from '../../contexts/AiContext';
 import { toNum, fmtSGD } from '../../lib/helpers';
 import { computeCpf } from '../../lib/calculators';
+import { CPF_BHS_LIMIT } from '../../lib/cpfRules';
 import LineChart from '../../components/common/LineChart';
 import PageHeader from '../../components/layout/PageHeader';
 import SectionCard from '../../components/layout/SectionCard';
@@ -79,11 +80,19 @@ const CpfTab: React.FC = () => {
     const projection = [];
     const salaryBasis = cpfData.cpfableSalary;
     
+    // Medisave Limit Logic (BHS)
+    let currentBhsLimit = CPF_BHS_LIMIT; 
+    
     for (let m = 0; m <= projectionMonths; m++) {
       const monthAge = age + (m / 12);
       const year = currentYear + Math.floor((currentMonth + m) / 12);
       const monthIndex = (currentMonth + m) % 12;
       
+      // Update BHS Limit annually (4.5% approx growth) until age 65
+      if (m > 0 && monthIndex === 0 && monthAge < 65) {
+          currentBhsLimit = currentBhsLimit * 1.045; 
+      }
+
       // Monthly Inflow (Wages) - Assume work stops at 65
       if (m > 0 && monthAge < 65) { 
         const dynamicCpf = computeCpf(salaryBasis, monthAge);
@@ -125,6 +134,13 @@ const CpfTab: React.FC = () => {
          }
       });
 
+      // BHS Overflow Logic (End of month check)
+      if (ma > currentBhsLimit) {
+          const overflow = ma - currentBhsLimit;
+          ma = currentBhsLimit;
+          sa += overflow; // Overflow flows to SA
+      }
+
       // Clamp to 0
       oa = Math.max(0, oa);
       sa = Math.max(0, sa);
@@ -137,6 +153,7 @@ const CpfTab: React.FC = () => {
         oa: Math.round(oa), 
         sa: Math.round(sa), 
         ma: Math.round(ma), 
+        bhs: Math.round(currentBhsLimit), // Track BHS limit for visualization if needed
         total: Math.round(oa + sa + ma),
         is55: Math.abs(monthAge - 55) < 0.1
       });
@@ -344,6 +361,7 @@ const CpfTab: React.FC = () => {
                            <th className="p-3 text-right">Ordinary (OA)</th>
                            <th className="p-3 text-right">Special (SA)</th>
                            <th className="p-3 text-right">MediSave (MA)</th>
+                           <th className="p-3 text-right">BHS Limit</th>
                            <th className="p-3 text-right text-indigo-600">Total</th>
                         </tr>
                      </thead>
@@ -354,6 +372,7 @@ const CpfTab: React.FC = () => {
                               <td className="p-3 text-right font-mono text-slate-600">{fmtSGD(row.oa)}</td>
                               <td className="p-3 text-right font-mono text-amber-700">{fmtSGD(row.sa)}</td>
                               <td className="p-3 text-right font-mono text-teal-700">{fmtSGD(row.ma)}</td>
+                              <td className="p-3 text-right font-mono text-slate-400 text-xs">{fmtSGD(row.bhs)}</td>
                               <td className="p-3 text-right font-mono font-bold text-indigo-600">{fmtSGD(row.total)}</td>
                            </tr>
                         ))}

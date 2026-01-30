@@ -3,7 +3,7 @@ import { Client, ContactStatus, Profile, UserRole } from '../types';
 import { syncInspector, SyncCausality } from './syncInspector';
 import Dexie, { type EntityTable } from 'dexie';
 
-console.log(`🚀 Sproutly DB v24.14: Fast Upsert & Telemetry`);
+console.log(`🚀 Sproutly DB v24.29: Zombie Lock Breaker`);
 
 // --- DEXIE DURABILITY LAYER ---
 interface DBClient {
@@ -37,12 +37,26 @@ let _resumeHandshakePending = false;
 let _syncTimer: any = null;
 let _retryTimer: any = null;
 let _resumeDebounceTimer: any = null;
-let _flushWatchdog: any = null; // NEW: Safety valve for hung flush cycles
+let _flushWatchdog: any = null;
+let _heartbeatTimer: any = null;
 let _timerSetAt = 0;
 let _currentScheduledReason = '';
 let _activeAbort: AbortController | null = null;
 let _lastFailureTime = 0;
 let _backoffIdx = 0;
+
+// FIX 4: Lifecycle Ring Buffer
+const LIFECYCLE_BUFFER_SIZE = 10;
+let _lifecycleHistory: { type: string; ts: number }[] = [{ type: 'init', ts: Date.now() }];
+
+const pushLifecycleEvent = (type: string) => {
+    const entry = { type, ts: Date.now() };
+    _lifecycleHistory.unshift(entry);
+    if (_lifecycleHistory.length > LIFECYCLE_BUFFER_SIZE) _lifecycleHistory.pop();
+};
+
+// Dynamic Batch Sizing State
+let _currentBatchLimit = 50; 
 
 // --- SESSION CACHE ---
 let _cachedUserId: string | null = null;
@@ -58,16 +72,20 @@ if (supabase) {
 }
 
 const BACKOFF_SCHEDULE = [2000, 5000, 10000, 30000, 60000, 120000, 300000];
-const FAILURE_COOLDOWN_MS = 10000;
+const FAILURE_COOLDOWN_MS = 5000;
 const TIMER_DELAY_MS = 1500;
-const FLUSH_WATCHDOG_MS = 20000; // Max time a flush can take before forced reset
-const NETWORK_TIMEOUT_MS = 10000; // Max time a single request can hang
+const BASE_TIMEOUT_MS = 60000; // Base 60s
 
-// NEW: Promise wrapper to guarantee liveness
-const withTimeout = <T>(promise: PromiseLike<T>, ms: number, label: string): Promise<T> => {
+// Batching Constants
+const MAX_BATCH_BYTES = 250 * 1024; // 250KB Target
+
+const withTimeout = <T>(promise: PromiseLike<T>, ms: number, label: string, abortController?: AbortController): Promise<T> => {
     let timer: any;
     const timeout = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`TIMEOUT_HARD: ${label} (${ms}ms)`)), ms);
+        timer = setTimeout(() => {
+            if (abortController) abortController.abort(); // KILL SOCKET ON TIMEOUT
+            reject(new Error(`TIMEOUT_HARD: ${label} (${ms}ms)`));
+        }, ms);
     });
     return Promise.race([
         Promise.resolve(promise).finally(() => clearTimeout(timer)),
@@ -75,16 +93,70 @@ const withTimeout = <T>(promise: PromiseLike<T>, ms: number, label: string): Pro
     ]);
 };
 
+// Helper for jittered backoff
+const getNextBackoff = () => {
+    const base = BACKOFF_SCHEDULE[_backoffIdx];
+    const jitter = 0.8 + Math.random() * 0.4; // 80% to 120% variance
+    return Math.floor(base * jitter);
+};
+
+// Calculate adaptive timeout based on failure count
+const getCurrentTimeoutLimit = (payloadSize: number) => {
+    // Standard Adaptive
+    let limit = Math.min(120000, BASE_TIMEOUT_MS + (_backoffIdx * 30000));
+    
+    // HEAVY LIFT EXTENSION: If > 500KB, give it 3 minutes immediately
+    if (payloadSize > 500 * 1024) {
+        limit = Math.max(limit, 180000); 
+    }
+    return limit;
+};
+
+// FIX 3: Recursive Payload Sanitizer (Aggressive)
+const sanitizeLargePayload = (data: any): any => {
+    if (typeof data === 'string') {
+        // 1. Image Check
+        if (data.startsWith('data:image') && data.length > 1024) {
+            return `[SYSTEM_PRUNED: Image too large (${(data.length/1024).toFixed(1)}KB)]`;
+        }
+        // 2. Heavy Media Check (PDF/Audio/Video)
+        if ((data.startsWith('data:application') || data.startsWith('data:audio') || data.startsWith('data:video')) && data.length > 1024) {
+             return `[SYSTEM_PRUNED: Media too large (${(data.length/1024).toFixed(1)}KB)]`;
+        }
+        // 3. Absolute Safety Cap (200KB limit for ANY string field)
+        // This catches massive text dumps or unrecognized base64
+        if (data.length > 200000) {
+            return `[SYSTEM_PRUNED: String exceeds 200KB limit (${(data.length/1024).toFixed(1)}KB)] - ${data.substring(0, 100)}...`;
+        }
+        return data;
+    }
+    if (Array.isArray(data)) {
+        return data.map(sanitizeLargePayload);
+    }
+    if (typeof data === 'object' && data !== null) {
+        const newData: any = {};
+        for (const key in data) {
+            newData[key] = sanitizeLargePayload(data[key]);
+        }
+        return newData;
+    }
+    return data;
+};
+
 async function passStabilityGate(causality: SyncCausality): Promise<{ ok: boolean; reason: string }> {
   if (!navigator.onLine) return { ok: false, reason: 'offline' };
+  
+  // FIX 2: Strict Background Check
+  if (document.visibilityState === 'hidden') return { ok: false, reason: 'app_hidden' };
   
   const timeSinceFailure = Date.now() - _lastFailureTime;
   if (timeSinceFailure < FAILURE_COOLDOWN_MS) return { ok: false, reason: 'cooling_down' };
   
-  // Note: We intentionally allow flush if hidden here, but we ABORT on transition TO hidden.
-  // This allows background syncs that started while visible to potentially finish if OS allows,
-  // but prevents starting new ones if we know we are hidden (via scheduleFlush check).
-  if (document.visibilityState === 'hidden') return { ok: false, reason: 'app_hidden' };
+  // FIX 4: Warmup check
+  const lastVisible = _lifecycleHistory.find(e => e.type === 'visibility_visible');
+  if (lastVisible && (Date.now() - lastVisible.ts) < 1000) {
+      return { ok: false, reason: 'stability_warmup' }; // Give it 1s to stabilize
+  }
   
   return { ok: true, reason: '' };
 }
@@ -103,28 +175,47 @@ async function executeInternalFlush(userId: string, causality: SyncCausality): P
   _resumeHandshakePending = false; 
   _activeAbort = new AbortController();
   
-  // 1. ARM WATCHDOG
+  // 1. ARM WATCHDOG (Invariant protection)
   if (_flushWatchdog) clearTimeout(_flushWatchdog);
   _flushWatchdog = setTimeout(() => {
-      syncInspector.log('critical', 'TIMER_WATCHDOG_VIOLATION', 'Flush hung (Watchdog fired). Force resetting.', finalCausality);
-      db.resetLocks(); // Hard reset
-      db.scheduleFlush('recovery_watchdog_timeout');
-  }, FLUSH_WATCHDOG_MS);
+      syncInspector.log('critical', 'TIMER_WATCHDOG_VIOLATION', `Flush cycle hung. Forced unlock.`, finalCausality);
+      db.resetLocks(); 
+      db.scheduleFlush('recovery_flush_stuck');
+  }, 180000); // 3m absolute safety net
   
-  syncInspector.log('info', 'FLUSH_START', `Target Project: ${SUPABASE_URL}`, finalCausality);
+  syncInspector.log('info', 'FLUSH_START', `Target: ${SUPABASE_URL}`, finalCausality);
 
   try {
     let hasMore = true;
     while (hasMore && _activeAbort && !_activeAbort.signal.aborted) {
-      const queue = await dbStore.outbox.orderBy('queuedAt').toArray();
-      if (queue.length === 0) {
+      // Re-check background state at batch level
+      if (document.visibilityState === 'hidden') {
+          throw new Error("ABORT_BACKGROUND: Pre-emptive batch abort");
+      }
+
+      const candidates = await dbStore.outbox.orderBy('queuedAt').limit(_currentBatchLimit).toArray();
+      const totalQueue = await dbStore.outbox.count();
+      syncInspector.updateQueueCount(totalQueue);
+      
+      if (candidates.length === 0) {
         hasMore = false;
         break;
       }
 
       if (!navigator.onLine) break;
 
-      const batch = queue.slice(0, 50);
+      const batch: OutboxItem[] = [];
+      let currentBatchSize = 0;
+
+      for (const item of candidates) {
+          const itemSize = JSON.stringify(item.data).length + 200;
+          if (batch.length > 0 && (currentBatchSize + itemSize > MAX_BATCH_BYTES)) {
+              break;
+          }
+          batch.push(item);
+          currentBatchSize += itemSize;
+      }
+
       const payload = batch.map(item => ({
         id: item.id,
         user_id: item.userId,
@@ -132,82 +223,135 @@ async function executeInternalFlush(userId: string, causality: SyncCausality): P
         updated_at: item.data.lastUpdated
       }));
 
-      // --- TELEMETRY ---
-      const payloadSize = JSON.stringify(payload).length;
       const batchStart = performance.now();
+      const rawPayloadSize = JSON.stringify(payload).length;
       
-      syncInspector.log('info', 'UPSERT_START', `Batch: ${payload.length} items, Size: ${payloadSize} bytes`, finalCausality);
+      // FIX 3: Apply Sanitization if huge
+      let finalPayload = payload;
+      if (rawPayloadSize > 1024 * 1024) { // 1MB Limit
+          syncInspector.log('warn', 'TRAFFIC_SHAPING', `Payload ${rawPayloadSize} bytes too large. Sanitizing...`, finalCausality);
+          finalPayload = sanitizeLargePayload(payload);
+          const newSize = JSON.stringify(finalPayload).length;
+          syncInspector.log('info', 'TRAFFIC_SHAPING', `Sanitized size: ${newSize} bytes`, finalCausality);
+      }
+
+      const payloadSize = JSON.stringify(finalPayload).length;
+      const currentTimeout = getCurrentTimeoutLimit(payloadSize);
+
+      syncInspector.log('info', 'UPSERT_START', `Batch: ${finalPayload.length}, Size: ${payloadSize} bytes, Limit: ${currentTimeout}ms`, finalCausality);
+
+      // --- HEARTBEAT FOR LARGE TRANSFERS ---
+      if (_heartbeatTimer) clearInterval(_heartbeatTimer);
+      _heartbeatTimer = setInterval(() => {
+          const elapsed = ((performance.now() - batchStart) / 1000).toFixed(0);
+          syncInspector.log('info', 'TRAFFIC_SHAPING', `Large transfer in progress: ${elapsed}s elapsed...`, finalCausality);
+      }, 30000); // Reassure every 30s
+      // ------------------------------------
 
       try {
-        // 2. NETWORK CALL WITH HARD TIMEOUT
-        // OPTIMIZATION: Removed .select(). Using minimal return to speed up response.
-        // We rely on status code (200/201) for success.
         const upsertPromise = supabase!
             .from('clients')
-            .upsert(payload, { onConflict: 'id', ignoreDuplicates: false })
+            .upsert(finalPayload, { onConflict: 'id', ignoreDuplicates: false })
+            .select('id')
             .abortSignal(_activeAbort.signal);
 
-        const { error: upsertError, status, statusText } = await withTimeout<any>(
+        const { data: upsertData, error: upsertError, status, statusText } = await withTimeout<any>(
             upsertPromise, 
-            NETWORK_TIMEOUT_MS, 
-            'Cloud Upsert'
+            currentTimeout, 
+            'Cloud Upsert',
+            _activeAbort // Pass controller to kill socket on timeout
         );
 
         if (upsertError) throw upsertError;
         
         const duration = (performance.now() - batchStart).toFixed(0);
-        
-        // 3. SUCCESS HANDLING (Implicit verification via HTTP 200/201)
-        syncInspector.log('info', 'UPSERT_RESULT', `Batch OK. Time: ${duration}ms. Status: ${status} ${statusText || ''}`, finalCausality);
+        syncInspector.log('success', 'UPSERT_RESULT', `Batch Commit: ${duration}ms. Cloud confirmed ${upsertData?.length || 0} records. HTTP ${status} ${statusText || 'OK'}`, finalCausality);
 
-        // Commit local deletion
         await dbStore.outbox.bulkDelete(batch.map(b => b.id));
-        _backoffIdx = 0; 
+        syncInspector.updateQueueCount(await dbStore.outbox.count()); 
+        
+        _backoffIdx = 0;
+        _currentBatchLimit = Math.min(50, _currentBatchLimit + 10);
         
       } catch (innerErr: any) {
+        if (_heartbeatTimer) clearInterval(_heartbeatTimer);
         const isTimeout = innerErr.message?.includes('TIMEOUT_HARD');
-        const isAbort = innerErr.name === 'AbortError' || innerErr.message?.includes('aborted');
+        const isAbort = innerErr.name === 'AbortError' || innerErr.message?.includes('aborted') || innerErr.message?.includes('ABORT_BACKGROUND');
         
-        if (isAbort && !isTimeout) {
-            syncInspector.log('warn', 'FLUSH_ABORTED', `Lifecycle Abort: ${innerErr.message}`, finalCausality);
-            break; // Stop loop, let finally block clean up. Do not retry immediately if user aborted.
+        if (isAbort) {
+            // FIX 4: Correlate with history
+            const lastHidden = _lifecycleHistory.find(e => e.type.includes('hidden') || e.type.includes('blur'));
+            const timeSinceHidden = lastHidden ? Date.now() - lastHidden.ts : 99999;
+            const currentVis = document.visibilityState as string;
+            const isBackgrounding = currentVis === 'hidden' || timeSinceHidden < 15000;
+            
+            if (isBackgrounding) {
+                 syncInspector.log('warn', 'SYNC_ABORT_DIAGNOSIS', 'Flush interrupted by background transition', finalCausality, {
+                    cause: "app_background_interrupt",
+                    visibilityState: currentVis,
+                    elapsedMs: (performance.now() - batchStart).toFixed(0),
+                    lastLifecycleEvent: _lifecycleHistory[0],
+                    timeSinceEvent: timeSinceHidden
+                 });
+            }
         }
         
-        // Network Timeout or Server Error -> Schedule Retry
+        if (isTimeout) {
+             syncInspector.log('warn', 'SYNC_ABORT_DIAGNOSIS', 'Timeout due to heavy payload', finalCausality, {
+                cause: "payload_too_large",
+                sizeBytes: payloadSize,
+                limitMs: currentTimeout
+             });
+        }
+
+        if (isAbort && _activeAbort && (_activeAbort.signal.aborted || innerErr.message?.includes('ABORT_BACKGROUND'))) {
+            syncInspector.log('warn', 'FLUSH_ABORTED', `Lifecycle Abort`, finalCausality);
+            break;
+        } else if (isAbort) {
+            syncInspector.log('warn', 'NETWORK_ABORT', `Spurious network reset. Retrying...`, finalCausality);
+        }
+        
         _lastFailureTime = Date.now();
         _backoffIdx = Math.min(_backoffIdx + 1, BACKOFF_SCHEDULE.length - 1);
         
-        syncInspector.log('error', 'UPSERT_ERR', `Upsert failed: ${innerErr.message}. Retrying in ${BACKOFF_SCHEDULE[_backoffIdx]}ms`, finalCausality);
+        if (_currentBatchLimit > 1) {
+            _currentBatchLimit = Math.max(1, Math.floor(_currentBatchLimit / 2));
+            syncInspector.log('warn', 'TRAFFIC_SHAPING', `Reducing batch size to ${_currentBatchLimit} items`, finalCausality);
+        }
+
+        const retryDelay = getNextBackoff();
+        syncInspector.log('error', 'UPSERT_ERR', `Retry in ${retryDelay}ms: ${innerErr.message}`, finalCausality);
 
         if (_retryTimer) clearTimeout(_retryTimer);
-        // Use 'recovery_' prefix to bypass dedupe logic
-        _retryTimer = setTimeout(() => db.scheduleFlush('recovery_after_failure'), BACKOFF_SCHEDULE[_backoffIdx]);
+        _retryTimer = setTimeout(() => db.scheduleFlush('recovery_after_failure'), retryDelay);
         
-        throw innerErr; // Exit the loop via the outer catch
+        throw innerErr; 
+      } finally {
+        if (_heartbeatTimer) clearInterval(_heartbeatTimer);
       }
-      
-      if (queue.length <= 50) hasMore = false;
     }
   } catch (e: any) {
-    // Outer catch usually catches the 'throw innerErr' from above
-    if (!e.message?.includes('TIMEOUT_HARD')) {
-        syncInspector.log('error', 'CLOUD_ERR', e.message, finalCausality);
-    }
+     // Errors handled in inner loop
   } finally {
-    // 4. CLEANUP
     if (_flushWatchdog) clearTimeout(_flushWatchdog);
+    if (_heartbeatTimer) clearInterval(_heartbeatTimer);
     _flushWatchdog = null;
+    _heartbeatTimer = null;
     
     _isFlushing = false;
     _activeAbort = null;
-    syncInspector.log('info', 'FLUSH_END', 'Flush cycle finished', finalCausality);
+    syncInspector.log('info', 'FLUSH_END', 'Flush session closed', finalCausality);
+    
+    const finalCount = await dbStore.outbox.count();
+    syncInspector.updateQueueCount(finalCount);
+    
     window.dispatchEvent(new CustomEvent('sproutly:data_synced'));
   }
 }
 
 export const db = {
   generateUuid: () => crypto.randomUUID(),
-  isValidUuid: (id: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id),
+  isValidUuid: (id: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id) || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id),
   updateTokenCache: (token: string) => localStorage.setItem(DB_KEYS.TOKEN_CACHE, token),
   isFlushing: () => _isFlushing,
   getQueueCount: () => dbStore.outbox.count(),
@@ -218,9 +362,10 @@ export const db = {
     _resumeDebounceTimer = setTimeout(async () => {
         _resumeDebounceTimer = null;
         const qCount = await dbStore.outbox.count();
-        const meta = { qCount, pendingFlush: _pendingFlush, isFlushing: _isFlushing };
-        syncInspector.log('info', 'RESUME_EVENT', `Consolidated Resume Signal: ${source}`, { owner: 'Lifecycle', module: 'db.ts', reason: source }, meta);
-        if (qCount === 0 && _pendingFlush) _pendingFlush = false; 
+        if (qCount === 0 && _pendingFlush) {
+             _pendingFlush = false;
+             syncInspector.updateQueueCount(0); 
+        }
         if (qCount > 0 && !_isFlushing) db.scheduleFlush(`recovery_${source}`);
     }, 500); 
   },
@@ -231,25 +376,26 @@ export const db = {
     hasActiveTimer: !!_syncTimer,
     timerSetAt: _timerSetAt,
     lastReason: _currentScheduledReason,
-    resumeHandshakePending: _resumeHandshakePending,
-    isPriorityArmed: false 
+    resumeHandshakePending: _resumeHandshakePending
   }),
 
   resetLocks: () => { 
       if (_activeAbort) _activeAbort.abort();
       if (_flushWatchdog) clearTimeout(_flushWatchdog);
+      if (_heartbeatTimer) clearInterval(_heartbeatTimer);
       _flushWatchdog = null;
+      _heartbeatTimer = null;
       
       _isFlushing = false; 
       _pendingFlush = false;
       _resumeHandshakePending = false;
       _lastFailureTime = 0;
-      _backoffIdx = 0;
       if (_syncTimer) clearTimeout(_syncTimer);
       if (_retryTimer) clearTimeout(_retryTimer);
       _syncTimer = null;
       _retryTimer = null;
       _timerSetAt = 0;
+      syncInspector.updateQueueCount(0);
   },
 
   pullFromCloud: async () => {
@@ -257,7 +403,7 @@ export const db = {
     try {
         const { data, error } = await withTimeout<any>(
             supabase.from('clients').select('*'),
-            NETWORK_TIMEOUT_MS,
+            BASE_TIMEOUT_MS,
             'Pull Clients'
         );
         if (error || !data) return;
@@ -272,91 +418,74 @@ export const db = {
     } catch (e: any) {}
   },
 
-  scheduleFlush: (reason: string) => {
+  scheduleFlush: async (reason: string) => {
     const causality: SyncCausality = { owner: 'Orchestrator', module: 'lib/db.ts', reason };
+    
+    const count = await dbStore.outbox.count();
+    syncInspector.updateQueueCount(count);
+
+    if (count === 0 && !reason.includes('Repro')) {
+        _pendingFlush = false;
+        syncInspector.updateQueueCount(0);
+        return;
+    }
+
     const isPriority = reason.startsWith('recovery_') || reason === 'Immediate' || reason === 'Resume Priority Sync';
     
     _pendingFlush = true; 
     const delay = isPriority ? 0 : TIMER_DELAY_MS;
 
     if (_syncTimer) {
-      if (!isPriority) {
-        syncInspector.log('info', 'FLUSH_CANCELLED_BY_DEDUPE', `Timer active, skipping ${reason}`, causality);
-        return;
-      }
+      if (!isPriority) return;
       clearTimeout(_syncTimer);
     }
     
     _currentScheduledReason = reason;
     _timerSetAt = Date.now();
-    syncInspector.log('info', 'SCHEDULE_FLUSH_ARMED' as any, `Timer armed (${delay}ms): ${reason}`, causality);
+    syncInspector.log('info', 'SCHEDULE_FLUSH_SET', `Timer: ${reason} (${delay}ms)`, causality);
 
     _syncTimer = setTimeout(async () => {
       _syncTimer = null;
       _timerSetAt = 0;
 
       try {
-        syncInspector.log('info', 'SCHEDULE_FLUSH_FIRE', `Timer execution start`, causality);
-
-        const qCount = await dbStore.outbox.count();
-        if (qCount === 0) {
+        const count = await dbStore.outbox.count();
+        if (count === 0 && !reason.includes('Repro')) {
           _pendingFlush = false;
-          syncInspector.log('info', 'FLUSH_SKIPPED', 'Queue empty', causality);
+          syncInspector.updateQueueCount(0);
           return;
         }
 
-        if (_isFlushing) {
-          syncInspector.log('info', 'FLUSH_SKIPPED', 'Lock active', causality);
-          return;
-        }
+        if (_isFlushing) return;
 
         const gate = await passStabilityGate(causality);
         if (!gate.ok) {
-          syncInspector.log('warn', 'GATE_BLOCKED', `Environment not ready: ${gate.reason}`, causality);
+          syncInspector.log('warn', 'GATE_BLOCKED', `Blocked: ${gate.reason}`, causality);
           return;
         }
 
-        syncInspector.log('info', 'TIMER_CB_SESSION_START' as any, 'Checking session...', causality);
-        
         let validUserId = _cachedUserId;
 
         if (!validUserId) {
             try {
                 const sessionPromise = supabase!.auth.getSession();
-                // FIX: Cast result to any to avoid Property 'error' and 'data' does not exist on type 'unknown' errors.
                 const result = await withTimeout<any>(sessionPromise, 2500, 'Auth Check');
-                
                 if (result.error) throw result.error;
-                
                 validUserId = result.data?.session?.user?.id || null;
                 if (validUserId) _cachedUserId = validUserId;
-
             } catch (authErr: any) {
-                if (authErr.message?.includes('TIMEOUT_HARD')) {
-                    syncInspector.log('warn', 'TIMER_CB_SESSION_TIMEOUT' as any, 'Session check timed out', causality);
-                    if (_retryTimer) clearTimeout(_retryTimer);
-                    _retryTimer = setTimeout(() => db.scheduleFlush('recovery_session_timeout'), 1000);
-                    return;
-                }
-
-                syncInspector.log('warn', 'AUTH_ERR', `Session check failed: ${authErr.message}`, causality);
                 if (_retryTimer) clearTimeout(_retryTimer);
-                _retryTimer = setTimeout(() => db.scheduleFlush('recovery_after_auth_fail'), 2000);
+                _retryTimer = setTimeout(() => db.scheduleFlush('recovery_session_failed'), 1000);
                 return;
             }
-        } else {
-             syncInspector.log('info', 'TIMER_CB_SESSION_DONE' as any, 'Session Cached (Fast Path)', causality);
         }
 
         if (validUserId) {
-          syncInspector.log('info', 'TIMER_CB_CALL_EXECUTE' as any, 'Calling Flush...', causality);
           await executeInternalFlush(validUserId, causality);
-        } else {
-          syncInspector.log('warn', 'AUTH_ERR', 'No active session found', causality);
         }
 
       } catch (e: any) {
-        syncInspector.log('error', 'CLOUD_ERR', `Timer callback crashed: ${e.message}`, causality);
+        syncInspector.log('error', 'CLOUD_ERR', `Crashed: ${e.message}`, causality);
       }
     }, delay);
   },
@@ -387,14 +516,9 @@ export const db = {
       const records = await dbStore.clients.toArray();
       const filteredRecords = records.filter(r => {
           if (!r || !r.data) return false;
-          
-          // CRITICAL: Strictly isolate Advisors. They only see their own rows.
           if (!role || role === 'advisor' || role === 'viewer') {
               return r.user_id === userId || r.data.advisorId === userId || r.data._ownerId === userId;
           }
-
-          // Managers and Directors see leads in their local cache.
-          // Note: pullFromCloud ensures only authorized leads enter the cache via RLS.
           return true;
       });
       return filteredRecords.map(r => {
@@ -416,18 +540,7 @@ export const db = {
     await dbStore.clients.put({ id: client.id, user_id: userId, data: updatedClient, updated_at: now });
     await dbStore.outbox.put({ id: client.id, userId: userId, data: updatedClient, queuedAt: Date.now() });
     
-    syncInspector.log('info', 'LOCAL_WRITE', `Saved ${client.id} locally`, finalCausality);
-    
     db.scheduleFlush(finalCausality.reason);
-
-    setTimeout(async () => {
-        const count = await dbStore.outbox.count();
-        if (count > 0 && document.visibilityState === 'visible' && !_isFlushing && !_syncTimer && !_retryTimer) {
-            syncInspector.checkInvariant(false, 'SYNC_INVARIANT_VIOLATION', 'Orphaned outbox after write (No timer active)', finalCausality);
-            db.scheduleFlush('Watchdog Repair');
-        }
-    }, 0);
-    
     return updatedClient;
   }
 };
@@ -435,20 +548,45 @@ export const db = {
 // --- GLOBAL LIFECYCLE OBSERVERS ---
 if (typeof window !== 'undefined') {
     const handleGlobalResume = (e: Event) => {
+        pushLifecycleEvent(`resume_${e.type}`);
+        
+        // ZOMBIE LOCK CHECK
+        if (_isFlushing) {
+             syncInspector.log('warn', 'SYNC_ABORT_DIAGNOSIS', 'Found stale lock on resume. Force clearing.', { owner: 'Lifecycle', module: 'db.ts', reason: 'zombie_check' });
+             db.resetLocks(); // Nuclear reset on resume to be safe
+        }
+        
+        syncInspector.log('info', 'RESUME_EVENT', `App Resumed: ${e.type}`, { owner: 'Lifecycle', module: 'db.ts', reason: e.type });
         db.notifyResume(`global_${e.type}`);
     };
+    
     window.addEventListener('focus', handleGlobalResume);
     window.addEventListener('pageshow', handleGlobalResume);
     
     document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'visible') {
-            db.notifyResume('global_visibility');
-        } else {
-            // NEW: Abort flush immediately on background to prevent zombie promises
-            if (_isFlushing && _activeAbort) {
-                syncInspector.log('warn', 'FLUSH_ABORTED', 'App backgrounded. Aborting active flush.', { owner: 'Lifecycle', module: 'db.ts', reason: 'app_hidden' });
-                _activeAbort.abort();
-            }
+        const state = document.visibilityState;
+        pushLifecycleEvent(`visibility_${state}`);
+        
+        if (state === 'hidden') {
+             syncInspector.log('info', 'APP_HIDDEN', 'App backgrounded', { owner: 'Lifecycle', module: 'db.ts', reason: 'visibility_hidden' });
+             
+             // FORCE ABORT ON HIDE
+             // This prevents the "stuck lock" issue where a promise hangs in the background forever.
+             if (_isFlushing || _activeAbort) {
+                 syncInspector.log('warn', 'FLUSH_ABORTED', 'Force aborting flush due to backgrounding', { owner: 'Lifecycle', module: 'db.ts', reason: 'background_force_abort' });
+                 if (_activeAbort) _activeAbort.abort();
+                 _isFlushing = false;
+                 _activeAbort = null;
+             }
+             
+        } else if (state === 'visible') {
+             syncInspector.log('info', 'APP_VISIBLE', 'App foregrounded', { owner: 'Lifecycle', module: 'db.ts', reason: 'visibility_visible' });
+             // Check for zombies again on visibility restore
+             if (_isFlushing) {
+                 syncInspector.log('warn', 'SYNC_ABORT_DIAGNOSIS', 'Found stale lock on visible. Force clearing.', { owner: 'Lifecycle', module: 'db.ts', reason: 'zombie_check_visible' });
+                 db.resetLocks();
+             }
+             db.notifyResume('global_visibility');
         }
     });
 }
