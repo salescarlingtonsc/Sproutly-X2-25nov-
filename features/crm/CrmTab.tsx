@@ -1,3 +1,4 @@
+
 import React, { useState, useMemo, useEffect } from 'react';
 import { Client, Product, WhatsAppTemplate, ContactStatus, Sale } from '../../types';
 import { AnalyticsPanel } from './components/AnalyticsPanel';
@@ -71,8 +72,8 @@ const CrmTab: React.FC<CrmTabProps> = ({
   const [isGrouped, setIsGrouped] = useState(false);
   
   // PAGINATION STATE
-  const [displayCount, setDisplayCount] = useState(50);
-  const PAGE_SIZE = 50;
+  const [displayCount, setDisplayCount] = useState(100);
+  const PAGE_SIZE = 100;
   
   const [sortConfig, setSortConfig] = useState<{ key: string; direction: 'asc' | 'desc' }>({ key: 'lastUpdated', direction: 'desc' });
 
@@ -405,13 +406,22 @@ const CrmTab: React.FC<CrmTabProps> = ({
                 ))}
             </div>
             {hasMore && (
-                <div className="mt-8 text-center">
-                    <button 
-                        onClick={() => setDisplayCount(c => c + PAGE_SIZE)} 
-                        className="px-6 py-3 bg-white border border-slate-200 text-slate-600 font-bold rounded-xl shadow-sm hover:bg-slate-50 transition-all text-xs uppercase tracking-widest"
-                    >
-                        Load More Leads ({filteredClients.length - visibleClients.length} remaining)
-                    </button>
+                <div className="mt-8 flex flex-col items-center gap-2">
+                    <div className="text-xs text-slate-400 font-medium">Showing {visibleClients.length} of {filteredClients.length}</div>
+                    <div className="flex gap-2">
+                        <button 
+                            onClick={() => setDisplayCount(c => c + PAGE_SIZE)} 
+                            className="px-6 py-2 bg-white border border-slate-200 text-slate-600 font-bold rounded-xl shadow-sm hover:bg-slate-50 transition-all text-xs uppercase tracking-widest"
+                        >
+                            Load Next {PAGE_SIZE}
+                        </button>
+                        <button 
+                            onClick={() => setDisplayCount(filteredClients.length)} 
+                            className="px-6 py-2 bg-slate-100 border border-slate-200 text-slate-600 font-bold rounded-xl shadow-sm hover:bg-slate-200 transition-all text-xs uppercase tracking-widest"
+                        >
+                            Show All ({filteredClients.length})
+                        </button>
+                    </div>
                 </div>
             )}
             </>
@@ -452,13 +462,22 @@ const CrmTab: React.FC<CrmTabProps> = ({
                </div>
                
                {hasMore && !isGrouped && (
-                   <div className="p-4 bg-slate-50 border-t border-slate-100 text-center">
-                        <button 
-                            onClick={() => setDisplayCount(c => c + PAGE_SIZE)} 
-                            className="text-xs font-bold text-slate-500 hover:text-indigo-600 transition-colors uppercase tracking-widest"
-                        >
-                            Show More Leads ({filteredClients.length - visibleClients.length} hidden)
-                        </button>
+                   <div className="p-4 bg-slate-50 border-t border-slate-100 flex flex-col items-center gap-2">
+                        <div className="text-xs text-slate-400 font-medium">Showing {visibleClients.length} of {filteredClients.length}</div>
+                        <div className="flex gap-2">
+                            <button 
+                                onClick={() => setDisplayCount(c => c + PAGE_SIZE)} 
+                                className="px-4 py-2 text-xs font-bold text-slate-500 hover:text-indigo-600 transition-colors uppercase tracking-widest border border-slate-200 rounded-lg hover:bg-white"
+                            >
+                                Show Next {PAGE_SIZE}
+                            </button>
+                            <button 
+                                onClick={() => setDisplayCount(filteredClients.length)} 
+                                className="px-4 py-2 text-xs font-bold text-slate-500 hover:text-indigo-600 transition-colors uppercase tracking-widest border border-slate-200 rounded-lg hover:bg-white"
+                            >
+                                Show All
+                            </button>
+                        </div>
                    </div>
                )}
             </div>
