@@ -5,6 +5,7 @@ import Modal from '../../../components/ui/Modal';
 import Button from '../../../components/ui/Button';
 import { generateAutomatedPitch } from '../../../lib/gemini';
 import { useToast } from '../../../contexts/ToastContext';
+import { isAbortError } from '../../../lib/helpers';
 
 interface ScriptGeneratorModalProps {
   isOpen: boolean;
@@ -44,7 +45,7 @@ const ScriptGeneratorModal: React.FC<ScriptGeneratorModalProps> = ({ isOpen, onC
     } catch (err: any) {
       if (isMountedRef.current) {
         // Suppress abort errors from UI error state
-        if (err.name === 'AbortError' || err.message?.includes('aborted') || err.message?.includes('cancel')) {
+        if (isAbortError(err)) {
             console.debug('Script generation aborted.');
             setLoading(false);
             return;

@@ -91,11 +91,12 @@ const ProfileTab: React.FC<ProfileTabProps> = ({
   const filteredClients = useMemo(() => {
     if (!searchTerm) return [];
     const lower = searchTerm.toLowerCase();
+    // INCREASED LIMIT TO 50
     return clients.filter(c => 
       c.profile.name.toLowerCase().includes(lower) ||
       (c.referenceCode && c.referenceCode.toLowerCase().includes(lower)) ||
       (c.profile.phone && c.profile.phone.includes(lower))
-    ).slice(0, 5);
+    ).slice(0, 50);
   }, [clients, searchTerm]);
 
   // --- AUDIO BRIEFING ---

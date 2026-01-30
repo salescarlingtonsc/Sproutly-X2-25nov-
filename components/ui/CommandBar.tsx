@@ -24,10 +24,11 @@ const CommandBar: React.FC<CommandBarProps> = ({ isOpen, onClose, clients, onSel
     }
   }, [isOpen]);
 
+  // INCREASED LIMIT TO 50
   const filteredClients = clients.filter(c => 
     c.profile.name.toLowerCase().includes(query.toLowerCase()) || 
     (c.profile.phone || '').includes(query)
-  ).slice(0, 5);
+  ).slice(0, 50);
 
   const actions = [
     { id: 'new_client', label: 'Create New Client', icon: '＋' },

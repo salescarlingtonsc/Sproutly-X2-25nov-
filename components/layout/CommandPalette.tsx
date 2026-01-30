@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef } from 'react';
 import { TAB_DEFINITIONS } from '../../lib/config';
 import { Client } from '../../types';
@@ -38,11 +39,12 @@ const CommandPalette: React.FC<CommandPaletteProps> = ({ clients, onNavigate, on
     t.label.toLowerCase().includes(query.toLowerCase()) && t.id !== 'admin'
   ).slice(0, 4);
   
+  // INCREASED LIMIT TO 50
   const filteredClients = clients.filter(c => 
     c.profile.name.toLowerCase().includes(query.toLowerCase()) || 
     (c.referenceCode || '').toLowerCase().includes(query.toLowerCase()) ||
     (c.profile.phone || '').includes(query)
-  ).slice(0, 5);
+  ).slice(0, 50);
 
   const allResults = [
     ...filteredTabs.map(t => ({ type: 'tab', data: t })),
