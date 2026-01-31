@@ -1,9 +1,11 @@
+
 import React, { useState, useRef } from 'react';
 
 interface Series {
   name: string;
   values: number[];
   stroke: string;
+  strokeDasharray?: string; // Added for limit lines
 }
 
 interface LineChartProps {
@@ -103,7 +105,7 @@ const LineChart: React.FC<LineChartProps> = ({
         })}
         {series.map((s, idx) => {
           const d = s.values.map((v, i) => `${i === 0 ? 'M' : 'L'}${toX(i)},${toY(v)}`).join(' ');
-          return <path key={idx} d={d} fill='none' stroke={s.stroke} strokeWidth={2} />;
+          return <path key={idx} d={d} fill='none' stroke={s.stroke} strokeWidth={2} strokeDasharray={s.strokeDasharray} />;
         })}
         {hoverIdx !== null && (
           <line

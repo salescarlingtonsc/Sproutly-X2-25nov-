@@ -124,11 +124,10 @@ export const projectComprehensiveWealth = (inputs: WealthProjectionInputs) => {
 
   // CONSTANTS (2025 Baseline)
   const CURRENT_FRS = 205800; // Full Retirement Sum 2025
-  const FRS_INFLATION = 0.035; // FRS grows ~3.5% annually for projection of the standard
+  const FRS_INFLATION = 0.035; // FRS grows ~3.5% annually
   const BHS_INFLATION = 0.04; // BHS grows roughly 4-5% annually
   
   // CPF Life Standard Plan Estimator
-  // Based on ~$1,700 payout for $205,800 RA in 2025.
   const PAYOUT_RATIO = 1700 / 205800; 
   
   for (let y = 0; y <= yearsToProject; y++) {
@@ -141,9 +140,16 @@ export const projectComprehensiveWealth = (inputs: WealthProjectionInputs) => {
 
     // --- 1. GROWTH (Start of Year Balance Growth) ---
     cpfOa *= (1 + rates.cpfOa);
-    cpfSa *= (1 + rates.cpfSa);
-    cpfMa *= (1 + rates.cpfSa); // MA grows same as SA (4%)
-    cpfRa *= 1.04; // RA grows at 4%
+    // SA is closed after 55, checking logic below
+    if (age < 55) {
+        cpfSa *= (1 + rates.cpfSa);
+    } else {
+        // Post-55 SA Closure Rule: Any remaining SA (if somehow existed) gets SA interest rate,
+        // but practically it should be 0. We'll apply interest just in case of transient funds.
+        cpfSa *= (1 + rates.cpfSa); 
+    }
+    cpfMa *= (1 + rates.cpfSa); // MA grows same as SA/RA (~4%)
+    cpfRa *= 1.0408; // RA grows at ~4.08%
     
     cash *= (1 + rates.cash);
     investments *= (1 + rates.investments);
@@ -153,7 +159,17 @@ export const projectComprehensiveWealth = (inputs: WealthProjectionInputs) => {
       // CPF Contributions
       const cpfData = computeCpf(monthlyIncome, age);
       cpfOa += cpfData.oa * 12;
-      cpfSa += cpfData.sa * 12;
+      
+      // Post-55, SA contribution allocation goes to RA (if deficient) or OA/SA special handling?
+      // CPF allocation tables for >55 usually split into OA/SA/MA.
+      // However, "SA" contributions for >55s now flow to RA (up to FRS) then OA.
+      // We will simplify: If <55 put in SA. If >=55 put in RA.
+      if (age < 55) {
+          cpfSa += cpfData.sa * 12;
+      } else {
+          cpfRa += cpfData.sa * 12; 
+      }
+      
       cpfMa += cpfData.ma * 12;
 
       // Cash & Investments
@@ -163,36 +179,35 @@ export const projectComprehensiveWealth = (inputs: WealthProjectionInputs) => {
     }
 
     // --- 2b. MEDISAVE CAP CHECK (BHS OVERFLOW) ---
-    // BHS stops increasing at age 65
+    // BHS stops increasing at age 65 (Fixed for cohort)
     let currentBHS = CPF_BHS_LIMIT;
     if (age < 65) {
-       // Inflate BHS from 2025 baseline
        currentBHS = CPF_BHS_LIMIT * Math.pow(1 + BHS_INFLATION, y);
     } else {
-       // Fixed at age 65 value (calculated based on projection)
        const yearsTo65 = 65 - currentAge;
-       currentBHS = CPF_BHS_LIMIT * Math.pow(1 + BHS_INFLATION, yearsTo65);
+       currentBHS = CPF_BHS_LIMIT * Math.pow(1 + BHS_INFLATION, Math.max(0, yearsTo65));
     }
 
+    // OVERFLOW LOGIC
     if (cpfMa > currentBHS) {
         const overflow = cpfMa - currentBHS;
         cpfMa = currentBHS; // Cap MA
         
-        // Overflow logic: Usually goes to SA. If SA Full (FRS), goes to OA.
-        // For simplicity in this projection, we flow to SA first as that's standard for accumulating RA.
-        // Note: In reality, if SA > FRS, it might flow to OA, but for retirement planning, SA/RA is the target bucket.
-        if (cpfRa > 0) {
-             // If RA exists (post-55), overflow usually flows to RA up to ERS, or OA. 
-             // We'll add to RA/SA bucket for simplicity of net worth
-             cpfRa += overflow;
+        if (age < 55) {
+            // Under 55: Overflow goes to SA
+            cpfSa += overflow;
         } else {
-             cpfSa += overflow;
+            // 55 & Above: SA is closed. Overflow goes to RA (to help meet FRS) then OA.
+            // For projection simplicity: We put it in RA to maximize interest (4%) unless RA is huge.
+            // A more conservative view would be OA. Let's split 50/50 or prioritize RA.
+            // Priority: RA.
+            cpfRa += overflow;
         }
     }
 
     // --- 3. KEY EVENTS ---
     
-    // EVENT: AGE 55 (Creation of Retirement Account)
+    // EVENT: AGE 55 (Creation of RA + Closure of SA)
     if (Math.floor(age) === 55 && cpfRa === 0) {
       // Projected FRS at Age 55
       const yearsTo55 = 55 - currentAge;
@@ -200,31 +215,30 @@ export const projectComprehensiveWealth = (inputs: WealthProjectionInputs) => {
         ? CURRENT_FRS * Math.pow(1 + FRS_INFLATION, yearsTo55)
         : CURRENT_FRS; 
 
-      // Transfer logic: SA -> RA, then OA -> RA
-      let transferAmount = 0;
+      // 1. Transfer SA to RA
+      // New 2025 Rule: SA Closes.
+      let transferToRa = Math.min(cpfSa, projectedFRS);
+      cpfRa += transferToRa;
+      cpfSa -= transferToRa; // Remaining SA is not kept in SA anymore!
       
-      // Take from SA
-      const takeFromSa = Math.min(cpfSa, projectedFRS);
-      cpfSa -= takeFromSa;
-      cpfRa += takeFromSa;
-      transferAmount += takeFromSa;
-
-      // Take from OA if SA wasn't enough
-      if (transferAmount < projectedFRS) {
-        const needed = projectedFRS - transferAmount;
-        const takeFromOa = Math.min(cpfOa, needed);
-        cpfOa -= takeFromOa;
-        cpfRa += takeFromOa;
+      // 2. Any remaining SA flows to OA
+      if (cpfSa > 0) {
+          cpfOa += cpfSa;
+          cpfSa = 0; // SA is effectively closed/empty
       }
-      
-      // Note: We don't simulate the 5k withdrawal here automatically, 
-      // but the UI can show it's available.
+
+      // 3. If RA still not FRS, take from OA
+      if (cpfRa < projectedFRS) {
+          const needed = projectedFRS - cpfRa;
+          const takeFromOa = Math.min(cpfOa, needed);
+          cpfOa -= takeFromOa;
+          cpfRa += takeFromOa;
+      }
     }
 
     // EVENT: AGE 65 (CPF LIFE START)
     if (Math.floor(age) === 65 && cpfLifePayoutMonthly === 0) {
       // Standard Plan Calculation
-      // Payout is determined by RA sum.
       cpfLifePayoutMonthly = cpfRa * PAYOUT_RATIO;
       
       // In CPF Life, the RA premium is deducted to buy the annuity.
@@ -313,11 +327,6 @@ export const runMonteCarloSimulation = (
     let investments = inputs.currentInvestments;
     let cash = inputs.currentCash;
     
-    // We re-implement a lightweight version of the logic specifically for the investment part
-    // to apply volatility year-over-year.
-    // For performance, we simplify CPF/Cash parts to be deterministic (linear), 
-    // and only randomize the Investment Return.
-    
     // Re-run the main projection logic with randomized investment returns
     const yearsToProject = 95 - inputs.currentAge;
     
@@ -338,45 +347,54 @@ export const runMonteCarloSimulation = (
       if (age >= inputs.retirementAge) hasRetired = true;
 
       // RANDOMIZED RETURN FOR THIS YEAR
-      // Return = Expected Mean + (Volatility * RandomNormal)
       const randomReturn = inputs.rates.investments + (volatility * randn_bm());
       
       // Growth
       simInvestments *= (1 + randomReturn);
       simCash *= (1 + inputs.rates.cash);
       
-      // Simplified CPF Growth (Deterministic)
       cpfOa *= (1 + inputs.rates.cpfOa);
-      cpfSa *= (1 + inputs.rates.cpfSa);
+      // SA interest only applied if < 55 due to closure rule
+      if (age < 55) cpfSa *= (1 + inputs.rates.cpfSa);
       cpfMa *= (1 + inputs.rates.cpfSa);
       cpfRa *= 1.04;
 
       // Inflows
       if (!hasRetired) {
-        // Add Contributions
         simInvestments += inputs.monthlyInvestment * 12;
         simCash += (Math.max(0, inputs.monthlyCashSavings - inputs.monthlyInvestment) * 12);
         
         // Add CPF (approx)
         const cpfData = computeCpf(inputs.monthlyIncome, age);
         cpfOa += cpfData.oa * 12;
-        cpfSa += cpfData.sa * 12;
+        if (age < 55) cpfSa += cpfData.sa * 12;
+        else cpfRa += cpfData.sa * 12; // Post-55 SA contrib goes to RA/OA
         cpfMa += cpfData.ma * 12;
       }
 
-      // Events (55 RA, 65 CPF Life)
+      // Events (55 RA)
       if (Math.floor(age) === 55 && cpfRa === 0) {
-         // Simplified RA Creation logic for Monte Carlo speed
          const frs = 205800 * Math.pow(1.035, 55 - inputs.currentAge);
+         // Move SA to RA
          const takeSa = Math.min(cpfSa, frs);
          cpfSa -= takeSa;
          cpfRa += takeSa;
-         if (takeSa < frs) {
-            const takeOa = Math.min(cpfOa, frs - takeSa);
+         
+         // Remaining SA to OA
+         if (cpfSa > 0) {
+             cpfOa += cpfSa;
+             cpfSa = 0;
+         }
+
+         // If RA needs more, take OA
+         if (cpfRa < frs) {
+            const takeOa = Math.min(cpfOa, frs - cpfRa);
             cpfOa -= takeOa;
             cpfRa += takeOa;
          }
       }
+      
+      // Event 65
       if (Math.floor(age) === 65 && cpfLifePayoutMonthly === 0) {
          cpfLifePayoutMonthly = cpfRa * PAYOUT_RATIO;
          cpfRa = 0;
@@ -388,7 +406,6 @@ export const runMonteCarloSimulation = (
          const cpfPayout = cpfLifePayoutMonthly * 12;
          let needed = Math.max(0, expenses - cpfPayout);
          
-         // Drain Cash first
          if (simCash >= needed) {
             simCash -= needed;
             needed = 0;
@@ -397,20 +414,18 @@ export const runMonteCarloSimulation = (
             simCash = 0;
          }
          
-         // Drain Investments
          if (needed > 0) {
             simInvestments -= needed;
          }
       }
 
-      // Record Total Net Worth for this year in this simulation run
       const totalNetWorth = Math.max(0, simInvestments + simCash + cpfOa + cpfSa + cpfMa + cpfRa);
       runResult.push(totalNetWorth);
     }
     allRuns.push(runResult);
   }
 
-  // Calculate Percentiles (10th, 50th, 90th)
+  // Calculate Percentiles
   const years = allRuns[0].length;
   const p10 = [];
   const p50 = [];
@@ -435,30 +450,19 @@ export const calculateChildEducationCost = (child: Child, settings?: EducationSe
   const ageInMonths = monthsSinceDob(childDob, today.getFullYear(), today.getMonth());
   const currentAge = Math.floor(ageInMonths / 12);
   
-  // Extract Settings or use Defaults
   const inflationRate = settings ? toNum(settings.inflationRate, 3)/100 : 0.03;
-  
-  // Education Cost & Duration Logic
-  // Default: $800/mo (was 9600/yr), P1(7yo) to O-Level(16yo)
   const monthlyCost = settings ? toNum(settings.monthlyEducationCost, 800) : 800;
   const annualEduCost = monthlyCost * 12;
-  
   const eduStartAge = settings ? toNum(settings.educationStartAge, 7) : 7;
   const eduDuration = settings ? toNum(settings.educationDuration, 10) : 10;
   const eduEndAge = eduStartAge + eduDuration - 1;
-
-  // University
   const costUni = settings ? toNum(settings.universityCost, 8750) : 8750;
   const durUni = settings ? toNum(settings.universityDuration, 4) : 4;
-
-  // Gender-specific university start age (males after NS, females direct entry)
   const uniStartAge = child.gender === 'male' ? 21 : 19;
   const uniEndAge = uniStartAge + durUni - 1;
   
   const stages = [
-    // Dynamic Primary/Secondary Phase
     { start: eduStartAge, end: eduEndAge, yearlyCost: annualEduCost },
-    // University
     { start: uniStartAge, end: uniEndAge, yearlyCost: costUni },
   ];
   

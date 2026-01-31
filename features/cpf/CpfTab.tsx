@@ -71,6 +71,7 @@ const CpfTab: React.FC = () => {
     let oa = toNum(currentBalances.oa, 0) - oaToSaTransfer;
     let sa = toNum(currentBalances.sa, 0) + oaToSaTransfer + (cashTopUp / 2); 
     let ma = toNum(currentBalances.ma, 0) + (cashTopUp / 2);
+    let ra = 0; // Retirement Account
     
     if (cashTopUp > 0) {
         sa = toNum(currentBalances.sa, 0) + oaToSaTransfer + cashTopUp; 
@@ -81,42 +82,78 @@ const CpfTab: React.FC = () => {
     const salaryBasis = cpfData.cpfableSalary;
     
     // Medisave Limit Logic (BHS)
+    // Starting in 2025, BHS is $74,000 (assumed approximate)
     let currentBhsLimit = CPF_BHS_LIMIT; 
     
     for (let m = 0; m <= projectionMonths; m++) {
       const monthAge = age + (m / 12);
       const year = currentYear + Math.floor((currentMonth + m) / 12);
       const monthIndex = (currentMonth + m) % 12;
+      const isStartOfYear = monthIndex === 0 && m > 0;
       
       // Update BHS Limit annually (4.5% approx growth) until age 65
-      if (m > 0 && monthIndex === 0 && monthAge < 65) {
+      if (isStartOfYear && monthAge < 65) {
           currentBhsLimit = currentBhsLimit * 1.045; 
       }
 
-      // Monthly Inflow (Wages) - Assume work stops at 65
+      // --- 1. INTEREST (Start of Year) ---
+      // Apply annual interest at month 0 of each year
+      if (isStartOfYear) { 
+        oa += oa * 0.025; 
+        // SA closed at 55, interest applies only if balance exists
+        if (sa > 0) sa += sa * 0.0408; 
+        ma += ma * 0.0408;
+        ra += ra * 0.0408;
+      }
+
+      // --- 2. CONTRIBUTIONS (Wages) ---
       if (m > 0 && monthAge < 65) { 
         const dynamicCpf = computeCpf(salaryBasis, monthAge);
         oa += dynamicCpf.oa;
-        sa += dynamicCpf.sa;
+        
+        // Age Dependent Allocation
+        if (monthAge < 55) {
+            sa += dynamicCpf.sa;
+        } else {
+            // Post-55: SA contribution goes to RA (simplified flow)
+            ra += dynamicCpf.sa;
+        }
         ma += dynamicCpf.ma;
       }
       
-      // Interest Crediting (January) - Simplified annual compounding
-      if (monthIndex === 0 && m > 0) { 
-        oa += oa * 0.025; 
-        sa += sa * 0.04; 
-        ma += ma * 0.04;
+      // --- 3. AGE 55 EVENT (SA CLOSURE) ---
+      // Trigger exactly once at 55
+      if (m > 0 && Math.floor(monthAge) === 55 && Math.floor(age + ((m-1)/12)) < 55) {
+          // FRS estimate
+          const yearsTo55 = 55 - age;
+          const estimatedFRS = 205800 * Math.pow(1.035, yearsTo55);
+          
+          // Move SA -> RA
+          const saTransfer = Math.min(sa, estimatedFRS);
+          ra += saTransfer;
+          sa -= saTransfer;
+          
+          // If SA remaining, move to OA (New 2025 Rule)
+          if (sa > 0) {
+              oa += sa;
+              sa = 0;
+          }
+          
+          // If RA still needs funds, take from OA
+          if (ra < estimatedFRS) {
+              const oaTransfer = Math.min(oa, estimatedFRS - ra);
+              oa -= oaTransfer;
+              ra += oaTransfer;
+          }
       }
-      
-      // Withdrawals Logic
+
+      // --- 4. WITHDRAWALS ---
       withdrawals.forEach((w: any) => {
          const start = toNum(w.startAge, age);
          const amt = toNum(w.amount);
          let shouldDeduct = false;
          
          if (w.type === 'onetime') {
-             // Precise month matching for one-time events
-             // Calculate the month index relative to current month (m)
              const targetMonthIndex = Math.round((start - age) * 12);
              if (m === targetMonthIndex) shouldDeduct = true;
          } else {
@@ -134,17 +171,26 @@ const CpfTab: React.FC = () => {
          }
       });
 
-      // BHS Overflow Logic (End of month check)
+      // --- 5. BHS OVERFLOW (End of month check) ---
       if (ma > currentBhsLimit) {
           const overflow = ma - currentBhsLimit;
           ma = currentBhsLimit;
-          sa += overflow; // Overflow flows to SA
+          
+          if (monthAge < 55) {
+              // Age < 55: Overflow to SA
+              sa += overflow;
+          } else {
+              // Age >= 55: SA is closed. Overflow to RA (if need FRS) or OA.
+              // For projection visualization: Flow to RA first to maximize interest.
+              ra += overflow;
+          }
       }
 
       // Clamp to 0
       oa = Math.max(0, oa);
       sa = Math.max(0, sa);
       ma = Math.max(0, ma);
+      ra = Math.max(0, ra);
 
       projection.push({
         age: Math.floor(monthAge),
@@ -152,9 +198,10 @@ const CpfTab: React.FC = () => {
         year,
         oa: Math.round(oa), 
         sa: Math.round(sa), 
-        ma: Math.round(ma), 
-        bhs: Math.round(currentBhsLimit), // Track BHS limit for visualization if needed
-        total: Math.round(oa + sa + ma),
+        ma: Math.round(ma),
+        ra: Math.round(ra), // New RA Tracking
+        bhs: Math.round(currentBhsLimit), 
+        total: Math.round(oa + sa + ma + ra),
         is55: Math.abs(monthAge - 55) < 0.1
       });
     }
@@ -172,7 +219,7 @@ const CpfTab: React.FC = () => {
 
   const headerAction = (
     <button 
-      onClick={() => openAiWithPrompt(`Review my CPF Strategy. Current OA: ${currentBalances.oa}, SA: ${currentBalances.sa}. Age ${age}. Projected 55 total: ${valueAt55?.total}. Any risks with my withdrawals?`)}
+      onClick={() => openAiWithPrompt(`Review my CPF Strategy. Current OA: ${currentBalances.oa}, SA: ${currentBalances.sa}. Age ${age}. Explain the impact of the 2025 SA closure on my Medisave overflow.`)}
       className="flex items-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-700 rounded-lg text-xs font-bold hover:bg-indigo-100 transition-colors"
     >
       <span>💰</span> AI Strategy Check
@@ -184,7 +231,7 @@ const CpfTab: React.FC = () => {
       <PageHeader 
         title="Sovereign Wealth (CPF)"
         icon="🦁"
-        subtitle="Forecast balances and optimize interest via transfers."
+        subtitle="Forecast balances and optimize interest via transfers. Includes 2025 SA Closure Rules."
         action={headerAction}
       />
 
@@ -195,7 +242,7 @@ const CpfTab: React.FC = () => {
                {['oa', 'sa', 'ma'].map((acc) => (
                   <div key={acc} className={`p-4 rounded-xl border ${acc==='oa' ? 'bg-slate-50 border-slate-200' : acc==='sa' ? 'bg-amber-50 border-amber-200' : 'bg-teal-50 border-teal-200'}`}>
                      <div className="text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-1">{acc.toUpperCase()} Account</div>
-                     <div className="text-xs text-gray-400 mb-3">{acc==='oa' ? '2.5%' : '4.0%'} p.a.</div>
+                     <div className="text-xs text-gray-400 mb-3">{acc==='oa' ? '2.5%' : '4.08%'} p.a.</div>
                      <input 
                         type="text" 
                         value={currentBalances[acc as keyof typeof currentBalances]} 
@@ -327,6 +374,9 @@ const CpfTab: React.FC = () => {
                         { name: 'Ordinary (OA)', values: monthlyProjection.filter((_, i) => i % 12 === 0).map(d => d.oa), stroke: '#94a3b8' },
                         { name: 'Special (SA)', values: monthlyProjection.filter((_, i) => i % 12 === 0).map(d => d.sa), stroke: '#d97706' },
                         { name: 'MediSave (MA)', values: monthlyProjection.filter((_, i) => i % 12 === 0).map(d => d.ma), stroke: '#0d9488' },
+                        { name: 'Retirement (RA)', values: monthlyProjection.filter((_, i) => i % 12 === 0).map(d => d.ra), stroke: '#dc2626' },
+                        // NEW: BHS Limit Series (Dashed)
+                        { name: 'BHS Limit', values: monthlyProjection.filter((_, i) => i % 12 === 0).map(d => d.bhs), stroke: '#2dd4bf', strokeDasharray: '5 5' },
                         { name: 'Total CPF', values: monthlyProjection.filter((_, i) => i % 12 === 0).map(d => d.total), stroke: '#4f46e5' }
                      ]}
                      height={350}
@@ -346,9 +396,9 @@ const CpfTab: React.FC = () => {
                         </div>
                      </div>
                      <div className="bg-amber-50 p-4 rounded-xl border border-amber-100 text-center">
-                        <div className="text-[10px] uppercase font-bold text-amber-600">Potential Tax Saved</div>
-                        <div className="text-2xl font-black text-amber-700">{fmtSGD(cashTopUp * 0.07)} - {fmtSGD(cashTopUp * 0.15)}</div>
-                        <div className="text-[9px] text-amber-500 mt-1">Depending on tax bracket</div>
+                        <div className="text-[10px] uppercase font-bold text-amber-600">Medisave Limit (Age 65)</div>
+                        <div className="text-2xl font-black text-amber-700">{fmtSGD(CPF_BHS_LIMIT * 1.5)}</div>
+                        <div className="text-[9px] text-amber-500 mt-1">Projected BHS Ceiling</div>
                      </div>
                   </div>
                </div>
@@ -361,7 +411,7 @@ const CpfTab: React.FC = () => {
                            <th className="p-3 text-right">Ordinary (OA)</th>
                            <th className="p-3 text-right">Special (SA)</th>
                            <th className="p-3 text-right">MediSave (MA)</th>
-                           <th className="p-3 text-right">BHS Limit</th>
+                           <th className="p-3 text-right">Retirement (RA)</th>
                            <th className="p-3 text-right text-indigo-600">Total</th>
                         </tr>
                      </thead>
@@ -371,8 +421,11 @@ const CpfTab: React.FC = () => {
                               <td className="p-3 text-slate-700">Age {row.age}</td>
                               <td className="p-3 text-right font-mono text-slate-600">{fmtSGD(row.oa)}</td>
                               <td className="p-3 text-right font-mono text-amber-700">{fmtSGD(row.sa)}</td>
-                              <td className="p-3 text-right font-mono text-teal-700">{fmtSGD(row.ma)}</td>
-                              <td className="p-3 text-right font-mono text-slate-400 text-xs">{fmtSGD(row.bhs)}</td>
+                              <td className="p-3 text-right font-mono text-teal-700 relative">
+                                  {fmtSGD(row.ma)}
+                                  {row.ma >= row.bhs && <span className="absolute top-1 right-1 text-[8px] bg-red-100 text-red-600 px-1 rounded">MAX</span>}
+                              </td>
+                              <td className="p-3 text-right font-mono text-red-700">{fmtSGD(row.ra)}</td>
                               <td className="p-3 text-right font-mono font-bold text-indigo-600">{fmtSGD(row.total)}</td>
                            </tr>
                         ))}

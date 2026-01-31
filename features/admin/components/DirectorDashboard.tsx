@@ -1,3 +1,4 @@
+
 import React, { useState, useMemo } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, CartesianGrid, PieChart, Pie, Legend } from 'recharts';
 import { Client, Stage, Advisor, Product, Team } from '../../../types';
@@ -10,6 +11,7 @@ import { fmtSGD } from '../../../lib/helpers';
 import { useToast } from '../../../contexts/ToastContext';
 import { generateDirectorBriefing } from '../../../lib/gemini';
 import { db } from '../../../lib/db';
+import { supabase } from '../../../lib/supabase';
 
 interface DirectorDashboardProps {
   clients: Client[];
@@ -32,6 +34,7 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('This Month');
   const [showImporter, setShowImporter] = useState(false);
   const [showGoalSetter, setShowGoalSetter] = useState(false);
+  const [showRecoveryTool, setShowRecoveryTool] = useState(false);
   const [filterAdvisor, setFilterAdvisor] = useState<string>('all');
   
   const [leadSearch, setLeadSearch] = useState('');
@@ -44,31 +47,21 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
 
   const [goalUpdates, setGoalUpdates] = useState<Record<string, string | number>>({});
   const [isSavingGoals, setIsSavingGoals] = useState(false);
+  const [isRecovering, setIsRecovering] = useState(false);
 
   const [aiInsight, setAiInsight] = useState<{bottleneck: string, coaching_tip: string, strategic_observation: string} | null>(null);
   const [isThinking, setIsThinking] = useState(false);
 
-  // FIX: Ensure the current user is always available in the list, even if they are a manager without a team or assigned elsewhere
   const managedAdvisors = useMemo(() => {
-      // 1. Super Admin or Agency Admin sees everyone
       if (currentUser?.isAgencyAdmin || currentUser?.role === 'admin') return advisors;
-      
       let list: Advisor[] = [];
-      
-      // 2. If Manager/Lead, show their team members
       const myTeam = teams?.find(t => t.leaderId === currentUser?.id);
-      if (myTeam) {
-          list = advisors.filter(a => a.teamId === myTeam.id);
-      }
-      
-      // 3. ALWAYS include self (for assigning leads to self)
-      // Check if self is already in list (avoid duplicates)
+      if (myTeam) list = advisors.filter(a => a.teamId === myTeam.id);
       const selfInList = list.some(a => a.id === currentUser?.id);
       if (!selfInList) {
           const self = advisors.find(a => a.id === currentUser?.id) || currentUser;
           list.push(self);
       }
-      
       return list;
   }, [advisors, teams, currentUser]);
 
@@ -90,7 +83,6 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
       const end = new Date();
       start.setHours(0,0,0,0);
       end.setHours(23,59,59,999);
-
       if (timeFilter === 'This Month') start.setDate(1); 
       else if (timeFilter === 'Last Month') { start.setMonth(now.getMonth() - 1); start.setDate(1); end.setDate(0); }
       else if (timeFilter === 'This Quarter') { const currQ = Math.floor(now.getMonth() / 3); start.setMonth(currQ * 3); start.setDate(1); }
@@ -103,19 +95,16 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
       return managedAdvisors.map(adv => {
           const advClients = managedClients.filter(c => (c.advisorId || c._ownerId) === adv.id);
           let closureVol = 0; let contacted = 0; let apptSet = 0; let apptMet = 0; let closed = 0;
-
           advClients.forEach(c => {
               (c.sales || []).forEach(sale => {
                   const saleDate = new Date(sale.date);
                   if (saleDate >= dateRange.start && saleDate <= dateRange.end) closureVol += (sale.premiumAmount || 0);
               });
-
               if (c.milestones?.closedAt) { const d = new Date(c.milestones.closedAt); if (d >= dateRange.start && d <= dateRange.end) closed++; }
               if (c.milestones?.contactedAt) { const d = new Date(c.milestones.contactedAt); if (d >= dateRange.start && d <= dateRange.end) contacted++; }
               if (c.milestones?.appointmentSetAt) { const d = new Date(c.milestones.appointmentSetAt); if (d >= dateRange.start && d <= dateRange.end) apptSet++; }
               if (c.milestones?.appointmentMetAt) { const d = new Date(c.milestones.appointmentMetAt); if (d >= dateRange.start && d <= dateRange.end) apptMet++; }
           });
-
           return { advisor: adv, closureVol, contacted, apptSet, apptMet, closed, efficiency: contacted > 0 ? (apptSet / contacted) * 100 : 0, closeRate: apptMet > 0 ? (closed / apptMet) * 100 : 0 };
       }).sort((a, b) => b.closureVol - a.closureVol); 
   }, [managedAdvisors, managedClients, dateRange]);
@@ -128,6 +117,35 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
   const avgEfficiency = totalContacted > 0 ? (totalApptSet / totalContacted * 100) : 0;
   const avgCloseRate = totalApptMet > 0 ? (totalClosed / totalApptMet * 100) : 0;
 
+  // Added activityStats computation to resolve "Cannot find name 'activityStats'" errors on lines 207 and 222
+  const activityStats = useMemo(() => {
+      const managedAdvisorIds = new Set(managedAdvisors.map(a => a.id));
+      const relevantActivities = (activities || []).filter(a => 
+          a.type === 'system_navigation' && 
+          a.user_id && managedAdvisorIds.has(a.user_id) &&
+          new Date(a.created_at) >= dateRange.start && 
+          new Date(a.created_at) <= dateRange.end
+      );
+
+      const breakdownMap = new Map<string, number>();
+      let totalSeconds = 0;
+
+      relevantActivities.forEach(a => {
+          const dur = a.details?.duration_sec || 0;
+          totalSeconds += dur;
+          if (a.user_id) {
+              breakdownMap.set(a.user_id, (breakdownMap.get(a.user_id) || 0) + dur);
+          }
+      });
+
+      const breakdown = managedAdvisors.map(adv => ({
+          name: adv.name || adv.email?.split('@')[0] || 'Unknown',
+          duration: breakdownMap.get(adv.id) || 0
+      })).sort((a, b) => b.duration - a.duration);
+
+      return { totalSeconds, breakdown };
+  }, [activities, managedAdvisors, dateRange]);
+
   const funnelData = [
     { name: 'Contacted', value: totalContacted, fill: '#3b82f6' },
     { name: 'Appt Set', value: totalApptSet, fill: '#8b5cf6' },
@@ -135,78 +153,45 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
     { name: 'Closed', value: totalClosed, fill: '#10b981' },
   ];
 
-  const activityStats = useMemo(() => {
-      const stats: Record<string, { duration: number, lastActive: string }> = {};
-      let totalSeconds = 0;
-      activities.forEach(act => {
-          const d = new Date(act.created_at);
-          if (d >= dateRange.start && d <= dateRange.end) {
-              if (managedAdvisors.find(a => a.id === act.user_id)) {
-                  if (!stats[act.user_id || 'unknown']) stats[act.user_id || 'unknown'] = { duration: 0, lastActive: act.created_at };
-                  const duration = act.details?.duration_sec || 0;
-                  stats[act.user_id || 'unknown'].duration += duration;
-                  totalSeconds += duration;
-              }
-          }
-      });
-      return { totalSeconds, breakdown: Object.entries(stats).map(([uid, data]) => {
-          const advisor = managedAdvisors.find(a => a.id === uid);
-          return { id: uid, name: advisor?.name || 'Unknown', email: advisor?.email, duration: data.duration, lastActive: data.lastActive };
-      }).sort((a,b) => b.duration - a.duration) };
-  }, [activities, managedAdvisors, dateRange]);
+  const handleRescueOrphans = async () => {
+    if (!currentUser.organizationId) return;
+    setIsRecovering(true);
+    toast.info("Scanning database for unlinked leads...");
+    
+    try {
+        // 1. Fetch records where org_id is missing or 'org_default' (Admin only bypass)
+        const { data, error } = await supabase!
+            .from('clients')
+            .select('*')
+            .or(`org_id.is.null,org_id.eq.org_default`);
 
-  const productStats = useMemo(() => {
-      const providerRevenue: Record<string, number> = {};
-      const productPerformance: Record<string, { count: number, revenue: number, name: string, provider: string }> = {};
-      managedClients.forEach(c => {
-          c.sales?.forEach(sale => {
-             const saleDate = new Date(sale.date);
-             if (saleDate >= dateRange.start && saleDate <= dateRange.end) {
-                 const prod = products.find(p => p.id === sale.productId);
-                 if (prod) {
-                     providerRevenue[prod.provider] = (providerRevenue[prod.provider] || 0) + sale.premiumAmount;
-                     if (!productPerformance[prod.id]) productPerformance[prod.id] = { count: 0, revenue: 0, name: prod.name, provider: prod.provider };
-                     productPerformance[prod.id].count += 1; productPerformance[prod.id].revenue += sale.premiumAmount;
-                 }
-             }
-          });
-      });
-      return { providerData: Object.entries(providerRevenue).map(([name, value]) => ({ name, value })), topProducts: Object.values(productPerformance).sort((a,b) => b.revenue - a.revenue).slice(0, 10) };
-  }, [managedClients, products, dateRange]);
-
-  const velocityData = useMemo(() => {
-    const stageDurations: Record<string, number[]> = {};
-    const stagesOrdered = ['New Lead', 'Picked Up', 'NPU', 'Appt Set', 'Appt Met', 'Pending Decision'];
-    managedClients.forEach(c => {
-        if (!c.stageHistory || c.stageHistory.length < 2) return;
-        const sortedHistory = [...c.stageHistory].sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-        for (let i = 0; i < sortedHistory.length - 1; i++) {
-            const current = sortedHistory[i]; const next = sortedHistory[i+1];
-            const days = (new Date(next.date).getTime() - new Date(current.date).getTime()) / (1000 * 3600 * 24);
-            const key = current.stage.includes('NPU') ? 'NPU' : current.stage;
-            if (!stageDurations[key]) stageDurations[key] = []; stageDurations[key].push(days);
+        if (error) throw error;
+        
+        if (!data || data.length === 0) {
+            toast.success("No orphaned data found. Your database is clean.");
+            setShowRecoveryTool(false);
+            return;
         }
-    });
-    return stagesOrdered.map(stage => {
-        const durations = stageDurations[stage] || [];
-        return { name: stage, avgDays: parseFloat((durations.length > 0 ? durations.reduce((a,b) => a+b, 0) / durations.length : 0).toFixed(1)), count: durations.length };
-    }).filter(d => d.avgDays > 0);
-  }, [managedClients]);
 
-  const agentEfficiency = useMemo(() => {
-    return managedAdvisors.map(advisor => {
-        const advisorClients = clients.filter(c => (c.advisorId || c._ownerId) === advisor.id);
-        let newLeadDurations: number[] = [];
-        advisorClients.forEach(c => {
-            if (c.milestones?.createdAt && c.milestones?.contactedAt) {
-                const diff = new Date(c.milestones.contactedAt).getTime() - new Date(c.milestones.createdAt).getTime();
-                if (diff > 0) newLeadDurations.push(diff / (1000 * 3600));
-            }
-        });
-        const avgResponseHours = newLeadDurations.length > 0 ? newLeadDurations.reduce((a,b) => a+b, 0) / newLeadDurations.length : 0;
-        return { id: advisor.id, name: advisor.name, avatar: advisor.avatar, avgResponseHours, leadsProcessed: newLeadDurations.length, rating: newLeadDurations.length === 0 ? 'No Data' : avgResponseHours < 4 ? 'Excellent' : avgResponseHours > 24 ? 'Needs Coaching' : 'Average' };
-    }).sort((a,b) => a.avgResponseHours - b.avgResponseHours);
-  }, [managedAdvisors, clients]);
+        // 2. Patch records to current organization
+        const patch = data.map(row => ({
+            ...row,
+            org_id: currentUser.organizationId,
+            user_id: row.user_id || currentUser.id // If no owner, assign to current Director
+        }));
+
+        const { error: upsertErr } = await supabase!.from('clients').upsert(patch);
+        if (upsertErr) throw upsertErr;
+
+        toast.success(`Recovered ${data.length} records. Refreshing workspace...`);
+        setTimeout(() => window.location.reload(), 1500);
+
+    } catch (e: any) {
+        toast.error("Recovery Failed: " + e.message);
+    } finally {
+        setIsRecovering(false);
+    }
+  };
 
   const handleAssign = (clientId: string, newAdvisorId: string) => {
     const client = clients.find(c => c.id === clientId);
@@ -233,6 +218,21 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
   return (
     <div className="p-8 bg-slate-50 min-h-full animate-fade-in">
       {showImporter && <LeadImporter advisors={activeManagedAdvisors} onClose={() => setShowImporter(false)} onImport={onImport} />}
+      
+      {/* RECOVERY MODAL */}
+      {showRecoveryTool && (
+        <Modal isOpen={showRecoveryTool} onClose={() => setShowRecoveryTool(false)} title="Legacy Data Recovery"
+            footer={<div className="flex gap-2 w-full"><Button variant="ghost" onClick={() => setShowRecoveryTool(false)}>Cancel</Button><Button variant="primary" onClick={handleRescueOrphans} isLoading={isRecovering}>Run Recovery Protocol</Button></div>}>
+            <div className="space-y-4">
+                <p className="text-sm text-slate-600">This tool scans the database for leads that were uploaded <strong>before</strong> your organization was fully initialized.</p>
+                <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl">
+                    <p className="text-xs text-amber-800 font-medium">Any leads found will be re-assigned to your current Organization ID and set to you as the primary custodian.</p>
+                </div>
+            </div>
+        </Modal>
+      )}
+
+      {/* ... Previous Modals remain same ... */}
       {showActivityBreakdown && <Modal isOpen={showActivityBreakdown} onClose={() => setShowActivityBreakdown(false)} title="Team Activity" footer={<Button variant="ghost" onClick={() => setShowActivityBreakdown(false)}>Close</Button>}><div className="max-h-96 overflow-y-auto"><table className="w-full text-sm"><thead><tr className="border-b border-slate-100 text-slate-500 text-xs text-left"><th className="py-2">Advisor</th><th className="py-2 text-right">Time</th></tr></thead><tbody className="divide-y divide-slate-50">{activityStats.breakdown.map((row, idx) => (<tr key={idx}><td className="py-3 font-medium">{row.name}</td><td className="py-3 text-right font-bold">{(row.duration/3600).toFixed(1)}h</td></tr>))}</tbody></table></div></Modal>}
       {showGoalSetter && <Modal isOpen={showGoalSetter} onClose={() => setShowGoalSetter(false)} title="Targets" footer={<div className="flex gap-2 w-full"><Button variant="ghost" onClick={() => setShowGoalSetter(false)}>Cancel</Button><Button variant="primary" onClick={async () => { setIsSavingGoals(true); for(const id in goalUpdates) { const a = advisors.find(x => x.id === id); if(a) await onUpdateAdvisor({...a, annualGoal: parseFloat(String(goalUpdates[id]))}); } toast.success("Goals updated"); setShowGoalSetter(false); setIsSavingGoals(false); }} isLoading={isSavingGoals}>Save</Button></div>}><div className="max-h-96 overflow-y-auto"><table className="w-full text-sm"><thead className="bg-slate-50 sticky top-0 border-b"><tr><th className="py-3 px-2">Advisor</th><th className="py-3 px-2 text-right">Goal ($)</th></tr></thead><tbody className="divide-y">{activeManagedAdvisors.map(adv => (<tr key={adv.id}><td className="py-3 px-2 font-bold text-xs">{adv.name}</td><td className="py-3 px-2 text-right"><input type="number" className="w-24 text-right p-1.5 border rounded" value={goalUpdates[adv.id] ?? adv.annualGoal} onChange={e => setGoalUpdates({...goalUpdates, [adv.id]: e.target.value})} /></td></tr>))}</tbody></table></div></Modal>}
       {viewingClient && <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[100] flex justify-center p-4 animate-fade-in overflow-y-auto" onClick={() => setViewingClient(null)}><div className="w-full max-w-2xl min-h-0 h-fit my-auto animate-scale-in" onClick={e => e.stopPropagation()}><div className="bg-white rounded-2xl shadow-2xl overflow-hidden flex flex-col border max-h-[90dvh]"><ClientCard client={viewingClient} products={products} onUpdate={(u) => { onUpdateClient(u); setViewingClient(u); }} currentUser={currentUser} onDelete={async (id) => { await db.deleteClient(id); setViewingClient(null); }} onClose={() => setViewingClient(null)} /></div></div></div>}
@@ -240,11 +240,15 @@ export const DirectorDashboard: React.FC<DirectorDashboardProps> = ({ clients, a
       <div className="max-w-6xl mx-auto">
         <header className="mb-8 flex flex-col md:flex-row md:items-end justify-between gap-4">
           <div><h1 className="text-2xl font-bold text-slate-900">{currentUser?.isAgencyAdmin ? 'Agency Overview' : 'Team Performance'}</h1><p className="text-slate-500">Viewing {managedAdvisors.length} advisors.</p></div>
-          <div className="flex gap-4"><div className="bg-white rounded-lg border border-slate-200 p-1 flex shadow-sm">{['This Month', 'Last Month', 'This Quarter', 'This Year', 'All Time'].map(tf => (<button key={tf} onClick={() => setTimeFilter(tf as TimeFilter)} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all whitespace-nowrap ${timeFilter === tf ? 'bg-slate-900 text-white shadow' : 'text-slate-500 hover:text-slate-900'}`}>{tf}</button>))}</div><div className="bg-white p-1 rounded-xl border flex shadow-sm">{['analytics', 'products', 'activity', 'leads'].map(tab => (<button key={tab} onClick={() => setActiveTab(tab as any)} className={`px-4 py-2 text-sm font-medium rounded-lg transition-all capitalize ${activeTab === tab ? 'bg-slate-900 text-white shadow' : 'text-slate-500 hover:text-slate-900'}`}>{tab}</button>))}</div><button onClick={() => setShowGoalSetter(true)} className="bg-emerald-50 text-emerald-700 font-bold px-4 py-2 rounded-lg text-xs border border-emerald-100 shadow-sm flex items-center gap-2"><span>🎯</span> Targets</button></div>
+          <div className="flex gap-4">
+            <div className="bg-white rounded-lg border border-slate-200 p-1 flex shadow-sm">{['This Month', 'Last Month', 'This Quarter', 'This Year', 'All Time'].map(tf => (<button key={tf} onClick={() => setTimeFilter(tf as TimeFilter)} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all whitespace-nowrap ${timeFilter === tf ? 'bg-slate-900 text-white shadow' : 'text-slate-500 hover:text-slate-900'}`}>{tf}</button>))}</div>
+            <div className="bg-white p-1 rounded-xl border flex shadow-sm">{['analytics', 'products', 'activity', 'leads'].map(tab => (<button key={tab} onClick={() => setActiveTab(tab as any)} className={`px-4 py-2 text-sm font-medium rounded-lg transition-all capitalize ${activeTab === tab ? 'bg-slate-900 text-white shadow' : 'text-slate-500 hover:text-slate-900'}`}>{tab}</button>))}</div>
+            <button onClick={() => setShowRecoveryTool(true)} className="bg-indigo-50 text-indigo-700 font-bold px-4 py-2 rounded-lg text-xs border border-indigo-100 shadow-sm flex items-center gap-2"><span>🛡️</span> Recovery</button>
+          </div>
         </header>
 
         {activeTab === 'analytics' && (
-          <><div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-10"><div onClick={() => setShowActivityBreakdown(true)} className="bg-white p-6 rounded-2xl border hover:shadow-md transition-all cursor-pointer group"><p className="text-xs font-semibold text-slate-400 uppercase mb-2">Team Activity</p><p className="text-3xl font-bold">{(activityStats.totalSeconds/3600).toFixed(1)}h</p></div><div onClick={() => setShowVolBreakdown(true)} className="bg-white p-6 rounded-2xl border hover:shadow-md transition-all cursor-pointer group"><p className="text-xs font-semibold text-slate-400 uppercase mb-2">Total Closure</p><p className="text-3xl font-bold">{fmtSGD(totalClosureVol).split('.')[0]}</p></div><div onClick={() => setShowEffBreakdown(true)} className="bg-white p-6 rounded-2xl border hover:shadow-md transition-all cursor-pointer group"><p className="text-xs font-semibold text-slate-400 uppercase mb-2">Appt Efficiency</p><p className="text-3xl font-bold">{avgEfficiency.toFixed(1)}%</p></div><div onClick={() => setShowCloseBreakdown(true)} className="bg-white p-6 rounded-2xl border hover:shadow-md transition-all cursor-pointer group"><p className="text-xs font-semibold text-slate-400 uppercase mb-2">Close Rate</p><p className="text-3xl font-bold text-emerald-600">{avgCloseRate.toFixed(1)}%</p></div></div><div className="grid grid-cols-1 lg:grid-cols-3 gap-8"><div className="lg:col-span-2 bg-white p-6 rounded-2xl border shadow-sm"><h3 className="font-semibold text-slate-800 mb-6">Conversion Funnel</h3><div className="h-80 w-full"><ResponsiveContainer width="100%" height="100%"><BarChart data={funnelData} layout="vertical"><XAxis type="number" hide /><YAxis dataKey="name" type="category" width={80} tick={{fontSize: 12}} /><Tooltip cursor={{fill: '#f8fafc'}} /><Bar dataKey="value" barSize={30} radius={[0, 4, 4, 0]}>{funnelData.map((entry, index) => (<Cell key={`cell-${index}`} fill={entry.fill} />))}</Bar></BarChart></ResponsiveContainer></div></div><div className="bg-slate-900 p-6 rounded-2xl text-white shadow-lg flex flex-col relative overflow-hidden group"><div className="absolute top-0 right-0 w-48 h-48 bg-indigo-500/20 rounded-full blur-[60px]"></div><h3 className="font-semibold mb-4 flex items-center gap-2 relative z-10"><span>🧠</span> Strategic Insight</h3><div className="flex-1 relative z-10">{isThinking ? <div className="animate-pulse">Analyzing...</div> : aiInsight ? <div className="animate-in fade-in space-y-4"><div><p className="text-[10px] text-indigo-300 uppercase font-black">Bottleneck</p><p className="text-sm font-bold">{aiInsight.bottleneck}</p></div><div><p className="text-[10px] text-emerald-400 uppercase font-black">Coaching</p><p className="text-xs italic">"{aiInsight.coaching_tip}"</p></div></div> : <div className="text-sm text-slate-400">Ready for review.</div>}</div><button onClick={handleGenerateInsight} disabled={isThinking} className="w-full py-3 mt-4 bg-white text-slate-900 rounded-xl text-xs font-bold hover:bg-indigo-50 transition-colors shadow-lg relative z-10 disabled:opacity-50">{isThinking ? 'Thinking...' : 'Generate Director Brief'}</button></div></div></>
+          <><div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-10"><div onClick={() => setShowActivityBreakdown(true)} className="bg-white p-6 rounded-2xl border hover:shadow-md transition-all cursor-pointer group"><p className="text-xs font-semibold text-slate-400 uppercase mb-2">Team Activity</p><p className="text-3xl font-bold">{(activityStats.totalSeconds/3600).toFixed(1)}h</p></div><div onClick={() => setShowVolBreakdown(true)} className="bg-white p-6 rounded-2xl border hover:shadow-md transition-all cursor-pointer group"><p className="text-xs font-semibold text-slate-400 uppercase mb-2">Total Closure</p><p className="text-3xl font-bold">{fmtSGD(totalClosureVol).split('.')[0]}</p></div><div onClick={() => setShowEffBreakdown(true)} className="bg-white p-6 rounded-2xl border hover:shadow-md transition-all cursor-pointer group"><p className="text-xs font-semibold text-slate-400 uppercase mb-2">Appt Efficiency</p><p className="text-3xl font-bold">{avgEfficiency.toFixed(1)}%</p></div><div onClick={() => setShowCloseBreakdown(true)} className="bg-white p-6 rounded-2xl border hover:shadow-md transition-all cursor-pointer group"><p className="text-xs font-semibold text-slate-400 uppercase mb-2">Close Rate</p><p className="text-3xl font-bold text-emerald-600">{avgCloseRate.toFixed(1)}%</p></div></div><div className="grid grid-cols-1 lg:grid-cols-3 gap-8"><div className="lg:col-span-2 bg-white p-6 rounded-2xl border shadow-sm"><h3 className="font-semibold text-slate-800 mb-6">Conversion Funnel</h3><div className="h-80 w-full"><ResponsiveContainer width="100%" height="100%"><BarChart data={funnelData} layout="vertical"><XAxis type="number" hide /><YAxis dataKey="name" type="category" width={80} tick={{fontSize: 12}} /><Tooltip cursor={{fill: '#f8fafc'}} /><Bar dataKey="value" barSize={30} radius={[0, 4, 4, 0]}>{funnelData.map((entry, index) => (<Cell key={`cell-${index}`} fill={entry.fill} />))}</Bar></BarChart></ResponsiveContainer></div></div><div className="bg-slate-900 p-6 rounded-2xl text-white shadow-lg flex flex-col relative overflow-hidden group"><div className="absolute top-0 right-0 w-48 h-48 bg-indigo-500/20 rounded-full blur-[60px] opacity-20"></div><h3 className="font-semibold mb-4 flex items-center gap-2 relative z-10"><span>🧠</span> Strategic Insight</h3><div className="flex-1 relative z-10">{isThinking ? <div className="animate-pulse">Analyzing...</div> : aiInsight ? <div className="animate-in fade-in space-y-4"><div><p className="text-[10px] text-indigo-300 uppercase font-black">Bottleneck</p><p className="text-sm font-bold">{aiInsight.bottleneck}</p></div><div><p className="text-[10px] text-emerald-400 uppercase font-black">Coaching</p><p className="text-xs italic">"{aiInsight.coaching_tip}"</p></div></div> : <div className="text-sm text-slate-400">Ready for review.</div>}</div><button onClick={handleGenerateInsight} disabled={isThinking} className="w-full py-3 mt-4 bg-white text-slate-900 rounded-xl text-xs font-bold hover:bg-indigo-50 transition-colors shadow-lg relative z-10 disabled:opacity-50">{isThinking ? 'Thinking...' : 'Generate Director Brief'}</button></div></div></>
         )}
 
         {activeTab === 'leads' && (

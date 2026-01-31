@@ -1,9 +1,10 @@
+
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from './contexts/AuthContext';
 import { useClient } from './contexts/ClientContext';
 import { useToast } from './contexts/ToastContext';
 import { useDialog } from './contexts/DialogContext';
-import { db, DB_KEYS } from './lib/db';
+import { db } from './lib/db';
 import { supabase } from './lib/supabase';
 import { Client } from './types';
 import { canAccessTab } from './lib/config';
@@ -53,16 +54,24 @@ const App: React.FC = () => {
 
   const refreshClients = useCallback(async () => {
     if (user) {
-      const data = await db.getClients(user.id, user.role);
-      setClients(data.filter((c: any) => c.profile?.name || c.name));
+      try {
+        const data = await db.getClients(user.id, user.role);
+        setClients(data.filter((c: any) => c.profile?.name || c.name));
+      } catch (e) {
+        console.warn("Refresh Clients Failed:", e);
+      }
     }
   }, [user]);
 
   useEffect(() => {
     if (user) {
-        db.pullFromCloud().then(() => {
-            refreshClients();
-        });
+        // Initial Startup Handshake
+        db.pullFromCloud()
+          .then(() => refreshClients())
+          .catch(err => {
+              console.error("Initial load failed, using local cache:", err);
+              refreshClients();
+          });
     }
   }, [user, refreshClients]);
 
@@ -81,8 +90,8 @@ const App: React.FC = () => {
 
     setSaveStatus('saving');
     try {
-      // Logic: Save -> Queue -> Orchestrator (Auto-Flush)
-      const saved = await db.saveClient(clientObj, user.id, { owner: 'UI', module: 'App', reason: 'Manual Save' });
+      const saved = await db.saveClientDirectly(clientObj, user.id);
+      
       setClients(prev => {
         const idx = prev.findIndex(c => c.id === saved.id);
         if (idx >= 0) { const n = [...prev]; n[idx] = saved; return n; }
@@ -94,20 +103,13 @@ const App: React.FC = () => {
       setTimeout(() => setSaveStatus(s => s === 'saved' ? 'idle' : s), 3000);
     } catch (e: any) {
       setSaveStatus('error');
+      toast.error("Cloud Save Failed: " + (e.message || "Network Error"));
     }
   };
 
-  /**
-   * Unified persistence gateway for global client updates.
-   * Ensures UI state and Database state are always coupled.
-   */
   const handleUpdateGlobalClient = useCallback(async (c: Client, reason: string = 'Update') => {
     if (!user) return;
-    
-    // 1. Immediate UI update for responsiveness
     setClients(prev => prev.map(old => old.id === c.id ? c : old));
-    
-    // 2. Persist to Orchestrator (Save -> Queue -> Flush)
     try {
         await db.saveClient(c, user.id, { owner: 'UI', module: 'CRM', reason });
     } catch (e) {
@@ -132,7 +134,10 @@ const App: React.FC = () => {
     <AppShell 
       activeTab={activeTab} setActiveTab={setActiveTab} onLoginClick={() => setIsAuthModalOpen(true)} onPricingClick={() => setIsPricingModalOpen(true)} onSaveClick={handleSave} saveStatus={saveStatus} lastSavedTime={lastSavedTime} clients={clients} onLoadClient={handleLoadClient} onSystemRefresh={refreshClients}
     >
-      <AutoSaver onSave={handleSave} />
+      <AutoSaver onSave={() => {
+          const obj = generateClientObject();
+          if (obj.name || obj.profile.name) db.saveClient(obj, user.id);
+      }} />
       {(() => {
         switch (activeTab) {
           case 'dashboard': return <DashboardTab user={user} clients={clients} onLoadClient={handleLoadClient} onNewClient={() => { resetClient(); setActiveTab('profile'); }} setActiveTab={setActiveTab} />;

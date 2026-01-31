@@ -8,7 +8,7 @@ import {
 import { getAge, toNum, generateRefCode } from '../lib/helpers';
 import { computeCpf } from '../lib/calculators';
 import { useAuth } from './AuthContext';
-import { db } from '../lib/db'; // Import strict UUID generator
+import { db } from '../lib/db';
 
 export const INITIAL_PROFILE: Profile = {
   name: '', dob: '', gender: 'male', email: '', phone: '',
@@ -103,9 +103,9 @@ interface ClientContextType {
   setWealthState: (s: WealthState) => void;
   setRetirement: (r: RetirementSettings) => void;
   setNineBoxState: (s: NineBoxState) => void;
+  setChatHistory: (h: ChatMessage[]) => void;
   setCrmState: (s: typeof INITIAL_CRM_STATE) => void;
   setOwnerId: (id: string | null) => void;
-  setChatHistory: (history: ChatMessage[]) => void;
   age: number;
   cpfData: CpfData;
   cashflowData: CashflowData;
@@ -169,10 +169,7 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     setClientId(c.id);
     setClientRef(c.referenceCode || null);
     setLastUpdated(c.lastUpdated);
-    // Hardened Load: Ensure followUp exists
-    const safeFollowUp = c.followUp || { status: 'new' };
-    if (c.value && !safeFollowUp.dealValue) safeFollowUp.dealValue = c.value.toString();
-    setFollowUp(safeFollowUp);
+    setFollowUp(c.followUp || { status: 'new' });
     setAppointments(c.appointments || {});
     setDocuments(c.documents || []);
     setOwnerId(c._ownerId || null);
@@ -215,7 +212,7 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const resetClient = () => {
     setClientId(null);
     setClientRef(null);
-    draftId.current = db.generateUuid(); // STRICT UUID
+    draftId.current = db.generateUuid(); 
     draftRefCode.current = generateRefCode();
     setLastUpdated(new Date().toISOString());
     setFollowUp({ status: 'new' });
@@ -240,25 +237,17 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   };
 
   const generateClientObject = (): Client => {
-    if (!user) throw new Error("CRITICAL: Cannot save without active user session.");
+    if (!user) throw new Error("Unauthorized");
     
-    // HARDENED GENERATION: Ensure followUp exists
     const safeFollowUp = followUp || { status: 'new' };
     const derivedStage = STATUS_TO_STAGE[safeFollowUp.status] || safeFollowUp.status || 'New Lead';
     
     const finalId = clientId || draftId.current;
-    
-    // Safety check: if draftId was somehow malformed, regenerate it
-    if (!db.isValidUuid(finalId)) {
-        draftId.current = db.generateUuid();
-    }
-    
-    const validId = clientId || draftId.current;
     const finalRef = clientRef || draftRefCode.current;
     const currentOrgId = user.organizationId || 'org_default';
 
     return {
-      id: validId,
+      id: finalId,
       referenceCode: finalRef,
       organizationId: currentOrgId,
       profile: { ...profile, children: childrenState },
@@ -301,7 +290,8 @@ export const ClientProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       goals: crmState.goals,
       milestones: crmState.milestones,
       nextAction: crmState.nextAction,
-      portfolios: crmState.portfolios
+      portfolios: crmState.portfolios,
+      advisorId: user.id // Force sync with token ID for RLS
     };
   };
 

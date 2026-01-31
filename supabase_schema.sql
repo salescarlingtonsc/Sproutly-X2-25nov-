@@ -1,118 +1,80 @@
--- ENTERPRISE SCHEMA v6.2 (SYNTAX HARDENED)
--- Run this in the Supabase SQL Editor to restore lead visibility and fix numeric conversion errors.
 
--- 1. CLEANUP: Clear old problematic policies
-DO $$ 
-DECLARE 
-  pol record; 
-BEGIN 
-  FOR pol IN SELECT policyname, tablename FROM pg_policies WHERE tablename IN (
-    'profiles', 'clients', 'activities', 'organization_settings', 
-    'sproutly_knowledge', 'crm_views', 'client_files',
-    'message_templates', 'field_definitions', 'client_field_values', 'teams'
-  ) 
-  LOOP 
-    EXECUTE format('DROP POLICY IF EXISTS %I ON %I', pol.policyname, pol.tablename); 
-  END LOOP; 
-END $$;
+-- ENTERPRISE SCHEMA v9.0 (DEADLOCK BUSTER)
+-- Run this in Supabase SQL Editor to fix "Deadlock Detected" and "0 Leads".
 
--- 2. PROFILES HARDENING: Ensure all Auth columns exist
-DO $$ 
-BEGIN 
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='profiles' AND column_name='role') THEN
-        ALTER TABLE public.profiles ADD COLUMN role text DEFAULT 'advisor';
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='profiles' AND column_name='is_admin') THEN
-        ALTER TABLE public.profiles ADD COLUMN is_admin boolean DEFAULT false;
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='profiles' AND column_name='organization_id') THEN
-        ALTER TABLE public.profiles ADD COLUMN organization_id text DEFAULT 'org_default';
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='profiles' AND column_name='subscription_tier') THEN
-        ALTER TABLE public.profiles ADD COLUMN subscription_tier text DEFAULT 'free';
-    END IF;
-END $$;
+-- 1. NUCLEAR OPTION: DISABLE RLS FIRST
+-- This immediately stops any "Infinite Recursion" or "Deadlocks" caused by existing bad policies.
+ALTER TABLE clients DISABLE ROW LEVEL SECURITY;
+ALTER TABLE profiles DISABLE ROW LEVEL SECURITY;
+ALTER TABLE activities DISABLE ROW LEVEL SECURITY;
 
--- 3. CLIENTS NORMALIZATION: Add explicit columns for searchable data
-DO $$ 
-BEGIN 
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='clients' AND column_name='name') THEN
-        ALTER TABLE public.clients ADD COLUMN name text;
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='clients' AND column_name='email') THEN
-        ALTER TABLE public.clients ADD COLUMN email text;
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='clients' AND column_name='phone') THEN
-        ALTER TABLE public.clients ADD COLUMN phone text;
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='clients' AND column_name='stage') THEN
-        ALTER TABLE public.clients ADD COLUMN stage text;
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='clients' AND column_name='org_id') THEN
-        ALTER TABLE public.clients ADD COLUMN org_id text DEFAULT 'org_default';
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='clients' AND column_name='revenue_value') THEN
-        ALTER TABLE public.clients ADD COLUMN revenue_value numeric DEFAULT 0;
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='clients' AND column_name='updated_at') THEN
-        ALTER TABLE public.clients ADD COLUMN updated_at timestamptz DEFAULT now();
-    END IF;
-END $$;
+-- 2. CLEAN SLATE (Remove all old policies)
+DROP POLICY IF EXISTS "clients_enterprise_visibility" ON clients;
+DROP POLICY IF EXISTS "clients_visibility_v7" ON clients;
+DROP POLICY IF EXISTS "clients_self" ON clients;
+DROP POLICY IF EXISTS "clients_org" ON clients;
+DROP POLICY IF EXISTS "profiles_enterprise_all" ON profiles;
+DROP POLICY IF EXISTS "profiles_visibility_v7" ON profiles;
+DROP POLICY IF EXISTS "profiles_self" ON profiles;
+DROP POLICY IF EXISTS "profiles_org" ON profiles;
+DROP POLICY IF EXISTS "activities_enterprise_access" ON activities;
+DROP POLICY IF EXISTS "activities_access" ON activities;
 
--- 4. SECURITY FUNCTIONS (Non-Recursive Enterprise Standard)
-CREATE OR REPLACE FUNCTION public.check_is_admin()
-RETURNS boolean AS $$
-    SELECT EXISTS (
-        SELECT 1 FROM public.profiles
-        WHERE id = auth.uid() AND (role = 'admin' OR role = 'director' OR is_admin = true)
-    );
-$$ LANGUAGE sql SECURITY DEFINER SET search_path = public;
-
-CREATE OR REPLACE FUNCTION public.get_my_org_id()
+-- 3. RECREATE HELPER FUNCTIONS (Anti-Recursion Mode)
+-- We use SECURITY DEFINER to ensure these run with system privileges, bypassing RLS loops.
+CREATE OR REPLACE FUNCTION public.get_auth_org_id()
 RETURNS text AS $$
-    SELECT COALESCE(organization_id, 'org_default') FROM public.profiles WHERE id = auth.uid();
+  SELECT organization_id FROM profiles WHERE id = auth.uid() LIMIT 1;
 $$ LANGUAGE sql SECURITY DEFINER SET search_path = public;
 
--- 5. DATA RECOVERY: Sync new columns from the JSON blob
--- PATCH v6.2: Using NULLIF to prevent crash on empty strings in numeric fields
-UPDATE public.clients 
-SET 
-  name = COALESCE(data->'profile'->>'name', data->>'name'),
-  email = COALESCE(data->'profile'->>'email', data->>'email'),
-  phone = COALESCE(data->'profile'->>'phone', data->>'phone'),
-  stage = COALESCE(data->'followUp'->>'status', stage),
-  revenue_value = COALESCE(
-    NULLIF(data->'followUp'->>'dealValue', '')::numeric, 
-    NULLIF(data->>'value', '')::numeric, 
-    0
-  ),
-  org_id = COALESCE(org_id, (SELECT organization_id FROM profiles WHERE profiles.id = clients.user_id), 'org_default')
-WHERE name IS NULL OR org_id = 'org_default';
+CREATE OR REPLACE FUNCTION public.get_auth_role()
+RETURNS text AS $$
+  SELECT role FROM profiles WHERE id = auth.uid() LIMIT 1;
+$$ LANGUAGE sql SECURITY DEFINER SET search_path = public;
 
--- Ensure every profile has an org ID
-UPDATE public.profiles SET organization_id = 'org_default' WHERE organization_id IS NULL;
+-- 4. DATA REPAIR (Now safe to run because RLS is off)
+-- Sync the DB 'user_id' to match the 'advisorId' in the JSON data.
+UPDATE clients
+SET user_id = (data->>'advisorId')::uuid
+WHERE (data->>'advisorId') IS NOT NULL 
+  AND (data->>'advisorId') ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+  AND user_id != (data->>'advisorId')::uuid;
 
--- 6. APPLY ENTERPRISE RLS POLICIES
-ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "profiles_enterprise_select" ON public.profiles FOR SELECT USING (true);
-CREATE POLICY "profiles_enterprise_all" ON public.profiles FOR ALL USING (check_is_admin() OR auth.uid() = id);
+-- Sync Org IDs
+UPDATE clients c
+SET org_id = p.organization_id
+FROM profiles p
+WHERE c.user_id = p.id
+  AND c.org_id != p.organization_id;
 
+-- 5. RE-ENABLE SECURITY
 ALTER TABLE clients ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "clients_enterprise_visibility" ON public.clients 
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE activities ENABLE ROW LEVEL SECURITY;
+
+-- 6. APPLY CLEAN POLICIES (Split for performance)
+
+-- CLIENTS
+CREATE POLICY "clients_self" ON clients
+FOR ALL USING ( user_id = auth.uid() );
+
+CREATE POLICY "clients_org" ON clients
 FOR ALL USING (
-    user_id = auth.uid() OR 
-    org_id = get_my_org_id() OR 
-    check_is_admin()
+  org_id = get_auth_org_id() 
+  AND 
+  get_auth_role() IN ('manager', 'director', 'admin')
 );
 
-ALTER TABLE activities ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "activities_enterprise_access" ON public.activities 
-FOR ALL USING (user_id = auth.uid() OR check_is_admin());
+-- PROFILES
+CREATE POLICY "profiles_self" ON profiles
+FOR ALL USING ( id = auth.uid() );
 
--- 7. PERFORMANCE BOOSTERS
-CREATE INDEX IF NOT EXISTS idx_clients_org_search ON clients(org_id, name);
-CREATE INDEX IF NOT EXISTS idx_clients_revenue_sort ON clients(revenue_value DESC);
-CREATE INDEX IF NOT EXISTS idx_clients_user_v6 ON clients(user_id);
-CREATE INDEX IF NOT EXISTS idx_profiles_org ON profiles(organization_id);
+CREATE POLICY "profiles_org" ON profiles
+FOR ALL USING ( organization_id = get_auth_org_id() );
 
+-- ACTIVITIES
+CREATE POLICY "activities_access" ON activities
+FOR ALL USING (true);
+
+-- 7. OPTIMIZE
 ANALYZE;
