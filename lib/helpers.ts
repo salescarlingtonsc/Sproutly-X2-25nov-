@@ -1,4 +1,10 @@
+
 export const toNum = (val: any, def = 0): number => {
+  if (typeof val === 'string' && val.includes('_to_')) {
+    // Extract first number from range e.g., "$1000_to_$2000" -> 1000
+    const match = val.match(/\d+/);
+    return match ? parseFloat(match[0]) : def;
+  }
   const n = parseFloat(String(val).replace(/[^0-9.-]/g, ''));
   return isNaN(n) ? def : n;
 };
@@ -15,14 +21,29 @@ export const monthNames = [
 
 export const parseDob = (iso: string): Date | null => {
   if (!iso) return null;
-  const cleanIso = iso.substring(0, 10);
+  const cleanIso = iso.trim().replace(/^'|'$/g, '');
+  
+  // 1. Handle YYYY-MM-DD
   if (/^\d{4}-\d{2}-\d{2}$/.test(cleanIso)) {
       const [y, m, d] = cleanIso.split('-').map(Number);
-      if (!isNaN(y) && !isNaN(m) && !isNaN(d)) {
-          return new Date(y, m - 1, d);
+      return new Date(y, m - 1, d);
+  }
+
+  // 2. Handle DD/MM/YYYY or MM/DD/YYYY
+  if (cleanIso.includes('/')) {
+      const parts = cleanIso.split('/').map(Number);
+      if (parts.length === 3) {
+          // Heuristic: If first part > 12, it must be Day (DD/MM/YYYY)
+          if (parts[0] > 12) return new Date(parts[2], parts[1] - 1, parts[0]);
+          // If second part > 12, it must be Month (MM/DD/YYYY)
+          if (parts[1] > 12) return new Date(parts[2], parts[0] - 1, parts[1]);
+          // Default to US format (MM/DD/YYYY) as it's common in exports, 
+          // but we prioritize based on the values above.
+          return new Date(parts[2], parts[0] - 1, parts[1]);
       }
   }
-  const d = new Date(iso);
+
+  const d = new Date(cleanIso);
   return isNaN(d.getTime()) ? null : d;
 };
 
@@ -34,16 +55,10 @@ export const monthsSinceDob = (dob: Date, refYear: number, refMonth: number): nu
 
 export const getAge = (dobIso: string): number => {
   if (!dobIso) return 0;
+  const birthDate = parseDob(dobIso);
+  if (!birthDate || isNaN(birthDate.getTime())) return 0;
+  
   const today = new Date();
-  let birthDate: Date;
-  const cleanDob = String(dobIso).substring(0, 10);
-  if (/^\d{4}-\d{2}-\d{2}$/.test(cleanDob)) {
-      const [y, m, d] = cleanDob.split('-').map(Number);
-      birthDate = new Date(y, m - 1, d);
-  } else {
-      birthDate = new Date(dobIso);
-  }
-  if (isNaN(birthDate.getTime())) return 0;
   let age = today.getFullYear() - birthDate.getFullYear();
   const m = today.getMonth() - birthDate.getMonth();
   if (m < 0 || (m === 0 && today.getDate() < birthDate.getDate())) {
@@ -91,20 +106,13 @@ export const generateRefCode = (): string => {
   return `REF-${segment()}-${segment()}`;
 };
 
-/**
- * Checks if an error is a browser-level cancellation caused by network interruption
- * or explicit AbortController usage during app lifecycle changes.
- */
 export const isAbortError = (error: any): boolean => {
   if (!error) return false;
-  const msg = (error?.message || String(error)).toLowerCase();
-  const name = (error?.name || '').toLowerCase();
+  if (error.name === 'AbortError' || error.code === 20) return true;
+  const msg = (error?.message || String(error) || '').toLowerCase();
   return (
-    name === 'aborterror' || 
     msg.includes('aborted') || 
     msg.includes('cancelled') || 
-    msg.includes('operation was aborted') ||
-    msg.includes('fetch failed') ||
-    msg.includes('network request failed')
+    msg.includes('operation was aborted')
   );
 };

@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../../contexts/AuthContext';
 import { useToast } from '../../../contexts/ToastContext';
@@ -5,9 +6,8 @@ import Modal from '../../../components/ui/Modal';
 import Button from '../../../components/ui/Button';
 import { GoogleGenAI } from '@google/genai';
 import { db } from '../../../lib/db';
-// Added fmtSGD to imports
-import { generateRefCode, fmtSGD } from '../../../lib/helpers';
-import { INITIAL_PROFILE, INITIAL_CRM_STATE, INITIAL_EXPENSES, INITIAL_CPF, INITIAL_CASHFLOW, INITIAL_INSURANCE, INITIAL_INVESTOR, INITIAL_PROPERTY, INITIAL_WEALTH, INITIAL_RETIREMENT } from '../../../contexts/ClientContext';
+import { generateRefCode, fmtSGD, toNum, parseDob } from '../../../lib/helpers';
+import { INITIAL_PROFILE, INITIAL_CRM_STATE, INITIAL_EXPENSES, INITIAL_CPF, INITIAL_CASHFLOW, INITIAL_INSURANCE, INITIAL_INVESTOR, INITIAL_PROPERTY, INITIAL_WEALTH, INITIAL_RETIREMENT, INITIAL_NINE_BOX } from '../../../contexts/ClientContext';
 import { Client } from '../../../types';
 
 interface ImportModalProps {
@@ -32,6 +32,8 @@ const DESTINATION_FIELDS = [
   { key: 'campaign', label: 'Campaign' }
 ];
 
+const NAME_EXCLUSIONS = ['male', 'female', 'fb', 'ig', 'facebook', 'instagram', 'new', 'contacted', 'leads', 'sg', 'sgp', 'singapore', 'travel', 'start', 'v1', 'v2', 'v3', 'ads'];
+
 const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, onComplete }) => {
   const { user } = useAuth();
   const toast = useToast();
@@ -51,21 +53,11 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, onComplete }
   useEffect(() => {
     if (isOpen && user) {
         db.getClients(user.id).then(clients => {
-            const phones = new Set(clients.map(c => (c.phone || '').replace(/\D/g, '')).filter(p => p.length > 0));
+            const phones = new Set<string>(clients.map(c => (c.phone || '').replace(/\D/g, '')).filter(p => p.length > 0));
             setExistingPhones(phones);
         });
     }
   }, [isOpen, user]);
-
-  const generateUUID = () => {
-    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-      try { return crypto.randomUUID(); } catch(e) {}
-    }
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-      var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
-      return v.toString(16);
-    });
-  };
 
   const handleParse = () => {
     if (!rawText.trim()) {
@@ -84,7 +76,8 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, onComplete }
     const firstRowLooksLikeData = parsedHeaders.some(h => 
         h.includes('p:+') || 
         h.match(/\d{1,2}\/\d{1,2}\/\d{2,4}/) || 
-        h === 'ig' || h === 'fb' ||
+        h.toLowerCase() === 'ig' || 
+        h.toLowerCase() === 'fb' ||
         h.includes('$') ||
         (parsedHeaders.length > 3 && !h.toLowerCase().includes('name'))
     );
@@ -98,7 +91,7 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, onComplete }
         const colCount = finalRows[0]?.length || 0;
         finalHeaders = Array.from({ length: colCount }, (_, i) => `Column ${i + 1}`);
         isHeaderless = true;
-        toast.info("Raw data detected. Switched to 'Headerless' mode.");
+        toast.info("Headerless data detected. Running smart mapping.");
     }
 
     if (finalRows.length === 0) {
@@ -110,24 +103,77 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, onComplete }
     setRows(finalRows);
 
     const newMappings: Record<string, string> = {};
-    finalHeaders.forEach((h, idx) => {
-        const lower = h.toLowerCase().trim().replace(/_/g, ' ');
-        const idxStr = idx.toString();
+    
+    // HEURISTIC PHASE 1: BY HEADER NAMES (IF AVAILABLE)
+    if (!isHeaderless) {
+        finalHeaders.forEach((h, idx) => {
+            const lower = h.toLowerCase().trim().replace(/_/g, ' ');
+            const idxStr = idx.toString();
+            
+            if (lower.includes('name')) newMappings['name'] = idxStr;
+            else if (lower.includes('phone') || lower.includes('mobile')) newMappings['phone'] = idxStr;
+            else if (lower.includes('email')) newMappings['email'] = idxStr;
+            else if (lower.includes('company') || lower.includes('job') || lower.includes('title')) newMappings['company'] = idxStr;
+            else if ((lower.includes('retire') && lower.includes('age')) || lower.includes('when_do_you')) newMappings['retirementAge'] = idxStr;
+            else if (lower.includes('status') || lower.includes('stage')) newMappings['status'] = idxStr;
+            else if (lower.includes('value') || lower.includes('revenue')) {
+                if (!lower.includes('age') && !lower.startsWith('no.') && !lower.startsWith('s/n')) {
+                    newMappings['value'] = idxStr;
+                }
+            }
+        });
+    }
+
+    // HEURISTIC PHASE 2: BY CONTENT (FALLBACK/ENHANCEMENT)
+    if (finalRows.length > 0) {
+        const firstRow = finalRows[0];
         
-        // Stricter Manual Heuristics to avoid "Age" mapping to "Value"
-        if (lower.includes('name')) newMappings['name'] = idxStr;
-        else if (lower.includes('phone') || lower.includes('mobile')) newMappings['phone'] = idxStr;
-        else if (lower.includes('email')) newMappings['email'] = idxStr;
-        else if (lower.includes('company') || lower.includes('job') || lower.includes('title')) newMappings['company'] = idxStr;
-        else if ((lower.includes('retire') && lower.includes('age')) || lower.includes('when_do_you')) newMappings['retirementAge'] = idxStr;
-        else if (lower.includes('status') || lower.includes('stage')) newMappings['status'] = idxStr;
-        else if (lower.includes('value') || lower.includes('revenue')) {
-            // IGNORE columns that are likely Age or Indexes
-            if (!lower.includes('age') && !lower.startsWith('no.') && !lower.startsWith('s/n')) {
+        // Detection Loop for static patterns
+        firstRow.forEach((cell, idx) => {
+            const val = cell.toLowerCase().trim();
+            const idxStr = idx.toString();
+            
+            if (!newMappings['phone'] && (val.includes('p:+') || (val.length >= 8 && val.match(/^\+?[\d\s-]{8,}$/)))) {
+                newMappings['phone'] = idxStr;
+            }
+            else if (!newMappings['email'] && val.includes('@') && val.includes('.')) {
+                newMappings['email'] = idxStr;
+            }
+            else if (!newMappings['retirementAge'] && val.match(/\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}/)) {
+                // Potential DOB
+                if (!newMappings['dob']) newMappings['dob'] = idxStr;
+            }
+            else if (!newMappings['value'] && (val.includes('$') || (val.includes('_to_') && !newMappings['monthlyInvestmentAmount']))) {
                 newMappings['value'] = idxStr;
             }
+            else if (val.includes('v1') || val.includes('v2') || val.includes('start') || val.includes('ads')) {
+                if (!newMappings['campaign']) newMappings['campaign'] = idxStr;
+            }
+        });
+
+        // Name fallback: stricter multi-word check
+        if (!newMappings['name']) {
+            const nameIdx = firstRow.findIndex((cell, idx) => {
+                const val = cell.toLowerCase().trim();
+                const isMapped = Object.values(newMappings).includes(idx.toString());
+                const isExcluded = NAME_EXCLUSIONS.some(ex => val.includes(ex));
+                const hasMultipleWords = cell.trim().split(/\s+/).length >= 2;
+                const looksLikeName = cell.length >= 3 && cell.length < 50 && cell.match(/^[A-Za-z\s\-']+$/);
+                return !isMapped && !isExcluded && looksLikeName && hasMultipleWords;
+            });
+            if (nameIdx !== -1) newMappings['name'] = nameIdx.toString();
         }
-    });
+
+        // Job Title fallback: first text column after name or phone
+        if (!newMappings['jobTitle']) {
+            const jobIdx = firstRow.findIndex((cell, idx) => {
+                const isMapped = Object.values(newMappings).includes(idx.toString());
+                const val = cell.toLowerCase().trim();
+                return !isMapped && cell.length > 3 && !NAME_EXCLUSIONS.some(ex => val.includes(ex));
+            });
+            if (jobIdx !== -1) newMappings['jobTitle'] = jobIdx.toString();
+        }
+    }
 
     setMappings(newMappings);
     setStep('mapping');
@@ -193,8 +239,14 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, onComplete }
           const valueStr = getValue('value').replace(/[^\d.]/g, '');
           const value = parseFloat(valueStr) || 0;
 
-          const id = generateUUID();
+          const id = db.generateUuid();
           const now = new Date().toISOString();
+          
+          const mappedCampaign = getValue('campaign');
+          const tags = mappedCampaign ? [`Campaign: ${mappedCampaign}`] : [];
+          
+          const mappedSource = getValue('source');
+          const mappedNotes = getValue('notes');
 
           return {
               ...INITIAL_CRM_STATE,
@@ -207,17 +259,25 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, onComplete }
               phone,
               email: getValue('email'),
               company: getValue('company'),
+              jobTitle: getValue('jobTitle'),
               value,
+              platform: mappedSource,
+              goals: getValue('goals'),
               lastUpdated: now,
               profile: { 
                   ...INITIAL_PROFILE, 
                   name: rawName || `Lead ${cleanPhone.slice(-4)}`, 
                   phone, 
                   email: getValue('email'),
+                  jobTitle: getValue('jobTitle'),
                   monthlyInvestmentAmount: getValue('monthlyInvestmentAmount'),
                   retirementAge: getValue('retirementAge'), 
+                  tags
               },
               followUp: { status: 'new', dealValue: value > 0 ? value.toString() : '' },
+              notes: [
+                  ...(mappedNotes ? [{ id: `note_mapped_${id}`, content: mappedNotes, date: now, author: 'Import' }] : [])
+              ],
               isDuplicate
           } as (Client & { isDuplicate?: boolean });
       });
@@ -244,6 +304,28 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, onComplete }
           setIsProcessing(false);
       }
   };
+
+  // Helper to extract display value for dynamic table
+  const getPreviewValue = (c: any, fieldKey: string) => {
+      switch(fieldKey) {
+          case 'name': return c.name;
+          case 'phone': return c.phone;
+          case 'email': return c.email;
+          case 'company': return c.company;
+          case 'jobTitle': return c.jobTitle;
+          case 'monthlyInvestmentAmount': return c.profile?.monthlyInvestmentAmount;
+          case 'value': return c.value ? fmtSGD(c.value) : '';
+          case 'retirementAge': return c.profile?.retirementAge;
+          case 'goals': return c.goals;
+          case 'status': return c.followUp?.status || c.stage;
+          case 'source': return c.platform || '';
+          case 'campaign': return c.profile?.tags?.find((t:string) => t.startsWith('Campaign:'))?.replace('Campaign: ', '') || '';
+          case 'notes': return c.notes?.find((n:any) => n.id.startsWith('note_mapped'))?.content || '';
+          default: return '';
+      }
+  };
+
+  const activeFields = DESTINATION_FIELDS.filter(f => mappings[f.key]);
 
   return (
     <Modal 
@@ -273,17 +355,38 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, onComplete }
                 <button onClick={handleAiAutoMap} disabled={isMappingAi} className="w-full py-2 bg-indigo-50 text-indigo-600 font-bold rounded-lg text-xs hover:bg-indigo-100 mb-2">
                     {isMappingAi ? 'Scanning...' : '✨ Magic AI Auto-Map'}
                 </button>
-                <div className="grid grid-cols-1 gap-4 max-h-[300px] overflow-y-auto">
+
+                {/* DATA BLUEPRINT PREVIEW */}
+                <div className="bg-slate-900 rounded-xl p-4 overflow-hidden border border-slate-700">
+                    <div className="text-[9px] font-black text-emerald-400 uppercase tracking-widest mb-3 flex items-center gap-2">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                        Data Blueprint (First Row)
+                    </div>
+                    <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar">
+                        {rows[0]?.map((cell, idx) => (
+                            <div key={idx} className="shrink-0 bg-slate-800 border border-slate-700 rounded-lg p-2 min-w-[120px]">
+                                <div className="text-[8px] font-bold text-slate-500 uppercase mb-1">Column {idx + 1}</div>
+                                <div className="text-[10px] font-bold text-slate-200 truncate">{cell || <span className="opacity-30 italic">Empty</span>}</div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+
+                <div className="grid grid-cols-1 gap-4 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
                     {DESTINATION_FIELDS.map(field => (
                         <div key={field.key} className="flex items-center justify-between border-b border-slate-100 pb-2">
                             <label className="text-xs font-bold text-slate-500">{field.label}</label>
                             <select
-                                className="p-1.5 rounded border text-xs font-bold w-48"
+                                className="p-1.5 rounded border text-xs font-bold w-56"
                                 value={mappings[field.key] || ''}
                                 onChange={(e) => setMappings({...mappings, [field.key]: e.target.value})}
                             >
                                 <option value="">(Skip)</option>
-                                {headers.map((h, i) => <option key={i} value={i}>{h}</option>)}
+                                {headers.map((h, i) => (
+                                    <option key={i} value={i}>
+                                        {h} {rows[0] && rows[0][i] && `(${rows[0][i].substring(0, 15)}...)`}
+                                    </option>
+                                ))}
                             </select>
                         </div>
                     ))}
@@ -297,18 +400,35 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, onComplete }
                     <span>{preparedClients.length} rows detected</span>
                     <label className="flex items-center gap-2"><input type="checkbox" checked={skipDuplicates} onChange={e => setSkipDuplicates(e.target.checked)} /> Skip {preparedClients.filter(c => c.isDuplicate).length} Duplicates</label>
                 </div>
-                <div className="max-h-60 overflow-auto border rounded-lg">
-                    <table className="w-full text-[10px] text-left">
-                        <thead className="bg-slate-50 sticky top-0">
-                            <tr><th className="p-2">Name</th><th className="p-2">Value ($)</th><th className="p-2">Phone</th></tr>
+                <div className="overflow-x-auto border border-slate-200 rounded-lg shadow-inner max-h-[500px]">
+                    <table className="w-full text-[10px] text-left whitespace-nowrap">
+                        <thead className="bg-slate-50 sticky top-0 z-10 font-bold text-slate-500 uppercase">
+                            <tr>
+                                {activeFields.length > 0 ? activeFields.map(f => (
+                                    <th key={f.key} className="p-3 bg-slate-50">{f.label}</th>
+                                )) : (
+                                    <>
+                                        <th className="p-3">Name</th>
+                                        <th className="p-3">Phone</th>
+                                        <th className="p-3">Value</th>
+                                    </>
+                                )}
+                            </tr>
                         </thead>
-                        <tbody>
+                        <tbody className="divide-y divide-slate-50">
                             {preparedClients.map((c, i) => (
-                                <tr key={i} className={`border-t ${c.isDuplicate ? 'bg-amber-50' : ''}`}>
-                                    <td className="p-2">{c.name}</td>
-                                    {/* Added fmtSGD which was missing */}
-                                    <td className="p-2 font-bold text-emerald-600">{c.value > 0 ? fmtSGD(c.value) : '-'}</td>
-                                    <td className="p-2 text-slate-400">{c.phone}</td>
+                                <tr key={i} className={`hover:bg-slate-50 transition-colors ${c.isDuplicate ? 'bg-amber-50/50' : ''}`}>
+                                    {activeFields.length > 0 ? activeFields.map(f => (
+                                        <td key={f.key} className="p-3 border-r border-slate-50 last:border-0 max-w-[200px] truncate">
+                                            {getPreviewValue(c, f.key)}
+                                        </td>
+                                    )) : (
+                                        <>
+                                            <td className="p-3 font-bold text-slate-700">{c.name}</td>
+                                            <td className="p-3 font-mono text-slate-500">{c.phone}</td>
+                                            <td className="p-3 text-right font-black text-emerald-600">{fmtSGD(c.value)}</td>
+                                        </>
+                                    )}
                                 </tr>
                             ))}
                         </tbody>

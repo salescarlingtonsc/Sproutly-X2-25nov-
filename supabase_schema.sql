@@ -1,64 +1,59 @@
 
--- ENTERPRISE SCHEMA v9.0 (DEADLOCK BUSTER)
--- Run this in Supabase SQL Editor to fix "Deadlock Detected" and "0 Leads".
+-- SPROUTLY QUANTUM MASTER SCHEMA v12.0 (THE ULTIMATE FIX)
+-- This script fixes CRM Deadlocks, RLS Recursion, and the missing File Vault columns.
 
--- 1. NUCLEAR OPTION: DISABLE RLS FIRST
--- This immediately stops any "Infinite Recursion" or "Deadlocks" caused by existing bad policies.
-ALTER TABLE clients DISABLE ROW LEVEL SECURITY;
-ALTER TABLE profiles DISABLE ROW LEVEL SECURITY;
-ALTER TABLE activities DISABLE ROW LEVEL SECURITY;
+-- 1. NUCLEAR CLEANUP: DISABLE RLS TEMPORARILY
+ALTER TABLE IF EXISTS public.clients DISABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS public.profiles DISABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS public.client_files DISABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS public.activities DISABLE ROW LEVEL SECURITY;
 
--- 2. CLEAN SLATE (Remove all old policies)
-DROP POLICY IF EXISTS "clients_enterprise_visibility" ON clients;
-DROP POLICY IF EXISTS "clients_visibility_v7" ON clients;
-DROP POLICY IF EXISTS "clients_self" ON clients;
-DROP POLICY IF EXISTS "clients_org" ON clients;
-DROP POLICY IF EXISTS "profiles_enterprise_all" ON profiles;
-DROP POLICY IF EXISTS "profiles_visibility_v7" ON profiles;
-DROP POLICY IF EXISTS "profiles_self" ON profiles;
-DROP POLICY IF EXISTS "profiles_org" ON profiles;
-DROP POLICY IF EXISTS "activities_enterprise_access" ON activities;
-DROP POLICY IF EXISTS "activities_access" ON activities;
+-- 2. CLEAR EXISTING POLICIES
+DROP POLICY IF EXISTS "clients_self" ON public.clients;
+DROP POLICY IF EXISTS "clients_org" ON public.clients;
+DROP POLICY IF EXISTS "profiles_self" ON public.profiles;
+DROP POLICY IF EXISTS "profiles_org" ON public.profiles;
+DROP POLICY IF EXISTS "files_self" ON public.client_files;
+DROP POLICY IF EXISTS "files_org" ON public.client_files;
 
--- 3. RECREATE HELPER FUNCTIONS (Anti-Recursion Mode)
--- We use SECURITY DEFINER to ensure these run with system privileges, bypassing RLS loops.
+-- 3. HELPER FUNCTIONS (Anti-Recursion Mode)
+-- We use SECURITY DEFINER to bypass RLS loops.
 CREATE OR REPLACE FUNCTION public.get_auth_org_id()
 RETURNS text AS $$
-  SELECT organization_id FROM profiles WHERE id = auth.uid() LIMIT 1;
+  SELECT organization_id FROM public.profiles WHERE id = auth.uid() LIMIT 1;
 $$ LANGUAGE sql SECURITY DEFINER SET search_path = public;
 
 CREATE OR REPLACE FUNCTION public.get_auth_role()
 RETURNS text AS $$
-  SELECT role FROM profiles WHERE id = auth.uid() LIMIT 1;
+  SELECT role FROM public.profiles WHERE id = auth.uid() LIMIT 1;
 $$ LANGUAGE sql SECURITY DEFINER SET search_path = public;
 
--- 4. DATA REPAIR (Now safe to run because RLS is off)
--- Sync the DB 'user_id' to match the 'advisorId' in the JSON data.
-UPDATE clients
-SET user_id = (data->>'advisorId')::uuid
-WHERE (data->>'advisorId') IS NOT NULL 
-  AND (data->>'advisorId') ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-  AND user_id != (data->>'advisorId')::uuid;
+-- 4. TABLE STRUCTURE: FIXING CLIENT_FILES (Based on your screenshot)
+-- Adding the missing metadata columns so uploads don't fail.
+ALTER TABLE public.client_files 
+ADD COLUMN IF NOT EXISTS name text NOT NULL DEFAULT 'untitled',
+ADD COLUMN IF NOT EXISTS size_bytes bigint DEFAULT 0,
+ADD COLUMN IF NOT EXISTS mime_type text DEFAULT 'application/octet-stream',
+ADD COLUMN IF NOT EXISTS storage_path text NOT NULL DEFAULT 'temp',
+ADD COLUMN IF NOT EXISTS category text DEFAULT 'others',
+ADD COLUMN IF NOT EXISTS created_at timestamptz DEFAULT now();
 
--- Sync Org IDs
-UPDATE clients c
-SET org_id = p.organization_id
-FROM profiles p
-WHERE c.user_id = p.id
-  AND c.org_id != p.organization_id;
+-- Ensure org_id column exists on files for team sharing
+ALTER TABLE public.client_files 
+ADD COLUMN IF NOT EXISTS org_id text DEFAULT 'org_default';
 
 -- 5. RE-ENABLE SECURITY
-ALTER TABLE clients ENABLE ROW LEVEL SECURITY;
-ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
-ALTER TABLE activities ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.clients ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.client_files ENABLE ROW LEVEL SECURITY;
 
--- 6. APPLY CLEAN POLICIES (Split for performance)
+-- 6. APPLY CLEAN POLICIES
 
 -- CLIENTS
-CREATE POLICY "clients_self" ON clients
+CREATE POLICY "clients_self" ON public.clients
 FOR ALL USING ( user_id = auth.uid() );
 
-CREATE POLICY "clients_org" ON clients
+CREATE POLICY "clients_org" ON public.clients
 FOR ALL USING (
   org_id = get_auth_org_id() 
   AND 
@@ -66,15 +61,26 @@ FOR ALL USING (
 );
 
 -- PROFILES
-CREATE POLICY "profiles_self" ON profiles
+CREATE POLICY "profiles_self" ON public.profiles
 FOR ALL USING ( id = auth.uid() );
 
-CREATE POLICY "profiles_org" ON profiles
+CREATE POLICY "profiles_org" ON public.profiles
 FOR ALL USING ( organization_id = get_auth_org_id() );
 
--- ACTIVITIES
-CREATE POLICY "activities_access" ON activities
-FOR ALL USING (true);
+-- CLIENT_FILES
+CREATE POLICY "files_self" ON public.client_files
+FOR ALL USING ( user_id = auth.uid() );
 
--- 7. OPTIMIZE
+CREATE POLICY "files_org" ON public.client_files
+FOR ALL USING (
+  org_id = get_auth_org_id() 
+  AND 
+  get_auth_role() IN ('manager', 'director', 'admin')
+);
+
+-- 7. PERFORMANCE OPTIMIZATION
+CREATE INDEX IF NOT EXISTS idx_clients_org_id ON public.clients(org_id);
+CREATE INDEX IF NOT EXISTS idx_files_client_id ON public.client_files(client_id);
+CREATE INDEX IF NOT EXISTS idx_profiles_org_id ON public.profiles(organization_id);
+
 ANALYZE;

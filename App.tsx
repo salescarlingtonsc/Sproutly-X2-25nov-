@@ -64,14 +64,30 @@ const App: React.FC = () => {
   }, [user]);
 
   useEffect(() => {
-    if (user) {
-        // Initial Startup Handshake
+    if (user && supabase) {
+        // 1. Initial Startup Handshake
         db.pullFromCloud()
           .then(() => refreshClients())
           .catch(err => {
               console.error("Initial load failed, using local cache:", err);
               refreshClients();
           });
+
+        // 2. REALTIME UPLINK: Synchronize Admin view with Advisor actions
+        const channel = supabase
+            .channel('clients_global_changes')
+            .on(
+                'postgres_changes', 
+                { event: '*', schema: 'public', table: 'clients' }, 
+                (payload) => {
+                    console.log('Realtime Change Detected:', payload.eventType);
+                    // Admins/Managers need to pull from cloud again to resolve RLS visibility
+                    db.pullFromCloud().then(() => refreshClients());
+                }
+            )
+            .subscribe();
+
+        return () => { supabase.removeChannel(channel); };
     }
   }, [user, refreshClients]);
 
