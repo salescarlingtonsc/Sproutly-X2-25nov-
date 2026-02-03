@@ -11,7 +11,7 @@ export interface SyncCausality {
 export type SyncLogCode = 
   | 'INIT' | 'LOCAL_WRITE' | 'OUTBOX_ENQUEUE' | 'SCHEDULE_FLUSH'
   | 'FLUSH_START' | 'FLUSH_END' | 'FLUSH_ABORTED' | 'FLUSH_SKIPPED'
-  | 'GATE_BLOCKED' | 'LOCKED' | 'CLOUD_ERR' | 'UPSERT_RESULT'
+  | 'GATE_BLOCKED' | 'LOCKED' | 'CLOUD_ERR' | 'UPSERT_RESULT' | 'PULL_RESULT'
   | 'RECOVERY_TRIGGER' | 'RESUME_BOUNDARY' | 'SYNC_ABORT_DIAGNOSIS'
   | 'APP_HIDDEN' | 'APP_VISIBLE' | 'NETWORK_ABORT' | 'TRAFFIC_SHAPING'
   | 'UPSERT_ERR' | 'RESUME_EVENT' | 'REPRO_STEP' | 'REPRO_ERR';
@@ -37,6 +37,7 @@ export interface SyncSnapshot {
   flushLockAgeMs: number;
   hasActiveTimer: boolean;
   lastViolation: string | null;
+  failedAttempts: number;
 }
 
 const MAX_LOGS = 200;
@@ -49,7 +50,8 @@ const STATE = {
   flushStart: 0,
   queueCount: 0,
   lastSource: 'System',
-  lastReason: 'Init'
+  lastReason: 'Init',
+  failedAttempts: 0
 };
 
 export const syncInspector = {
@@ -70,6 +72,13 @@ export const syncInspector = {
     } else if (code === 'FLUSH_END' || code === 'FLUSH_ABORTED') {
       STATE.isFlushing = false;
       STATE.flushStart = 0;
+    }
+
+    // ERROR TRACKING
+    if (code === 'UPSERT_ERR' || code === 'CLOUD_ERR') {
+        STATE.failedAttempts++;
+    } else if (code === 'UPSERT_RESULT' || code === 'PULL_RESULT') {
+        STATE.failedAttempts = 0;
     }
 
     if (causality) {
@@ -101,7 +110,8 @@ export const syncInspector = {
       lastSource: STATE.lastSource,
       lastReason: STATE.lastReason,
       hasActiveTimer: false,
-      lastViolation: null
+      lastViolation: null,
+      failedAttempts: STATE.failedAttempts
     };
   },
 

@@ -116,6 +116,7 @@ const AppShell: React.FC<AppShellProps> = ({
   const isOnline = syncSnapshot.online;
   const isQueuePending = syncSnapshot.queueCount > 0;
   const isSyncing = syncSnapshot.isFlushing;
+  const hasSyncFail = syncSnapshot.failedAttempts > 0;
 
   return (
     <div className="flex h-screen supports-[height:100dvh]:h-[100dvh] overflow-hidden bg-slate-50 font-sans text-slate-900 overscroll-none">
@@ -151,17 +152,18 @@ const AppShell: React.FC<AppShellProps> = ({
                {/* CLOUD SYNC BUTTON (NEW) */}
                <button 
                   onClick={() => setShowSyncInspector(true)}
-                  className={`flex items-center gap-1 px-2.5 py-1.5 rounded-full border text-[10px] font-bold uppercase transition-all shadow-sm
+                  className={`flex items-center gap-1 px-3 py-1.5 rounded-full border text-[10px] font-bold uppercase transition-all shadow-sm
                     ${!isOnline ? 'bg-red-50 text-red-600 border-red-200' : 
                       isSyncing ? 'bg-indigo-50 text-indigo-600 border-indigo-200 animate-pulse' :
+                      hasSyncFail ? 'bg-red-600 text-white border-red-700 animate-pulse shadow-red-200' : // High visibility red
                       isQueuePending ? 'bg-amber-50 text-amber-600 border-amber-200' :
                       'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'
                     }`}
-                  title="View Sync Status & Logs"
+                  title={hasSyncFail ? "Sync Failed. Click to debug." : "View Sync Status & Logs"}
                >
-                  <span>{isOnline ? (isSyncing ? '🔄' : '☁️') : '⚠️'}</span>
+                  <span>{isOnline ? (isSyncing ? '🔄' : (hasSyncFail ? '⚠️' : '☁️')) : '📡'}</span>
                   <span className="hidden sm:inline">
-                      {isSyncing ? 'Syncing...' : isQueuePending ? `Pending (${syncSnapshot.queueCount})` : 'Synced'}
+                      {isSyncing ? 'Syncing...' : hasSyncFail ? `Sync Fail` : isQueuePending ? `Pending (${syncSnapshot.queueCount})` : 'Synced'}
                   </span>
                </button>
 

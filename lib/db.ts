@@ -37,7 +37,7 @@ let _syncTimer: any = null;
 let _activeAbort: AbortController | null = null;
 let _backoffIdx = 0;
 
-const BASE_TIMEOUT_MS = 35000; // 35s max per batch request
+const BASE_TIMEOUT_MS = 35000; 
 const LOCK_TIMEOUT_MS = 45000; // 45s silence = Zombie Lock
 
 const withTimeout = <T>(promise: PromiseLike<T>, ms: number, label: string, abortController?: AbortController): Promise<T> => {
@@ -57,11 +57,9 @@ const withTimeout = <T>(promise: PromiseLike<T>, ms: number, label: string, abor
 async function executeInternalFlush(userId: string, causality: SyncCausality): Promise<void> {
   const now = Date.now();
   
-  // 1. ZOMBIE LOCK BREAKER
-  // If the lock is held but the process hasn't "pulsed" (updated timestamp) in 45s, 
-  // it means the browser froze execution. Break the lock.
+  // ZOMBIE LOCK BREAKER
   if (_isFlushing && (now - _lastFlushPulse > LOCK_TIMEOUT_MS)) {
-      syncInspector.log('warn', 'LOCKED', 'Zombie lock detected (App Freeze). Breaking lock...', causality);
+      syncInspector.log('warn', 'LOCKED', 'Zombie lock detected. Breaking...', causality);
       _isFlushing = false;
       if (_activeAbort) _activeAbort.abort("Zombie Lock Breaker");
   }
@@ -73,18 +71,16 @@ async function executeInternalFlush(userId: string, causality: SyncCausality): P
 
   _isFlushing = true;
   _lastFlushPulse = Date.now();
-  _activeAbort = new AbortController(); // Create fresh abort controller for this run
+  _activeAbort = new AbortController();
   
   syncInspector.log('info', 'FLUSH_START', `Uplink Handshake: ${causality.reason}`, causality);
 
   try {
     let hasMore = true;
     while (hasMore && _activeAbort && !_activeAbort.signal.aborted) {
-      // HEARTBEAT: Update pulse so next check knows we are still alive
       _lastFlushPulse = Date.now(); 
       
-      // 2. FETCH BATCH
-      const candidates = await dbStore.outbox.orderBy('queuedAt').limit(10).toArray(); // Reduced batch size for mobile reliability
+      const candidates = await dbStore.outbox.orderBy('queuedAt').limit(10).toArray();
       const totalQueue = await dbStore.outbox.count();
       syncInspector.updateQueueCount(totalQueue);
       
@@ -107,7 +103,6 @@ async function executeInternalFlush(userId: string, causality: SyncCausality): P
       }));
 
       try {
-        // 3. NETWORK TRANSMISSION
         const { error: upsertError } = await withTimeout<any>(
             supabase!
                 .from('clients')
@@ -120,25 +115,21 @@ async function executeInternalFlush(userId: string, causality: SyncCausality): P
 
         if (upsertError) throw upsertError;
         
-        // 4. SUCCESS: REMOVE FROM OUTBOX
         await dbStore.outbox.bulkDelete(candidates.map(b => b.id));
         syncInspector.log('success', 'UPSERT_RESULT', `Pushed ${candidates.length} records.`, causality);
         _backoffIdx = 0; 
         
       } catch (innerErr: any) {
-        // 5. ERROR HANDLING
         const isAbort = innerErr.name === 'AbortError' || innerErr.message?.includes('aborted');
         
         if (isAbort) {
-            syncInspector.log('warn', 'NETWORK_ABORT', 'Lifecycle Interruption (App Switch). Pausing...', causality);
-            break; // Stop loop, cleanup will happen in finally
+            syncInspector.log('warn', 'NETWORK_ABORT', 'Lifecycle Interruption (App Switch).', causality);
+            break; 
         }
         
         syncInspector.log('error', 'UPSERT_ERR', `Sync Blocked: ${innerErr.message}`, causality);
-        
-        // Exponential Backoff simulation
         _backoffIdx++;
-        if (_backoffIdx > 3) break; // Give up after 3 hard fails
+        break; 
       }
     }
   } catch (e: any) {
@@ -162,15 +153,11 @@ export const db = {
     });
   },
 
-  updateTokenCache: (token: string) => {
-    // Session handoff
-  },
+  updateTokenCache: (token: string) => { },
 
   notifyResume: (source: string) => {
-    // Called when App comes to foreground
     syncInspector.log('info', 'RESUME_EVENT', `Lifecycle Wake: ${source}`, { owner: 'Lifecycle', module: 'DB', reason: source });
     
-    // Check if we need to break a lock immediately upon resume
     const now = Date.now();
     if (_isFlushing && (now - _lastFlushPulse > LOCK_TIMEOUT_MS)) {
          _isFlushing = false;
@@ -195,7 +182,7 @@ export const db = {
         if (session?.user) {
             executeInternalFlush(session.user.id, { owner: 'Orchestrator', module: 'DB', reason });
         }
-    }, 1000); // 1s debounce to group rapid saves
+    }, 1000); 
   },
 
   requestFlush: (userId: string, causality: SyncCausality) => {
@@ -218,8 +205,14 @@ export const db = {
           updated_at: row.updated_at
         }));
         await dbStore.clients.bulkPut(clients);
+        // Successful pull clears any error state
+        syncInspector.log('success', 'PULL_RESULT' as any, `Pulled ${data.length} records.`, { owner: 'DataLayer', module: 'DB', reason: 'Pull Success' });
       }
-    } catch (e) { console.error("Cloud Pull Failed:", e); }
+    } catch (e: any) { 
+        console.error("Cloud Pull Failed:", e);
+        // Flag error state
+        syncInspector.log('error', 'CLOUD_ERR', `Pull Failed: ${e.message}`, { owner: 'DataLayer', module: 'DB', reason: 'Initial Pull' });
+    }
   },
 
   getClients: async (userId: string, role?: string) => {
